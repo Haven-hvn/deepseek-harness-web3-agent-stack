@@ -1,0 +1,25 @@
+# The dsh-channel-xmtp bundle patch: XMTP direct agent↔user messaging.
+#
+# This layer inserts ONLY its own row. The wallet seam row (`id: wallet`)
+# belongs to the dsh-wallet bundle and the EVM signing provider to
+# dsh-wallet-ethereum — install all three, plus the SDK the channel drives:
+#
+#   dsh plugin --profile <name> add /path/to/dsh-wallet /path/to/dsh-wallet-ethereum /path/to/dsh-channel-xmtp @xmtp/node-sdk
+#
+# (Patch layers each insert their own rows; a row id inserted by two layers
+# would mount the plugin twice, so a bundle never restates another bundle's
+# rows.) The channel also requires the agent stack (agents/sessions/llm —
+# present in any profile that runs agents, e.g. dsh-web-app). Until those
+# services exist this plugin stays dormant via its `inject` list.
+#
+# `wallet` names the dsh-wallet entry (must target an EVM chain family — XMTP
+# identity is an Ethereum EOA). `dbEncryptionKeyRef` is a credential
+# REFERENCE resolved through ctx.credentials at connect; never a key value.
+
+- insert:
+    - id: channel-xmtp
+      name: 'dsh-channel-xmtp'
+      config:
+        wallet: agent
+        env: production
+        channelName: xmtp

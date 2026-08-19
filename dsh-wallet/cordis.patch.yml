@@ -1,0 +1,24 @@
+# The dsh-wallet bundle patch: mounts the wallet capability seam (ctx.wallet)
+# over dsh-base. The credentials provider it injects is a dsh-base row
+# (id: credentials), so this layer adds only the seam itself.
+#
+# `wallets` is empty by default on purpose: which wallets exist is a
+# deployment decision. Override this row in your profile's cordis.patch.yml
+# (restating the full config — patches replace a row's whole config value):
+#
+#   - id: wallet
+#     config:
+#       wallets:
+#         treasury:
+#           chain: evm
+#           wallet: agent-treasury          # OWS vault wallet name
+#           keyRef: HAVEN_WALLET_PASSPHRASE # credential REFERENCE — never a key
+#
+# Chain adapters are separate bundles (e.g. dsh-wallet-ethereum); install one
+# per chain family you sign on.
+
+- insert:
+    - id: wallet
+      name: 'dsh-wallet'
+      config:
+        wallets: {}

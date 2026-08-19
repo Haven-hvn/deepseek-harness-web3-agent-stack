@@ -1,0 +1,48 @@
+# The dsh-treasury bundle patch: the ledger (ctx.treasury) plus its
+# enforcement policy, layered over dsh-base.
+#
+# PREREQUISITE — the storage stack. dsh-base does not mount the non-session
+# storage hub; the ledger's `inject: [storageDomain]` keeps both rows dormant
+# until a domain form is mounted. The dsh-web-app bundle mounts the stack
+# already (ids: storage, storage-json, storage-domain); on a profile WITHOUT
+# it (e.g. plain dsh-base or headless), add the same three rows to your
+# profile's cordis.patch.yml — a bundle must not insert another bundle's row
+# ids, or a web profile would mount them twice:
+#
+#   - insert:
+#       - id: storage
+#         name: '@deepseek-ai/dsh-storage'
+#       - id: storage-json
+#         name: '@deepseek-ai/dsh-storage-json'
+#         config:
+#           root: !!js dshHomePath('storages')
+#       - id: storage-domain
+#         name: '@deepseek-ai/dsh-storage-domain'
+#         config:
+#           backend: json
+#
+# ENFORCEMENT ACTIVATION — the policy denies nothing until the treasury is
+# funded (any balance row exists). Fund it from your deployment:
+#   await ctx.treasury.updateBalances([{ chain: 'ethereum', token: 'USDC',
+#     amount: 250_000_000, usdEstimate: 250_000_000 }])  # $250 in µUSD
+#
+# `inferenceUsdPerMillionTokens` is deliberately stated here, not schema-
+# defaulted: it is your model's price. 2000000 µUSD = $2.00 per 1M tokens —
+# override it to match your deployment.
+
+- insert:
+    - id: treasury
+      name: 'dsh-treasury'
+      config:
+        burnWindowMs: 86400000
+        fixedDailyBurnUsd: 0
+        maxExpenses: 1000
+
+    - id: treasury-policy
+      name: 'dsh-treasury/policy'
+      config:
+        inferenceUsdPerMillionTokens: 2000000
+        defaultToolCostUsd: 0
+        toolCosts: {}
+        toolCategories: {}
+        exemptTools: []

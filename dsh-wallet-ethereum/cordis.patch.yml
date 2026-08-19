@@ -1,0 +1,18 @@
+# The dsh-wallet-ethereum bundle patch: the OWS-backed EVM signing provider.
+#
+# This layer inserts ONLY its own row. The wallet seam row (`id: wallet`)
+# belongs to the dsh-wallet bundle — install both:
+#
+#   dsh plugin --profile <name> add /path/to/dsh-wallet /path/to/dsh-wallet-ethereum
+#
+# (Patch layers each insert their own rows; a row id inserted by two layers
+# would mount the plugin twice, so a bundle never restates another bundle's
+# rows.) Until the wallet seam is present this provider stays dormant — its
+# `inject: [wallet]` waits for the service instead of failing.
+
+- insert:
+    - id: wallet-ethereum
+      name: 'dsh-wallet-ethereum'
+      config:
+        chains: [evm]
+        accountIndex: 0

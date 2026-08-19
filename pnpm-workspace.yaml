@@ -1,0 +1,6 @@
+packages:
+  - dsh-wallet
+  - dsh-wallet-ethereum
+  - dsh-treasury
+  - dsh-channel-xmtp
+  - dsh-storage-synapse

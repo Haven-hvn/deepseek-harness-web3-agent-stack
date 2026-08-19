@@ -1,0 +1,23 @@
+# The dsh-storage-synapse bundle patch: Synapse pinning behind wallet-signed
+# authentication.
+#
+# This layer inserts ONLY its own row. The wallet seam row (`id: wallet`)
+# belongs to the dsh-wallet bundle, and the signing provider row to
+# dsh-wallet-ethereum — install all three:
+#
+#   dsh plugin --profile <name> add /path/to/dsh-wallet /path/to/dsh-wallet-ethereum /path/to/dsh-storage-synapse
+#
+# (Patch layers each insert their own rows; a row id inserted by two layers
+# would mount the plugin twice, so a bundle never restates another bundle's
+# rows.) Until the wallet seam is present this plugin stays dormant — its
+# `inject: [wallet, tools]` waits for the services instead of failing.
+#
+# `wallet` names the dsh-wallet entry that signs every node request; there is
+# deliberately no key or credential field in this configuration.
+
+- insert:
+    - id: storage-synapse
+      name: 'dsh-storage-synapse'
+      config:
+        url: 'http://127.0.0.1:5001'
+        wallet: agent

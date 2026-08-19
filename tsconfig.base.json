@@ -1,0 +1,26 @@
+{
+  // Shared compiler options for the out-of-tree dsh-haven packages. Unlike the
+  // in-tree dsh tsconfig this is self-contained: no project references into
+  // the harness repository — every @deepseek-ai/* dependency resolves from
+  // node_modules like any other published package. tsc is typecheck-only
+  // (noEmit); tsdown produces lib/ per package.
+  "compilerOptions": {
+    "target": "es2024",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "verbatimModuleSyntax": false,
+    "noEmit": true,
+    "types": ["node"]
+  }
+}
