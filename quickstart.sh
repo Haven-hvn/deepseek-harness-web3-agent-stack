@@ -98,6 +98,42 @@ if [ -n "${OWS_ADDR:-}" ]; then
   echo "OWS wallet ready: $OWS_WALLET_NAME -> $OWS_ADDR"
 fi
 
+# --- Debugging mode Y/N — traces readable in workspace dir ---
+DEBUG_DIR="$STACK/debug"
+DEBUG_MODE="0"
+if [ -t 0 ]; then
+  ANS_DBG=""
+  read -r -p "Enable debugging mode (write traces to $DEBUG_DIR for assistant to read)? [y/N] " ANS_DBG || true
+  ANS_DBG=${ANS_DBG:-N}
+  if [[ "$ANS_DBG" =~ ^[Yy]$ ]]; then DEBUG_MODE="1"; fi
+else
+  # non-interactive: respect DEBUG env, default N
+  if [ "${DEBUG:-}" = "1" ] || [ "${DEBUG_MODE_ENV:-}" = "1" ]; then DEBUG_MODE="1"; fi
+  if [ "$DEBUG_MODE" = "1" ]; then echo "(non-interactive DEBUG=1, enabling debugging traces)"; else echo "(non-interactive, debugging traces off)"; fi
+fi
+if [ "$DEBUG_MODE" = "1" ]; then
+  mkdir -p "$DEBUG_DIR"
+  # expose session traces + logs inside workspace so assistant can read without host paths
+  # symlink live sessions and storages, plus tail logs
+  rm -rf "$DEBUG_DIR/sessions" "$DEBUG_DIR/storages" "$DEBUG_DIR/logs"
+  mkdir -p "$DEBUG_DIR/logs"
+  ln -sf /root/.dsh/sessions "$DEBUG_DIR/sessions" 2>/dev/null || cp -a /root/.dsh/sessions "$DEBUG_DIR/sessions" 2>/dev/null || true
+  ln -sf /root/.dsh/storages "$DEBUG_DIR/storages" 2>/dev/null || true
+  ln -sf /tmp/dsh-xmtp-prod.log "$DEBUG_DIR/logs/agent.log" 2>/dev/null || true
+  ln -sf /tmp/convos-join-watcher.log "$DEBUG_DIR/logs/join-watcher.log" 2>/dev/null || true
+  # live copy helper: background tail that mirrors logs into debug dir
+  cat > "$DEBUG_DIR/README.md" << 'DBGREADME'
+# Debug traces (quickstart debugging mode)
+This directory mirrors live traces for assistant debugging. `sessions/` and `storages/` are symlinks to `/root/.dsh/*`; `logs/` mirrors `/tmp/*.log`.
+Assistant can `zstdcat debug/sessions/**/session.jsonl.zstd | tail` or `cat debug/logs/agent.log` directly in workspace without host paths.
+DBGREADME
+  echo "Debugging mode ON: traces available at $DEBUG_DIR (sessions/, logs/agent.log)"
+  export DEBUG="1"
+  export DSH_DEBUG="1"
+else
+  echo "Debugging mode off (run with DEBUG=1 or answer y to enable traces in $DEBUG_DIR)"
+fi
+
 echo "== Building latest stack =="
 cd "$STACK/dsh-channel-xmtp" && npx tsdown 2>&1 | grep -E "Build complete|ERROR" | tail -n 5
 cd "$STACK/dsh-wallet-tools" && npx tsdown 2>&1 | grep -E "Build complete|ERROR" | tail -n 5
