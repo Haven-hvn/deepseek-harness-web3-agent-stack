@@ -1,5 +1,7 @@
 # dsh-web3
 
+Reimplementation of the sovereign web3 agent harness using DeepSeek harness as core, where everything is a plug-in. Replaces https://github.com/Haven-hvn/haven-core and https://github.com/Haven-hvn/haven-adapters
+
 There is deliberately **no aggregate bundle**: people may want one capability
 and not another, so each package ships its own `dsh.bundle.patch` →
 `cordis.patch.yml` inserting only its own rows, and installs independently:
