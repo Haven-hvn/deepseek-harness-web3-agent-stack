@@ -326,10 +326,8 @@ class XmtpChannelRuntime {
       senderInboxId: message.senderInboxId,
       sentAtMs: message.sentAt.getTime(),
     })
-    const chain = this.deliveries.get(message.conversationId) ?? Promise.resolve()
-    this.deliveries.set(message.conversationId, chain
-      .then(() => this.deliver(message))
-      .catch(() => undefined))
+    // Unblocked: each inbound runs independently, never queues behind a stuck prepare/LLM turn
+    this.deliver(message).catch((e) => { console.error('[xmtp] deliver failed', e?.message ?? e) })
   }
 
   private async resolveAttachmentContent(message: XmtpDecodedMessage): Promise<Array<{ type: 'text'; text: string } | { type: 'image'; attachment: unknown }>> {
