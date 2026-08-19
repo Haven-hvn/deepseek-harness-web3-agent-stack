@@ -16,7 +16,7 @@ export const Config: z<Config> = z.object({
 export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'wallet_info',
-    description: 'Get the agent EVM wallet address and funding instructions. Call when user asks what is your address, wallet, balance, or how to fund you. Returns address, chain, treasury state, balances and funding guidance.',
+    description: 'Get the agent EVM wallet address and funding instructions. Call when user asks what is your address, wallet, balance, or how to fund you. Returns address, chain, treasury state, balances in native asset units and funding guidance.',
     parameters: {},
     output: {
       schema: { type: 'string' },
@@ -30,9 +30,16 @@ export function apply(ctx: Context, config: Config): void {
         const treasury = (ctx as unknown as { treasury?: { report: () => { state: string; totalValueUsd: number; runwayDays: number; balances: Array<{ chain: string; token: string; amount: number; usdEstimate: number }> } } }).treasury
         if (treasury && typeof treasury.report === 'function') {
           const report = treasury.report()
-          const totalUsd = (report.totalValueUsd / 1e6).toFixed(2)
-          const balancesDesc = report.balances.map(b => `${b.chain}:${b.token} ${b.amount} ($${(b.usdEstimate/1e6).toFixed(2)})`).join(', ') || 'none'
-          treasuryInfo = `Treasury state: ${report.state} total $${totalUsd} runway ${report.runwayDays}d balances [${balancesDesc}]`
+          const decimals: Record<string, number> = { USDC: 6, USDFC: 6, ETH: 18, FIL: 18, tFIL: 18 }
+          const format = (token: string, raw: number) => {
+            const d = decimals[token] ?? 18
+            const divisor = Math.pow(10, d)
+            const human = raw / divisor
+            // Keep up to 6 decimals, strip trailing zeros
+            return human.toFixed(d > 6 ? 6 : d).replace(/\.?0+$/, '') || '0'
+          }
+          const balancesDesc = report.balances.map(b => `${b.chain}:${b.token} ${format(b.token, b.amount)} ${b.token}`).join(', ') || 'none'
+          treasuryInfo = `Treasury state: ${report.state} runway ${report.runwayDays}d balances [${balancesDesc}]`
         }
       } catch {}
       return `Wallet ${config.wallet}: address ${address} chain ${list?.chain ?? 'evm'} (OWS vault ${list?.wallet ?? config.wallet}). ${treasuryInfo} To fund: send USDC/USDFC or native gas to ${address} on Filecoin FEVM / Ethereum.`
