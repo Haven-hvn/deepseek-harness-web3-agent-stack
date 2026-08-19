@@ -1,5 +1,17 @@
 # dsh-web3
 
+## Quickstart
+
+One-shot get-started (builds latest `02ca906` stack, tests, starts `xmtp-prod`, spits QR + wallet):
+
+```sh
+bash quickstart.sh
+# or: MUSE_SPARK_API_KEY=<your-key> bash quickstart.sh
+```
+
+Spits `Invite URL: https://popup.convos.org/v2?i=...` + ANSI QR (`qrencode -t ANSIUTF8`) and wallet `0xa85dD3FbD8C2c831Ef156036F14638CcFf03b44e` (dynamic `wallet_info`→`ctx.wallet.address`). Also available: `./show-convos-qr.sh` / `./show-xmtp-qr.sh` for QR-only.
+
+
 Reimplementation of the sovereign web3 agent harness using DeepSeek harness as core, where everything is a plug-in. Replaces https://github.com/Haven-hvn/haven-core and https://github.com/Haven-hvn/haven-adapters
 
 There is deliberately **no aggregate bundle**: people may want one capability
