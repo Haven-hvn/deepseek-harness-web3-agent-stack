@@ -19,6 +19,8 @@ dsh plugin --profile <name> add /path/to/dsh-haven/<package>
 | [`dsh-treasury`](./dsh-treasury) | `Treasury` machine: balances, expenses, FUNDED/LOW/CRITICAL/DEPLETED survival gradient | storage-domain tables + derived state; a policy plugin short-circuits `agent/request` and `tools/pre-execute`, metered off `llm/token-meter` |
 | [`dsh-channel-xmtp`](./dsh-channel-xmtp) | `XmtpChannel` direct agent↔user messaging | one dsh agent per conversation (`ctx.agents`), inbound via `agent.followup`, replies via `sendText`; EOA identity signs through `ctx.wallet` |
 | [`dsh-storage-synapse`](./dsh-storage-synapse) | `SynapseStorageAdapter` + `StorageBackend` pinning | `ctx.synapse` + `synapse_pin` / `synapse_pin_status` agent tools; every node request wallet-signed per operation |
+| [`dsh-wallet-tools`](./dsh-wallet-tools) | wallet address/balance exposure (replaces hard-coded persona) | `wallet_info` tool via `ctx.tools` + `ctx.wallet.address()` live (no hard-coded `0x...`) |
+| [`dsh-persona`](./dsh-persona) | Haven persona / system instructions | `agent/request` composition; generic instruction to call `wallet_info` when address/balance/funding asked |
 
 ## Composition
 
@@ -28,8 +30,9 @@ dsh plugin --profile <name> add /path/to/dsh-haven/<package>
 dsh-wallet  ←  dsh-wallet-ethereum   (registers the evm CryptoAdapter)
     ↑
     ├── dsh-channel-xmtp             (signs XMTP identity per signature)
-    └── dsh-storage-synapse          (signs node requests per request)
-
+    ├── dsh-storage-synapse          (signs node requests per request)
+    └── dsh-wallet-tools             (exposes wallet_info via ctx.tools → ctx.wallet)
+dsh-persona                           (composes agent/request; calls wallet_info, no hard-coded address)
 dsh-treasury                          (independent; needs the storage stack)
 ```
 
@@ -59,6 +62,36 @@ without them (lazy imports with actionable errors; tests substitute
   any agent-running profile.
 - Plugins with unmet `inject` lists stay dormant instead of failing, so
   install order is free.
+
+## Design decision: isolated bundles, coupled seams
+
+Web3 plugins are **isolated as code, coupled at the seam** — a direct consequence of
+how the DeepSeek harness composes.
+
+* **Isolated** — every package is a standalone Cordis plugin (`export const name`,
+  `export const inject`, `export function apply(ctx, config)`) with its own
+  `dsh.bundle.patch` → `cordis.patch.yml`. There is no aggregate bundle; `dsh plugin add`
+  installs one capability at a time and `inject` ordering is free (unmet `inject` stays
+  dormant). This is why `dsh-wallet`, `dsh-channel-xmtp`, `dsh-storage-synapse`,
+  `dsh-treasury`, and `dsh-wallet-tools` each build via `prepare` (tsdown → `lib/`) and test
+  without the others (`internals.*` seams).
+
+* **Coupled at the seam** — isolation would break without declared contracts:
+  `ctx.wallet` (custody), `ctx.tools` (model-facing tools), `ctx.agents`/`ctx.sessions`
+  (per-conversation agents), `ctx.synapse`/`ctx.treasury` (storage). Plugins declare
+  this with `inject` — e.g. `inject = ['wallet','tools']` in `dsh-wallet-tools` and
+  `dsh-storage-synapse` — so they mount only when the seam exists, and call it
+  per-operation (`ctx.wallet.address()`, `ctx.wallet.signMessage()`, `ctx.tools.register(defineTool(...))`).
+
+Harness limitations that force this shape:
+
+1. **Singleton tool runtime.** `@deepseek-ai/dsh-tools` exposes one scheduler (`ctx.tools[TOOL_RUNTIME_SCHEDULER].prepare`). If two instances are deduped incorrectly the `Symbol` mismatches and every `tool/call` fails with `Cannot read properties of undefined (reading 'prepare')`. Bundles therefore depend on `dsh-tools` as a **peer** (`==0.1.0-rc.7`) and `link:` installs must dedupe to one copy.
+
+2. **Wallet custody is per-operation.** Configuration carries only `keyRef`/`wallet` names; `ctx.credentials.resolve` runs inside `signMessage`/`address` and is dropped. Consumers (XMTP identity in `dsh-channel-xmtp`, per-request `x-synapse-*` headers in `dsh-storage-synapse`, `wallet_info` in `dsh-wallet-tools`) see only addresses/signatures. Hard-coding an address in persona (`When asked for address, answer with 0x...`) breaks rotation and wallet-agnostic installs — the correct seam is a tool that resolves `ctx.wallet.address(config.wallet)` live.
+
+3. **Channel is per-conversation, not per-process.** `dsh-channel-xmtp` creates one `ctx.agents` session per XMTP conversation (`SessionId` derived from `conversationId`), handles `conversations.sync()` before `getConversationById`, reconnect/consent sweep, and dedup. The channel owns transport; the agent owns the turn.
+
+Result: add `dsh-wallet` once, then compose any subset. `dsh-wallet-tools` (`wallet_info` tool, `presentCall: {kind:'read'}`) makes the EVM address model-reachable without persona shortcuts; `dsh-channel-xmtp` makes it XMTP-reachable; `dsh-storage-synapse` makes it storage-reachable — all through `ctx.wallet`, none by sharing key material.
 
 ## Custody model (the through-line)
 
