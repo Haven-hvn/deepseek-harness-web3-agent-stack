@@ -189,6 +189,7 @@ class XmtpChannelRuntime {
 
   private setStatus(status: XmtpChannelStatus, reason: string): void {
     if (this.status === status) return
+    console.log(`[xmtp] status ${this.status} -> ${status}: ${reason}`)
     this.status = status
     this.ctx.emit('xmtp/status', { status, reason })
   }
@@ -287,22 +288,27 @@ class XmtpChannelRuntime {
     try {
       await client.conversations.sync()
       const conversations = await client.conversations.list()
+      console.log(`[xmtp] sweep ${conversations.length} convos`)
       for (const conversation of conversations) {
         try {
-          if (conversation.consentState() !== sdk.consentAllowed) {
+          const cs = conversation.consentState()
+          const id = (conversation as unknown as { id?: string }).id ?? String(conversation.conversationId ?? '').slice(0,8)
+          if (cs !== sdk.consentAllowed) {
+            console.log(`[xmtp] sweep allow ${id} ${cs} -> ${sdk.consentAllowed}`)
             await conversation.updateConsentState(sdk.consentAllowed)
           }
-        } catch {
-          // One conversation's consent failure never blocks the sweep.
+        } catch (e) {
+          console.log(`[xmtp] sweep consent fail ${String((e as Error)?.message ?? e).slice(0,120)}`)
         }
       }
-    } catch {
-      // Sweep failures are transient; the next interval retries.
+    } catch (e) {
+      console.log(`[xmtp] sweep failed ${String((e as Error)?.message ?? e).slice(0,200)}`)
     }
   }
 
   /** Haven's inbound filter order: text/attachment → own → active-conversation → dedup. */
   private onMessage(message: XmtpDecodedMessage): void {
+    console.log('[xmtp] onMessage', JSON.stringify({id: message.id.slice(0,8), conv: message.conversationId.slice(0,8), sender: message.senderInboxId.slice(0,8), isText: (this.sdk as any)?.isText?.(message), contentType: typeof message.content, preview: String(message.content).slice(0,80)}))
     if (this.stopped || this.sdk === undefined) return
     const sdk = this.sdk as unknown as { isText: (m: unknown) => boolean; isRemoteAttachment?: (m: unknown) => boolean; isAttachment?: (m: unknown) => boolean }
     const isText = typeof sdk.isText === 'function' && sdk.isText(message) && typeof message.content === 'string'
@@ -388,6 +394,7 @@ class XmtpChannelRuntime {
 
   /** Route one inbound message (text or attachment) through the conversation's agent and send the reply back. */
   private async deliver(message: XmtpDecodedMessage): Promise<void> {
+    console.log('[xmtp] deliver start', message.conversationId.slice(0,8), String(message.content).slice(0,60))
     const conversationId = message.conversationId
     const content = await this.resolveAttachmentContent(message)
     if (content.length === 0) return
