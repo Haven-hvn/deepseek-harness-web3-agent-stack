@@ -89,7 +89,7 @@ export const Config: z<Config> = z.object({
     storage: z.number().required(),
     messaging: z.number().required(),
     reserve: z.number().required(),
-  }),
+  }).default(defaultBudgetAllocation()),
   burnWindowMs: z.number().default(86_400_000),
   fixedDailyBurnUsd: z.number().default(0),
   maxExpenses: z.number().default(1000),

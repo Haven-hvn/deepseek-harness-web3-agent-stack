@@ -1,6 +1,6 @@
 {
   "name": "dsh-wallet-ethereum",
-  "description": "OWS-backed Ethereum wallet provider for DeepSeek Harness: implements the dsh-wallet CryptoAdapter contract over Open Wallet Standard bindings — keys live in the OWS vault, signing is per-operation and policy-gated, sign-only (never broadcast)",
+  "description": "OWS-backed Ethereum wallet provider for DeepSeek Harness: implements the dsh-wallet CryptoAdapter contract over Open Wallet Standard bindings \u2014 keys live in the OWS vault, signing is per-operation and policy-gated, sign-only (never broadcast)",
   "version": "0.1.0",
   "type": "module",
   "main": "lib/index.js",
@@ -34,13 +34,13 @@
     "prepare": "tsdown"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.1"
+    "@deepseek-ai/schemastery": "==3.18.1"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-invariants": "^0.1.0-rc.7",
-    "@open-wallet-standard/core": "*",
-    "dsh-wallet": "^0.1.0"
+    "@deepseek-ai/cordis": "==4.0.1",
+    "@deepseek-ai/dsh-invariants": "==0.1.0-rc.7",
+    "@open-wallet-standard/core": "==1.4.2",
+    "dsh-wallet": "==0.1.0"
   },
   "peerDependenciesMeta": {
     "@open-wallet-standard/core": {
@@ -48,12 +48,12 @@
     }
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-credentials": "^0.1.0-rc.7",
-    "@deepseek-ai/dsh-invariants": "^0.1.0-rc.7",
-    "dsh-wallet": "workspace:^",
-    "tsdown": "^0.22.2",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.8"
+    "@deepseek-ai/cordis": "==4.0.1",
+    "@deepseek-ai/dsh-credentials": "==0.1.0-rc.7",
+    "@deepseek-ai/dsh-invariants": "==0.1.0-rc.7",
+    "dsh-wallet": "workspace:==0.1.0",
+    "tsdown": "==0.22.14",
+    "typescript": "==7.0.2",
+    "vitest": "==4.1.11"
   }
 }

@@ -170,9 +170,10 @@ describe('expenses', () => {
   })
 
   it('authorize() reflects live category spend against the budget', async () => {
-    const { ctx } = await harness()
+    const { ctx } = await harness({ config: { burnWindowMs: 30 * 86_400_000 } })
     await ctx.treasury.updateBalances([usd(1_000_000)]) // $1 treasury
     // Spend 38% of treasury value on inference — the category cap exactly.
+    // Long window keeps daily burn low so state stays funded.
     await ctx.treasury.recordExpense({ category: 'inference', amount: 380_000 })
     expect(ctx.treasury.state()).toBe('funded')
     expect(ctx.treasury.authorize('inference', 1).approved).toBe(false)
