@@ -26,7 +26,6 @@
  * @module dsh-channel-xmtp
  */
 
-import { appendFileSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
@@ -191,7 +190,6 @@ class XmtpChannelRuntime {
   private setStatus(status: XmtpChannelStatus, reason: string): void {
     if (this.status === status) return
     this.status = status
-    try { appendFileSync('/tmp/dsh-xmtp-debug.log', `[${new Date().toISOString()}] xmtp/status ${status} ${reason}\n`) } catch {}
     this.ctx.emit('xmtp/status', { status, reason })
   }
 
@@ -305,7 +303,6 @@ class XmtpChannelRuntime {
 
   /** Haven's inbound filter order: text/attachment → own → active-conversation → dedup. */
   private onMessage(message: XmtpDecodedMessage): void {
-    try { appendFileSync('/tmp/dsh-xmtp-debug.log', `[${new Date().toISOString()}] onMessage id=${message.id} conv=${message.conversationId.slice(0,8)} sender=${message.senderInboxId.slice(0,8)} contentType=${(message as unknown as { contentType?: { typeId?: string } }).contentType?.typeId ?? typeof message.content} stopped=${this.stopped}\n`) } catch {}
     if (this.stopped || this.sdk === undefined) return
     const sdk = this.sdk as unknown as { isText: (m: unknown) => boolean; isRemoteAttachment?: (m: unknown) => boolean; isAttachment?: (m: unknown) => boolean }
     const isText = typeof sdk.isText === 'function' && sdk.isText(message) && typeof message.content === 'string'
@@ -406,6 +403,8 @@ class XmtpChannelRuntime {
     await agent.whenIdle()
     if (this.stopped) return
     const { text: reply, images } = lastAssistantContent(agent.session.events, firstSeq)
+    // Ensure conversation handle is fresh (handles GC / group sync edge)
+    try { await this.client?.conversations.sync() } catch {}
     const conversation = await this.client?.conversations.getConversationById(conversationId)
     if (!conversation) return
     // Send images first as attachments (if supported), then text

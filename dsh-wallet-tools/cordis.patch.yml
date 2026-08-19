@@ -1,0 +1,8 @@
+# dsh-wallet-tools bundle: proper harness tools over ctx.wallet seam.
+# Provides wallet_info tool so the model can answer "what is your address/balance/how to fund"
+# via tool call, not static persona. Independent bundle, no patching other plugins.
+- insert:
+    - id: wallet-tools
+      name: 'dsh-wallet-tools'
+      config:
+        wallet: agent

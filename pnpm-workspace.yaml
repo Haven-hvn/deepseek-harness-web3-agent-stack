@@ -4,3 +4,5 @@ packages:
   - dsh-treasury
   - dsh-channel-xmtp
   - dsh-storage-synapse
+  - dsh-wallet-tools
+  - dsh-persona
