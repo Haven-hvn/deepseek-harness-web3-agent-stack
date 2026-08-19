@@ -14,6 +14,89 @@ STACK="$(cd "$(dirname "$0")" && pwd)"
 PROFILE=xmtp-prod
 LOG=/tmp/dsh-xmtp-prod.log
 CONVOS_HOME_TMP=${CONVOS_HOME_TMP:-/tmp/convos-tester}
+OWS_VAULT_DIR="${OWS_VAULT_DIR:-$HOME/.ows}"
+OWS_WALLET_NAME="xmtp-agent"
+OWS_NODE_BIN="/root/.nvm/versions/node/v22.23.2/bin/node"
+OWS_PROFILE_NODE_PATH="/root/.dsh/profiles/xmtp-prod/node_modules"
+
+# --- OWS wallet setup / reuse with Y/N permission ---
+echo "== OWS vault check ($OWS_VAULT_DIR) =="
+OWS_WALLET_FILE=""
+if ls "$OWS_VAULT_DIR/wallets"/*.json >/dev/null 2>&1; then
+  OWS_WALLET_FILE=$(grep -l "\"name\": \"${OWS_WALLET_NAME}\"" "$OWS_VAULT_DIR/wallets"/*.json 2>/dev/null | head -n 1 || true)
+fi
+OWS_ADDR=""
+if [ -n "${OWS_WALLET_FILE:-}" ] && [ -f "$OWS_WALLET_FILE" ]; then
+  OWS_ADDR=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); addrs=[a['address'] for a in d['accounts'] if a.get('chain_id','').startswith('eip155:')]; print(addrs[0] if addrs else d['accounts'][0]['address'])" "$OWS_WALLET_FILE" 2>/dev/null || grep -o '"address": "0x[^"]*"' "$OWS_WALLET_FILE" | head -n1 | cut -d'"' -f4)
+  OWS_ID=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['id'])" "$OWS_WALLET_FILE" 2>/dev/null || basename "$OWS_WALLET_FILE" .json)
+  echo "Found existing OWS wallet '$OWS_WALLET_NAME' id $OWS_ID address $OWS_ADDR"
+  ANS=""
+  if [ -t 0 ]; then
+    read -r -p "Reuse existing OWS wallet '$OWS_WALLET_NAME' ($OWS_ADDR)? [Y/n] " ANS || true
+    ANS=${ANS:-Y}
+  else
+    ANS=Y
+    echo "(non-interactive stdin, auto-answering Y to reuse)"
+  fi
+  if [[ "$ANS" =~ ^[Yy]$ ]]; then
+    echo "Reusing OWS wallet $OWS_WALLET_NAME ($OWS_ADDR)"
+  else
+    echo "User declined reuse."
+    ANS2=""
+    if [ -t 0 ]; then
+      read -r -p "Create a NEW wallet to replace '$OWS_WALLET_NAME'? This deletes the old vault file. [y/N] " ANS2 || true
+      ANS2=${ANS2:-N}
+    else
+      ANS2=N
+    fi
+    if [[ "$ANS2" =~ ^[Yy]$ ]]; then
+      echo "Deleting old wallet file $OWS_WALLET_FILE ..."
+      rm -f "$OWS_WALLET_FILE"
+      echo "Creating new OWS wallet '$OWS_WALLET_NAME' (no passphrase, experimental)..."
+      CREATED_JSON=$(NODE_PATH="$OWS_PROFILE_NODE_PATH" "$OWS_NODE_BIN" -e "const ows=require('@open-wallet-standard/core'); const w=ows.createWallet('$OWS_WALLET_NAME'); console.log(JSON.stringify(w))" 2>&1)
+      if [ $? -ne 0 ] || [ -z "$CREATED_JSON" ]; then
+        echo "Failed to create OWS wallet: $CREATED_JSON" >&2
+        exit 1
+      fi
+      # re-detect file
+      OWS_WALLET_FILE=$(grep -l "\"name\": \"${OWS_WALLET_NAME}\"" "$OWS_VAULT_DIR/wallets"/*.json 2>/dev/null | head -n 1 || true)
+      OWS_ADDR=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); addrs=[a['address'] for a in d['accounts'] if a.get('chain_id','').startswith('eip155:')]; print(addrs[0] if addrs else d['accounts'][0]['address'])" "$OWS_WALLET_FILE" 2>/dev/null || echo "$CREATED_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin); print([a['address'] for a in d['accounts'] if a['chain_id'].startswith('eip155:')][0])" 2>/dev/null || echo "unknown")
+      echo "Created new wallet '$OWS_WALLET_NAME' address $OWS_ADDR"
+      echo "NOTE: XMTP inboxId is derived from this wallet. If you replace the wallet, update any hardcoded inboxIds and recreate Convos invites."
+    else
+      echo "Aborting per user request (no wallet to run agent)." >&2
+      exit 1
+    fi
+  fi
+else
+  echo "No OWS wallet '$OWS_WALLET_NAME' found in $OWS_VAULT_DIR/wallets"
+  ANS=""
+  if [ -t 0 ]; then
+    read -r -p "Create OWS wallet '$OWS_WALLET_NAME' now? [y/N] " ANS || true
+    ANS=${ANS:-N}
+  else
+    ANS=N
+    echo "(non-interactive, skipping creation prompt -> will attempt to continue; agent will fail if wallet required)"
+  fi
+  if [[ "$ANS" =~ ^[Yy]$ ]]; then
+    echo "Creating new OWS wallet '$OWS_WALLET_NAME'..."
+    CREATED_JSON=$(NODE_PATH="$OWS_PROFILE_NODE_PATH" "$OWS_NODE_BIN" -e "const ows=require('@open-wallet-standard/core'); const w=ows.createWallet('$OWS_WALLET_NAME'); console.log(JSON.stringify(w))" 2>&1)
+    if [ $? -ne 0 ] || [ -z "$CREATED_JSON" ]; then
+      echo "Failed to create OWS wallet: $CREATED_JSON" >&2
+      exit 1
+    fi
+    OWS_WALLET_FILE=$(grep -l "\"name\": \"${OWS_WALLET_NAME}\"" "$OWS_VAULT_DIR/wallets"/*.json 2>/dev/null | head -n 1 || true)
+    OWS_ADDR=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); addrs=[a['address'] for a in d['accounts'] if a.get('chain_id','').startswith('eip155:')]; print(addrs[0] if addrs else d['accounts'][0]['address'])" "$OWS_WALLET_FILE" 2>/dev/null || echo "$CREATED_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin); print([a['address'] for a in d['accounts'] if a['chain_id'].startswith('eip155:')][0])" 2>/dev/null || echo "unknown")
+    echo "Created wallet '$OWS_WALLET_NAME' address $OWS_ADDR"
+  else
+    echo "Skipping OWS creation - agent start will fail if '$OWS_WALLET_NAME' is required (wallet seam)." >&2
+    # leave OWS_ADDR empty, continue to let later step fail visibly
+  fi
+fi
+# dynamic wallet display (if we have an address, use it; else fall back)
+if [ -n "${OWS_ADDR:-}" ]; then
+  echo "OWS wallet ready: $OWS_WALLET_NAME -> $OWS_ADDR"
+fi
 
 echo "== Building latest stack =="
 cd "$STACK/dsh-channel-xmtp" && npx tsdown 2>&1 | grep -E "Build complete|ERROR" | tail -n 5
@@ -36,8 +119,19 @@ echo "Agent PID $(ps -o pid,args | grep xmtp-prod | grep -v grep | awk '{print $
 
 echo ""
 echo "== Wallet (dynamic via wallet_info -> ctx.wallet.address) =="
-echo "Agent wallet agent: address 0xa85dD3FbD8C2c831Ef156036F14638CcFf03b44e (OWS vault xmtp-agent, chain evm->ethereum)"
-echo "To fund: send USDC/USDFC or native gas to 0xa85dD3FbD8C2c831Ef156036F14638CcFf03b44e on Filecoin FEVM / Ethereum"
+if [ -n "${OWS_ADDR:-}" ]; then
+  echo "Agent wallet $OWS_WALLET_NAME: address $OWS_ADDR (OWS vault $OWS_WALLET_NAME, chain evm->ethereum)"
+  echo "To fund: send USDC/USDFC or native gas to $OWS_ADDR on Filecoin FEVM / Ethereum"
+else
+  # fallback: query via OWS directly
+  FALLBACK_ADDR=$(NODE_PATH="$OWS_PROFILE_NODE_PATH" "$OWS_NODE_BIN" -e "try{const ows=require('@open-wallet-standard/core'); const w=ows.getWallet('$OWS_WALLET_NAME'); const a=w.accounts.find(x=>x.chain_id.startsWith('eip155:')); console.log(a?a.address:w.accounts[0].address)}catch(e){console.log('')}" 2>/dev/null || true)
+  if [ -n "$FALLBACK_ADDR" ]; then
+    echo "Agent wallet $OWS_WALLET_NAME: address $FALLBACK_ADDR (OWS vault $OWS_WALLET_NAME, chain evm->ethereum)"
+    echo "To fund: send USDC/USDFC or native gas to $FALLBACK_ADDR on Filecoin FEVM / Ethereum"
+  else
+    echo "Agent wallet $OWS_WALLET_NAME: address unknown (OWS vault not found)"
+  fi
+fi
 
 echo ""
 echo "== Convos QR (production) =="
