@@ -41,6 +41,17 @@ echo "To fund: send USDC/USDFC or native gas to 0xa85dD3FbD8C2c831Ef156036F14638
 
 echo ""
 echo "== Convos QR (production) =="
+# auto-approve Convos invite scans (DM join requests) — needed so QR "waiting for approval" clears without manual step
+JOIN_LOG=/tmp/convos-join-watcher.log
+pkill -f "process-join-requests.*--watch" 2>/dev/null || true
+setsid -f /bin/bash -c "exec env CONVOS_HOME=$CONVOS_HOME_TMP convos conversations process-join-requests --env production --watch >>$JOIN_LOG 2>&1"
+sleep 3
+if ! ps -o pid,args | grep -q "process-join-requests.*--watch"; then
+  echo "Join watcher failed, log:"
+  cat "$JOIN_LOG" | tail -n 20
+fi
+echo "Join watcher PID $(ps -o pid,args | grep "process-join-requests.*--watch" | grep -v grep | awk '{print $1}') live (log $JOIN_LOG)"
+
 NEW=$(CONVOS_HOME=$CONVOS_HOME_TMP convos conversations create --name "qr-$(date +%s)" --env production 2>&1 | grep conversationId | awk '{print $2}')
 echo "Conversation $NEW (2 members after add)"
 CONVOS_HOME=$CONVOS_HOME_TMP convos conversation add-members $NEW 0ddc475555c17970da3bb476f4dfe2ab7f76c9829df42341538b1feb017f90aa --env production 2>&1 | grep -E "success|addedInboxIds"
@@ -65,5 +76,5 @@ echo "CONVOS_HOME=$CONVOS_HOME_TMP convos conversation send-text $NEW --env prod
 echo "CONVOS_HOME=$CONVOS_HOME_TMP convos conversation send-text $NEW --env production --text \"what is your wallet address?\""
 echo "CONVOS_HOME=$CONVOS_HOME_TMP convos conversation messages $NEW --env production"
 echo ""
-echo "Log: tail -f $LOG"
-echo "Stop: pkill -f xmtp-prod"
+echo "Log: tail -f $LOG  |  tail -f $JOIN_LOG"
+echo "Stop: pkill -f xmtp-prod; pkill -f process-join-requests"
