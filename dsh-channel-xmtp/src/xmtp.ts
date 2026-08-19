@@ -25,9 +25,30 @@ export interface XmtpDecodedMessage {
   readonly sentAt: Date
 }
 
+/** XMTP attachment (decrypted). */
+export interface XmtpAttachment {
+  readonly filename?: string
+  readonly mimeType: string
+  readonly content: Uint8Array
+}
+
+/** XMTP remote attachment (encrypted URL). */
+export interface XmtpRemoteAttachment {
+  readonly url: string
+  readonly contentDigest: string
+  readonly secret: Uint8Array
+  readonly salt: Uint8Array
+  readonly nonce: Uint8Array
+  readonly scheme: string
+  readonly contentLength?: number
+  readonly filename?: string
+}
+
 /** One conversation handle. */
 export interface XmtpConversation {
   sendText(text: string): Promise<unknown>
+  sendAttachment?(attachment: XmtpAttachment): Promise<unknown>
+  sendRemoteAttachment?(remoteAttachment: XmtpRemoteAttachment): Promise<unknown>
   consentState(): unknown
   updateConsentState(state: unknown): Promise<void> | void
 }
@@ -64,6 +85,12 @@ export interface XmtpSdk {
   createClient(signer: XmtpSigner, options: XmtpClientOptions): Promise<XmtpClient>
   /** Predicate for plain-text messages. */
   isText(message: XmtpDecodedMessage): boolean
+  /** Predicate for remote-attachment messages. */
+  isRemoteAttachment(message: XmtpDecodedMessage): boolean
+  /** Predicate for inline attachment messages. */
+  isAttachment(message: XmtpDecodedMessage): boolean
+  /** Decrypt a remote attachment's encrypted bytes. */
+  decryptAttachment(encryptedBytes: Uint8Array, remoteAttachment: XmtpRemoteAttachment): XmtpAttachment
   /** `IdentifierKind.Ethereum` token for signer identifiers. */
   readonly ethereumIdentifierKind: unknown
   /** `ConsentState.Allowed` token. */
@@ -84,6 +111,9 @@ interface XmtpNodeSdkModule {
   ConsentState: { Allowed: unknown; Unknown: unknown }
   IdentifierKind: { Ethereum: unknown }
   isText(message: XmtpDecodedMessage): boolean
+  isRemoteAttachment(message: XmtpDecodedMessage): boolean
+  isAttachment(message: XmtpDecodedMessage): boolean
+  decryptAttachment(encryptedBytes: Uint8Array, remote: XmtpRemoteAttachment): XmtpAttachment
 }
 
 /**
@@ -106,6 +136,13 @@ export async function loadXmtpSdk(): Promise<XmtpSdk> {
   return {
     createClient: (signer, options) => sdk.Client.create(signer, options),
     isText: message => sdk.isText(message),
+    isRemoteAttachment: message => {
+      try { return (sdk as unknown as { isRemoteAttachment: (m: XmtpDecodedMessage) => boolean }).isRemoteAttachment(message) } catch { return false }
+    },
+    isAttachment: message => {
+      try { return (sdk as unknown as { isAttachment: (m: XmtpDecodedMessage) => boolean }).isAttachment(message) } catch { return false }
+    },
+    decryptAttachment: (bytes, remote) => (sdk as unknown as { decryptAttachment: (b: Uint8Array, r: XmtpRemoteAttachment) => XmtpAttachment }).decryptAttachment(bytes, remote),
     ethereumIdentifierKind: sdk.IdentifierKind.Ethereum,
     consentAllowed: sdk.ConsentState.Allowed,
     consentUnknown: sdk.ConsentState.Unknown,

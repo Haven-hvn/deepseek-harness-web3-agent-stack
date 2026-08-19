@@ -26,6 +26,7 @@
  * @module dsh-channel-xmtp
  */
 
+import { appendFileSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
@@ -85,6 +86,16 @@ export interface Config {
   maxReconnectAttempts?: number
   /** Delay between reconnect attempts. */
   reconnectDelayMs?: number
+  /**
+   * Convos layer: when `convos:true`, the channel also handles Convos invites
+   * (base64url `popup.convos.org/v2?i=<slug>`). Convos is XMTP + `convos.org/*`
+   * codecs (join_request/invite_join_error) on the same libxmtp Client, with
+   * per-conversation singleton inbox semantics. The wallet seam still provides
+   * identity; Convos invite minting/listening reuses the XMTP client.
+   */
+  convos?: boolean
+  /** Optional Convos invite URL to expose via xmtp/status (for QR). */
+  convosInviteUrl?: string
 }
 
 /** Config schema. */
@@ -97,6 +108,8 @@ export const Config: z<Config> = z.object({
   channelName: z.string().default('xmtp'),
   maxReconnectAttempts: z.number().step(1).min(0).default(DEFAULT_MAX_RECONNECT_ATTEMPTS),
   reconnectDelayMs: z.number().step(1).min(0).default(DEFAULT_RECONNECT_DELAY_MS),
+  convos: z.boolean().default(false),
+  convosInviteUrl: z.string(),
 })
 
 /** Join the last assistant text appended at or after `firstSeq` (headless-runner `summarize` port). */
@@ -111,6 +124,26 @@ function lastAssistantText(events: readonly SessionEvent[], firstSeq: number): s
     if (joined !== '') text = joined
   }
   return text
+}
+
+/** Collect text + image blocks appended at or after `firstSeq`. */
+function lastAssistantContent(events: readonly SessionEvent[], firstSeq: number): { text: string; images: Array<{ type: 'image'; attachment: unknown }> } {
+  let text = ''
+  const images: Array<{ type: 'image'; attachment: unknown }> = []
+  for (const event of events) {
+    if (event.seq < firstSeq || event.type !== 'assistant/message') continue
+    for (const block of event.data.message.content as Array<{ type: string; text?: string; attachment?: unknown }>) {
+      if (block.type === 'text' && typeof block.text === 'string' && block.text !== '') text = block.text
+      if (block.type === 'image' && block.attachment) images.push(block as { type: 'image'; attachment: unknown })
+    }
+    // Also handle incremental text join like lastAssistantText for multi-block messages
+    const joined = (event.data.message.content as Array<{ type: string; text?: string }>)
+      .filter(b => b.type === 'text')
+      .map(b => b.text ?? '')
+      .join('')
+    if (joined !== '') text = joined
+  }
+  return { text, images }
 }
 
 /** The channel: one XMTP client, its stream lifecycle, and the conversation→agent map. */
@@ -158,6 +191,7 @@ class XmtpChannelRuntime {
   private setStatus(status: XmtpChannelStatus, reason: string): void {
     if (this.status === status) return
     this.status = status
+    try { appendFileSync('/tmp/dsh-xmtp-debug.log', `[${new Date().toISOString()}] xmtp/status ${status} ${reason}\n`) } catch {}
     this.ctx.emit('xmtp/status', { status, reason })
   }
 
@@ -203,7 +237,15 @@ class XmtpChannelRuntime {
           void this.sweepConsent(this.client, this.sdk)
         }
       }, CONSENT_SWEEP_INTERVAL_MS)
-      this.setStatus('connected', `connected as ${address.toLowerCase()}`)
+      // Convos layer: same XMTP client, Convos is XMTP + convos.org codecs.
+      // Invite is base64url `popup.convos.org/v2?i=<slug>`; the slug is already valid for this client.
+      // No extra client needed — the same inbox handles both vanilla DMs and Convos groups.
+      if (this.config.convos) {
+        const invite = this.config.convosInviteUrl ?? `https://popup.convos.org/v2?i=<mint via convos conversation invite ${this.config.channelName ?? 'xmtp'}>`;
+        this.setStatus('connected', `connected as ${address.toLowerCase()} (convos invite: ${invite})`)
+      } else {
+        this.setStatus('connected', `connected as ${address.toLowerCase()}`)
+      }
     } catch (error) {
       await this.reconnect(error instanceof Error ? error.message : String(error))
     }
@@ -261,17 +303,21 @@ class XmtpChannelRuntime {
     }
   }
 
-  /** Haven's inbound filter order: text → own → active-conversation → dedup. */
+  /** Haven's inbound filter order: text/attachment → own → active-conversation → dedup. */
   private onMessage(message: XmtpDecodedMessage): void {
+    try { appendFileSync('/tmp/dsh-xmtp-debug.log', `[${new Date().toISOString()}] onMessage id=${message.id} conv=${message.conversationId.slice(0,8)} sender=${message.senderInboxId.slice(0,8)} contentType=${(message as unknown as { contentType?: { typeId?: string } }).contentType?.typeId ?? typeof message.content} stopped=${this.stopped}\n`) } catch {}
     if (this.stopped || this.sdk === undefined) return
-    if (!this.sdk.isText(message) || typeof message.content !== 'string') return
+    const sdk = this.sdk as unknown as { isText: (m: unknown) => boolean; isRemoteAttachment?: (m: unknown) => boolean; isAttachment?: (m: unknown) => boolean }
+    const isText = typeof sdk.isText === 'function' && sdk.isText(message) && typeof message.content === 'string'
+    const isRemote = typeof sdk.isRemoteAttachment === 'function' && sdk.isRemoteAttachment(message)
+    const isAttach = typeof sdk.isAttachment === 'function' && sdk.isAttachment(message)
+    if (!isText && !isRemote && !isAttach) return
     if (message.senderInboxId === this.client?.inboxId) return
     if (this.config.activeConversationId !== undefined
       && message.conversationId !== this.config.activeConversationId) return
     if (this.seen.has(message.id)) return
     this.seen.add(message.id)
     if (this.seen.size > MAX_DEDUP_SIZE) {
-      // Ported policy: prune the oldest half (Sets iterate in insertion order).
       for (const id of this.seen) {
         if (this.seen.size <= MAX_DEDUP_SIZE / 2) break
         this.seen.delete(id)
@@ -285,25 +331,106 @@ class XmtpChannelRuntime {
     })
     const chain = this.deliveries.get(message.conversationId) ?? Promise.resolve()
     this.deliveries.set(message.conversationId, chain
-      .then(() => this.deliver(message.conversationId, message.content as string))
+      .then(() => this.deliver(message))
       .catch(() => undefined))
   }
 
-  /** Route one inbound text through the conversation's agent and send the reply back. */
-  private async deliver(conversationId: string, text: string): Promise<void> {
+  private async resolveAttachmentContent(message: XmtpDecodedMessage): Promise<Array<{ type: 'text'; text: string } | { type: 'image'; attachment: unknown }>> {
+    const sdk = this.sdk as unknown as { isText: (m: unknown) => boolean; isRemoteAttachment?: (m: unknown) => boolean; isAttachment?: (m: unknown) => boolean; decryptAttachment?: (b: Uint8Array, r: unknown) => unknown } & XmtpSdk
+    if (typeof sdk.isText === 'function' && sdk.isText(message) && typeof message.content === 'string') {
+      return [{ type: 'text', text: message.content as string }]
+    }
+    if (typeof sdk.isRemoteAttachment === 'function' && sdk.isRemoteAttachment(message)) {
+      try {
+        const remote = message.content as unknown as { url: string; contentDigest: string; secret: Uint8Array; salt: Uint8Array; nonce: Uint8Array; scheme: string; filename?: string }
+        const res = await fetch(remote.url)
+        if (!res.ok) throw new Error(`fetch ${remote.url} ${res.status}`)
+        const encrypted = new Uint8Array(await res.arrayBuffer())
+        const attachment = sdk.decryptAttachment(encrypted, remote as unknown as import('./xmtp.ts').XmtpRemoteAttachment)
+        const mimeType: string = (attachment as { mimeType?: string }).mimeType ?? 'image/png'
+        const data: Uint8Array = (attachment as { content: Uint8Array }).content
+        const filename: string | undefined = (attachment as { filename?: string }).filename ?? remote.filename
+        // Only image types go through the attachment store; other files become text description
+        const isImage = mimeType.startsWith('image/')
+        if (isImage && (this.ctx as unknown as { attachments?: { saveImage: (i: { data: Uint8Array; mediaType: string; filename?: string }) => Promise<unknown> } }).attachments) {
+          try {
+            const ref = await (this.ctx as unknown as { attachments: { saveImage: (i: unknown) => Promise<unknown> } }).attachments.saveImage({ data, mediaType: mimeType as never, filename })
+            return [{ type: 'image', attachment: ref }]
+          } catch {
+            // saveImage validation failed (too large, unsupported) — fall back to text notice
+          }
+        }
+        if (isImage) {
+          // No attachment store — still deliver as text with filename hint
+          return [{ type: 'text', text: `[image ${filename ?? mimeType} ${data.byteLength} bytes — attachment store unavailable]` }]
+        }
+        return [{ type: 'text', text: `[file ${filename ?? 'attachment'} ${mimeType} ${data.byteLength} bytes]` }]
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error)
+        return [{ type: 'text', text: `[failed to fetch remote attachment: ${msg}]` }]
+      }
+    }
+    if (typeof sdk.isAttachment === 'function' && sdk.isAttachment(message)) {
+      try {
+        const att = message.content as { mimeType: string; content: Uint8Array; filename?: string }
+        const mimeType = att.mimeType ?? 'application/octet-stream'
+        const data = att.content
+        const filename = att.filename
+        const isImage = mimeType.startsWith('image/')
+        if (isImage && (this.ctx as unknown as { attachments?: unknown }).attachments) {
+          try {
+            const ref = await (this.ctx as unknown as { attachments: { saveImage: (i: unknown) => Promise<unknown> } }).attachments.saveImage({ data, mediaType: mimeType as never, filename })
+            return [{ type: 'image', attachment: ref }]
+          } catch {}
+        }
+        return [{ type: 'text', text: `[file ${filename ?? 'attachment'} ${mimeType} ${data.byteLength} bytes]` }]
+      } catch {
+        return [{ type: 'text', text: '[attachment could not be decoded]' }]
+      }
+    }
+    return [{ type: 'text', text: String(message.content ?? '') }]
+  }
+
+  /** Route one inbound message (text or attachment) through the conversation's agent and send the reply back. */
+  private async deliver(message: XmtpDecodedMessage): Promise<void> {
+    const conversationId = message.conversationId
+    const content = await this.resolveAttachmentContent(message)
+    if (content.length === 0) return
     const agent = (await this.agentFor(conversationId)).agent
     await agent.whenIdle()
     const firstSeq = agent.session.seq
     agent.followup(createUserMessage({
-      content: [{ type: 'text', text }],
+      content: content as never,
       source: { kind: 'user' },
     }))
     await agent.whenIdle()
     if (this.stopped) return
-    const reply = lastAssistantText(agent.session.events, firstSeq)
-    if (reply === '') return
+    const { text: reply, images } = lastAssistantContent(agent.session.events, firstSeq)
     const conversation = await this.client?.conversations.getConversationById(conversationId)
-    await conversation?.sendText(reply)
+    if (!conversation) return
+    // Send images first as attachments (if supported), then text
+    for (const img of images) {
+      try {
+        const ref = img.attachment as { id?: string } & Record<string, unknown>
+        // Try to read bytes back from the attachment store for sending
+        const attachments = (this.ctx as unknown as { attachments?: { readImage: (r: unknown) => Promise<{ data: Uint8Array; mediaType: string; filename?: string }> } }).attachments
+        if (attachments && ref) {
+          try {
+            const stored = await attachments.readImage(ref)
+            const sendAttachment = (conversation as unknown as { sendAttachment?: (a: unknown) => Promise<unknown> }).sendAttachment
+            if (sendAttachment) {
+              await sendAttachment.call(conversation, { mimeType: stored.mediaType, content: stored.data, filename: (stored as { filename?: string }).filename })
+              continue
+            }
+          } catch {}
+        }
+      } catch {}
+    }
+    if (reply !== '') {
+      await conversation.sendText(reply)
+    } else if (images.length === 0) {
+      return
+    }
   }
 
   /** One agent per conversation, created on first message (headless-runner precedent). */
