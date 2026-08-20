@@ -1,0 +1,41 @@
+{
+  "name": "dsh-erc8004",
+  "description": "ERC-8004 Identity Registry for DeepSeek Harness: ctx.erc8004 (agent card → Filecoin Pin → Base Sepolia NFT) — cryptographically-verified persistent storage via Synapse/filecoin-pin, on-chain register(string) through viem wallet client, gated per-operation credential resolution",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": { "types": "./lib/index.d.ts", "default": "./lib/index.js" },
+    "./types": { "types": "./lib/types.d.ts", "default": "./lib/types.js" },
+    "./erc8004": { "types": "./lib/erc8004.d.ts", "default": "./lib/erc8004.js" },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": ["lib", "src", "cordis.patch.yml"],
+  "license": "MIT",
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "scripts": { "build": "tsdown", "prepare": "tsdown" },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "==3.18.1",
+    "viem": "==2.55.10"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.7",
+    "dsh-wallet": "workspace:*"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "==4.0.1",
+    "@deepseek-ai/dsh-credentials": "==0.1.0-rc.7",
+    "@deepseek-ai/dsh-invariants": "==0.1.0-rc.7",
+    "@deepseek-ai/dsh-llm": "==0.1.0-rc.7",
+    "@deepseek-ai/dsh-system-prompt": "==0.1.0-rc.7",
+    "@deepseek-ai/dsh-tools": "==0.1.0-rc.7",
+    "dsh-wallet": "workspace:==0.1.0",
+    "tsdown": "==0.22.14",
+    "typescript": "==7.0.2",
+    "vitest": "==4.1.11"
+  }
+}

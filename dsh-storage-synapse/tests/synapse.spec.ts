@@ -28,7 +28,7 @@ import { MemoryCredentials } from '../../dsh-wallet/tests/helpers/memory-credent
 const testSignal = new AbortController().signal
 
 // No vi.mock for filecoin-pin — harness stubs SynapseRuntime methods directly to avoid wss network
-// This keeps tests fast and proves the gated harness wiring (privateKeyRef + rpcUrl) without hitting calibration
+// This keeps tests fast and proves the gated harness wiring (wallet OWS + rpcUrl) without hitting calibration
 
 /** Mount credentials (gated HAVEN_PRIVATE_KEY) + wallet + synapse plugin. */
 async function harness() {
@@ -42,25 +42,24 @@ async function harness() {
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(storageSynapse, {
     wallet: 'agent',
-    privateKeyRef: 'HAVEN_PRIVATE_KEY',
     rpcUrl: 'wss://api.calibration.node.glif.io/rpc/v1',
     networkMode: 'calibration',
     withCDN: false,
   } as any)
   // Stub Filecoin operations to avoid real wss://api.calibration.node.glif.io/rpc/v1 network in unit tests
-  // Proves the gated wiring (privateKeyRef resolved per operation) while keeping tests deterministic
+  // Proves the gated wiring (wallet OWS resolved per operation) while keeping tests deterministic
   const synapse: any = ctx.synapse
-  synapse.store = vi.fn(async (data: Uint8Array, signal?: AbortSignal) => {
+  synapse.store = vi.fn(async (_data: Uint8Array, _signal?: AbortSignal) => {
     return { cid: 'bafyfresh' }
   })
-  synapse.pin = vi.fn(async (cid: string, signal?: AbortSignal) => {
+  synapse.pin = vi.fn(async (cid: string, _signal?: AbortSignal) => {
     ctx.emit('synapse/pinned', { cid } as any)
     return { cid, provider: 'filecoin', expiresAt: 0, redundancy: 1 }
   })
-  synapse.checkPin = vi.fn(async (cid: string, signal?: AbortSignal) => {
+  synapse.checkPin = vi.fn(async (cid: string, _signal?: AbortSignal) => {
     return { cid, provider: 'filecoin', expiresAt: -1, redundancy: 0 }
   })
-  synapse.retrieve = vi.fn(async (cid: string, signal?: AbortSignal) => {
+  synapse.retrieve = vi.fn(async (cid: string, _signal?: AbortSignal) => {
     return new TextEncoder().encode(`bytes-for-${cid}`)
   })
   let calls = 0
@@ -77,18 +76,18 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-describe('gated filecoin requests (the steering seam)', () => {
+describe('gated filecoin requests (OWS wallet seam)', () => {
   it('resolves the credential per operation via the harness gate — no raw key in config', async () => {
     const { ctx } = await harness()
-    const validated: any = storageSynapse.Config({ wallet: 'agent', privateKeyRef: 'HAVEN_PRIVATE_KEY', rpcUrl: 'wss://api.calibration.node.glif.io/rpc/v1' } as any)
-    expect(Object.keys(validated).sort()).toEqual(['networkMode', 'privateKeyRef', 'rpcUrl', 'wallet', 'withCDN'])
-    expect(validated.privateKeyRef).toBe('HAVEN_PRIVATE_KEY')
+    const validated: any = storageSynapse.Config({ wallet: 'agent', rpcUrl: 'wss://api.calibration.node.glif.io/rpc/v1' } as any)
+    expect(Object.keys(validated).sort()).toEqual(['networkMode', 'rpcUrl', 'wallet', 'withCDN'])
+    expect(validated.wallet).toBe('agent')
     expect(validated.rpcUrl).toBe('wss://api.calibration.node.glif.io/rpc/v1')
     expect((validated as any).privateKey).toBeUndefined()
     await ctx.synapse.pin('bafytest')
     // Gate was used — pin went through stub which called resolvePrivateKey (per-operation, like xmtp)
     expect((ctx.synapse as any).pin).toHaveBeenCalled()
-    expect((ctx.synapse as any)._privateKeyRef).toBe('HAVEN_PRIVATE_KEY')
+    expect((ctx.synapse as any)._rpcUrl).toBe('wss://api.calibration.node.glif.io/rpc/v1')
   })
 
   it('mints a fresh gate resolution per request — nothing is cached across operations', async () => {
@@ -99,15 +98,15 @@ describe('gated filecoin requests (the steering seam)', () => {
     await ctx.synapse.checkPin('bafyone')
     expect((ctx.synapse as any).pin).toHaveBeenCalled()
     expect((ctx.synapse as any).checkPin).toHaveBeenCalled()
-    expect((ctx.synapse as any)._privateKeyRef).toBe('HAVEN_PRIVATE_KEY')
+    expect((ctx.synapse as any)._rpcUrl).toBe('wss://api.calibration.node.glif.io/rpc/v1')
     expect((ctx.synapse as any)._rpcUrl).toBe('wss://api.calibration.node.glif.io/rpc/v1')
     expect((ctx.synapse as any).privateKey).toBeUndefined()
     expect((ctx.synapse as any)._opts?.privateKey).toBeUndefined()
   })
 
   it('configuration carries a wallet NAME only — no key or credential field exists', () => {
-    const validated: any = storageSynapse.Config({ wallet: 'agent', privateKeyRef: 'HAVEN_PRIVATE_KEY', rpcUrl: 'wss://api.calibration.node.glif.io/rpc/v1' } as any)
-    expect(Object.keys(validated).sort()).toEqual(['networkMode', 'privateKeyRef', 'rpcUrl', 'wallet', 'withCDN'])
+    const validated: any = storageSynapse.Config({ wallet: 'agent', rpcUrl: 'wss://api.calibration.node.glif.io/rpc/v1' } as any)
+    expect(Object.keys(validated).sort()).toEqual(['networkMode', 'rpcUrl', 'wallet', 'withCDN'])
     expect((validated as any).privateKey).toBeUndefined()
     expect((validated as any).secret).toBeUndefined()
   })

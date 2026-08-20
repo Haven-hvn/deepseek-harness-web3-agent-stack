@@ -7,3 +7,4 @@ packages:
   - dsh-wallet-tools
   - dsh-persona
   - dsh-arkiv
+  - dsh-erc8004

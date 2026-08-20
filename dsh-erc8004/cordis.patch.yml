@@ -1,0 +1,15 @@
+# dsh-erc8004 bundle: ERC-8004 Identity Registry behind Filecoin Pin + wallet-gated Base Sepolia.
+
+- insert:
+    - id: erc8004
+      name: 'dsh-erc8004'
+      config:
+        wallet: agent
+        # No privateKeyRef — signing goes through ctx.wallet (OWS vault, per-operation) + treasury.
+        # Filecoin Pin goes through ctx.synapse (dsh-storage-synapse, its own gated credential).
+        baseRpcUrl: https://sepolia.base.org
+        identityRegistry: '0x8004A818BFB912233c491871b3d84c89A494BD9e'
+        chainId: 84532
+        # Card defaults — override per registration via tool args.
+        agentName: 'DeepSeek Harness Agent'
+        mcpEndpoint: https://api.githubcopilot.com/mcp/

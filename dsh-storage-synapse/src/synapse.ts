@@ -5,6 +5,12 @@
  * @filoz/synapse-sdk) — Filecoin Onchain Cloud only, no Kubo/localhost.
  * Uploads pay USDFC on calibration/mainnet via wss://api.calibration.node.glif.io/rpc/v1.
  * No localhost:5001, no Kubo HTTP fallback.
+ *
+ * OWS upgrade (filecoin-pin 1.3.0 AccountConfig): Synapse is initialized
+ * with a pre-created viem Account whose signing callbacks delegate to
+ * ctx.wallet (OWS vault) — no raw private key in this package, its
+ * configuration, or the process between requests. The account is created
+ * per-operation-style inside the wallet seam (resolve → load → sign → drop).
  */
 
 export type Cid = string
@@ -25,15 +31,14 @@ export function httpError(operation: string, response: Response): Error {
 export type SynapseMode = 'filecoin'
 
 type SynapseInstance = import('@filoz/synapse-sdk').Synapse
+type Account = import('viem').Account
 
 interface FilecoinBackendOpts {
-  /** Credential reference name (e.g. HAVEN_PRIVATE_KEY) — resolved per operation via harness gate, never stored as raw key */
-  privateKeyRef: string
-  /** Resolver that returns the raw private key for one operation (ctx.credentials / env gate) */
-  getPrivateKey: () => Promise<string>
+  /** Resolver that returns a viem Account delegating to ctx.wallet (OWS) — per operation, never cached */
+  getAccount: () => Promise<Account>
   rpcUrl: string
-  networkMode?: 'calibration' | 'mainnet'
-  withCDN?: boolean
+  networkMode?: 'calibration' | 'mainnet' | undefined
+  withCDN?: boolean | undefined
 }
 
 export class FilecoinBackend {
@@ -42,13 +47,12 @@ export class FilecoinBackend {
   constructor(private readonly opts: FilecoinBackendOpts) {}
 
   private async ensureSynapse(): Promise<SynapseInstance> {
-    // Re-resolve the credential each time we (re)connect — never cache the raw key beyond this call
     if (this.synapse) return this.synapse
     const { initializeSynapse } = await import('filecoin-pin/core/synapse')
-    const privateKey = (await this.opts.getPrivateKey()) as `0x${string}`
-    // filecoin-pin maps privateKey+rpcUrl to a viem Synapse (privateKeyToAccount + http/wss transport + chain probe)
+    const account = await this.opts.getAccount()
+    // filecoin-pin 1.3.0 AccountConfig: { account, rpcUrl, withCDN } — OWS wallet-gated, no privateKey
     const synapse: SynapseInstance = await (initializeSynapse as any)({
-      privateKey,
+      account,
       rpcUrl: this.opts.rpcUrl,
       ...(this.opts.withCDN !== undefined ? { withCDN: this.opts.withCDN } : {}),
     })
@@ -56,7 +60,7 @@ export class FilecoinBackend {
     return synapse
   }
 
-  async store(data: Uint8Array): Promise<{ cid: Cid; pieceCid?: string }> {
+  async store(data: Uint8Array): Promise<{ cid: Cid; pieceCid?: string | undefined }> {
     const synapse = await this.ensureSynapse()
     const { createUnixfsCarBuilder } = await import('filecoin-pin/core/unixfs')
     const { executeUpload } = await import('filecoin-pin/core/upload')
