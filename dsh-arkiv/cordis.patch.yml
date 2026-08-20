@@ -1,0 +1,8 @@
+- insert:
+    - id: storage-arkiv
+      name: 'dsh-arkiv'
+      config:
+        wallet: agent
+        privateKeyRef: HAVEN_PRIVATE_KEY
+        rpcUrl: https://braga.hoodi.arkiv.network/rpc
+        chainId: 8453

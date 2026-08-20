@@ -47,6 +47,7 @@ async function mountTreasury(ctx: Context, options: {
   await ctx.plugin(TokenMeter)
   await ctx.plugin(treasury, options.treasury ?? {})
   await ctx.plugin(treasuryPolicy, {
+    enabled: true,
     inferenceUsdPerMillionTokens: 2_000_000,
     ...options.policy,
   })
@@ -180,6 +181,21 @@ describe('tools/pre-execute gate (through the executor)', () => {
     expect(ran).toEqual(['paid_action'])
     expect(ctx.treasury.report().recentExpenses).toHaveLength(1)
   })
+
+  it('disabled gate (enabled:false) never denies even when DEPLETED', async () => {
+    const { ctx, ran, execute } = await toolHarness({
+      treasury: { fixedDailyBurnUsd: 1_000_000 },
+      policy: { enabled: false },
+    })
+    await ctx.treasury.updateBalances([usd(0)])
+    expect(ctx.treasury.state()).toBe('depleted')
+
+    const result = await execute('paid_action')
+    expect(result.isError).toBe(false)
+    expect(ran).toEqual(['paid_action'])
+    // still meters even while disabled
+    expect(ctx.treasury.report().recentExpenses).toHaveLength(1)
+  })
 })
 
 // ── Seam 2: the request gate, proven through the agent loop ──────────────────
@@ -307,5 +323,17 @@ describe('agent/request gate (through the agent loop)', () => {
     expect(adapter.requests.length).toBeGreaterThan(0)
     expect(turnEnd?.data.reason.kind).toBe('completed')
     expect(ctx.treasury.report().recentExpenses.some(expense => expense.category === 'inference')).toBe(true)
+  })
+
+  it('disabled gate (enabled:false) lets DEPLETED inference through and meters it', async () => {
+    const { ctx, adapter } = await loopHarness({
+      treasury: { fixedDailyBurnUsd: 1_000_000 },
+      policy: { enabled: false },
+    })
+    await ctx.treasury.updateBalances([usd(0)])
+    expect(ctx.treasury.state()).toBe('depleted')
+    const { turnEnd } = await runTurn(ctx, 'session-disabled-depleted')
+    expect(adapter.requests.length).toBeGreaterThan(0)
+    expect(turnEnd?.data.reason.kind).toBe('completed')
   })
 })

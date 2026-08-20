@@ -1,20 +1,36 @@
 {
   "name": "dsh-persona",
-  "description": "Persona bundle for xmtp-prod: provides dsh-system-prompt persona via harness seam — proper bundle, not profile patch",
+  "description": "Persona bundle for xmtp-prod: provides dsh-system-prompt persona via harness seam \u2014 proper bundle, not profile patch",
   "version": "0.1.0",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "exports": {
-    ".": { "types": "./lib/index.d.ts", "default": "./lib/index.js" },
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },
-  "files": ["lib","src","cordis.patch.yml"],
+  "files": [
+    "lib",
+    "src",
+    "cordis.patch.yml"
+  ],
   "license": "MIT",
-  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
-  "scripts": { "build": "tsdown", "prepare": "tsdown" },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "prepare": "tsdown"
+  },
   "dependencies": {},
-  "peerDependencies": { "@deepseek-ai/cordis": "==4.0.1" }
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "4.0.1"
+  }
 }

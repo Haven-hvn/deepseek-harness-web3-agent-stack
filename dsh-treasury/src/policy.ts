@@ -17,11 +17,12 @@
  * - `tools/post-execute` — record an admitted call's declared cost once the
  *   call settles (observe-and-record: always delegates).
  *
- * Enforcement activates once the treasury has been funded (any balance row
- * exists — `ctx.treasury.updateBalances(...)`). A pristine, never-funded
- * ledger meters inference but denies nothing: haven-core's zero-value rule
- * ("an empty treasury reads as 100% spent") would otherwise brick a fresh
- * install before its first funding.
+ * Enforcement activates only when `enabled:true` *and* the treasury has
+ * been funded (any balance row exists — `ctx.treasury.updateBalances(...)`).
+ * Until a crypto-paying provider is configured, keep `enabled:false` so a
+ * pristine or even zero-value ledger meters but never denies: haven-core's
+ * zero-value rule ("an empty treasury reads as 100% spent") would otherwise
+ * brick a fresh install before its first funding.
  *
  * @module dsh-treasury/policy
  */
@@ -63,6 +64,13 @@ export class TreasuryDeniedError extends Error {
 /** Plugin configuration. */
 export interface Config {
   /**
+   * Whether the treasury gate enforces at all. Keep `false` until a
+   * crypto-paying provider is configured — the ledger still meters and
+   * reports, but requests and tool calls are never denied. Set `true`
+   * only when inference/tools are paid from on-chain treasury funds.
+   */
+  enabled?: boolean
+  /**
    * Price of one million tokens in µUSD — how request pressure converts to
    * inference cost. Required: there is no universally correct model price;
    * state your deployment's (e.g. `2000000` = $2.00 per 1M tokens).
@@ -85,6 +93,7 @@ export interface Config {
 }
 
 export const Config: z<Config> = z.object({
+  enabled: z.boolean().default(false),
   inferenceUsdPerMillionTokens: z.number().required(),
   toolCosts: z.dict(z.number()).default({}),
   toolCategories: z.dict(z.string()).default({}),
@@ -114,6 +123,7 @@ function firstMatch<T>(rules: readonly Rule<T>[], toolName: string, fallback: T)
 
 /** Validated config with patterns compiled and numbers checked, fail-loud. */
 interface ResolvedPolicyConfig {
+  readonly enabled: boolean
   readonly usdPerMillionTokens: number
   readonly toolCosts: readonly Rule<number>[]
   readonly toolCategories: readonly Rule<BudgetCategory>[]
@@ -148,6 +158,7 @@ function resolvePolicyConfig(config: Config): ResolvedPolicyConfig {
     throw new Error(`treasury-policy: defaultToolCostUsd must be a non-negative integer (µUSD), got ${defaultToolCostUsd}`)
   }
   return {
+    enabled: config.enabled ?? false,
     usdPerMillionTokens,
     toolCosts,
     toolCategories,
@@ -175,7 +186,7 @@ export function apply(ctx: Context, config: Config): void {
     // pressure (tokens the next call will carry) × the configured rate.
     const measurement = ctx.tokenMeter.measure(agent.session)
     const estimatedCostUsd = Math.ceil((measurement.totalTokens * resolved.usdPerMillionTokens) / 1_000_000)
-    if (funded()) {
+    if (resolved.enabled && funded()) {
       const decision = ctx.treasury.authorize('inference', estimatedCostUsd)
       if (!decision.approved) {
         // Short-circuit: no next(), and a middleware throw fails the request
@@ -208,7 +219,7 @@ export function apply(ctx: Context, config: Config): void {
     // to even look at its situation.
     if (costUsd === 0) return next()
     const category = firstMatch(resolved.toolCategories, exec.name, 'tools')
-    if (funded()) {
+    if (resolved.enabled && funded()) {
       const decision = ctx.treasury.authorize(category, costUsd)
       if (!decision.approved) {
         // Short-circuit: no next(). The registry materializes the error

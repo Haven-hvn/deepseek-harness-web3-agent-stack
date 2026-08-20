@@ -6,3 +6,4 @@ packages:
   - dsh-storage-synapse
   - dsh-wallet-tools
   - dsh-persona
+  - dsh-arkiv

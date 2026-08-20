@@ -21,14 +21,15 @@
 #         config:
 #           backend: json
 #
-# ENFORCEMENT ACTIVATION — the policy denies nothing until the treasury is
-# funded (any balance row exists). Fund it from your deployment:
-#   await ctx.treasury.updateBalances([{ chain: 'ethereum', token: 'USDC',
-#     amount: 250_000_000, usdEstimate: 250_000_000 }])  # $250 in µUSD
-#
-# `inferenceUsdPerMillionTokens` is deliberately stated here, not schema-
-# defaulted: it is your model's price. 2000000 µUSD = $2.00 per 1M tokens —
-# override it to match your deployment.
+# ENFORCEMENT ACTIVATION — disabled by default until a crypto-paying
+# provider is configured. The ledger still meters Balances/expenses for
+# accounting, but denies nothing while `enabled:false`. To enforce:
+#   enabled: true
+# Then fund it: await ctx.treasury.updateBalances([{ chain: 'ethereum',
+#   token: 'USDC', amount: 250_000_000, usdEstimate: 250_000_000 }])
+# `inferenceUsdPerMillionTokens` is your model's price (2000000 µUSD =
+# $2.00/1M tokens) — keep 2000000 even while disabled so metering stays
+# accurate once enabled.
 
 - insert:
     - id: treasury
@@ -41,6 +42,7 @@
     - id: treasury-policy
       name: 'dsh-treasury/policy'
       config:
+        enabled: false
         inferenceUsdPerMillionTokens: 2000000
         defaultToolCostUsd: 0
         toolCosts: {}

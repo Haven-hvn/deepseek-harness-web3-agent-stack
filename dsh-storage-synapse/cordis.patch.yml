@@ -19,5 +19,12 @@
     - id: storage-synapse
       name: 'dsh-storage-synapse'
       config:
-        url: 'http://127.0.0.1:5001'
         wallet: agent
+        # Filecoin Onchain Cloud only — no Kubo, no localhost:5001.
+        # Mirrors haven-cli/js-services/synapse-wrapper.ts (filecoin-pin + @filoz/synapse-sdk):
+        # privateKeyRef is a credential NAME (e.g. HAVEN_PRIVATE_KEY), rpcUrl is
+        # wss://api.calibration.node.glif.io/rpc/v1 (calibration) or mainnet equivalent.
+        privateKeyRef: HAVEN_PRIVATE_KEY
+        rpcUrl: wss://api.calibration.node.glif.io/rpc/v1
+        networkMode: calibration
+        withCDN: false

@@ -37,10 +37,10 @@
     "@deepseek-ai/schemastery": "==3.18.1"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "==4.0.1",
-    "@deepseek-ai/dsh-invariants": "==0.1.0-rc.7",
-    "@open-wallet-standard/core": "==1.4.2",
-    "dsh-wallet": "==0.1.0"
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-invariants": "0.1.0-rc.7",
+    "@open-wallet-standard/core": "1.4.2",
+    "dsh-wallet": "workspace:*"
   },
   "peerDependenciesMeta": {
     "@open-wallet-standard/core": {

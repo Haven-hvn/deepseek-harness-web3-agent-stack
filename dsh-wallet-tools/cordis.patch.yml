@@ -1,8 +1,43 @@
 # dsh-wallet-tools bundle: proper harness tools over ctx.wallet seam.
 # Provides wallet_info tool so the model can answer "what is your address/balance/how to fund"
 # via tool call, not static persona. Independent bundle, no patching other plugins.
+# Live RPC: when liveBalances:true (default), get_balances {live:true} hits public
+# RPCs (native fetch, sequential fallback per chain, isolated failures) and
+# wallet_info adds a best-effort probe. Treasury remains durable cache; pass
+# sync:true / refresh:true to persist live results via updateBalances so runway/state recompute.
 - insert:
     - id: wallet-tools
       name: 'dsh-wallet-tools'
       config:
         wallet: agent
+        liveBalances: true
+        rpcTimeoutMs: 6000
+        # chains: defaults to ethereum (publicnode) + filecoin + filecoin-calibration (GLIF).
+        #         Override to add Base/Polygon/etc or replace RPC URLs with a private endpoint:
+        # chains:
+        #   - chain: ethereum
+        #     chainId: 1
+        #     rpcUrls: ["https://ethereum.publicnode.com", "https://eth.meowrpc.com"]
+        #     nativeToken: ETH
+        #     nativeDecimals: 18
+        #     label: Ethereum Mainnet
+        #   - chain: filecoin-calibration
+        #     chainId: 314159
+        #     rpcUrls: ["https://api.calibration.node.glif.io/rpc/v1"]
+        #     nativeToken: tFIL
+        #     nativeDecimals: 18
+        # tokens: defaults to ethereum:USDC + filecoin:USDFC (0x80B98d3a…2F045) + filecoin-calibration:USDFC (0xb30427…4cDf0).
+        #         Override to replace or add ERC-20s:
+        # tokens:
+        #   - chain: ethereum
+        #     token: USDC
+        #     address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+        #     decimals: 6
+        #   - chain: filecoin
+        #     token: USDFC
+        #     address: "0x80B98d3aa09ffff255c3ba4A241111Ff1262F045"
+        #     decimals: 18
+        #   - chain: filecoin-calibration
+        #     token: USDFC
+        #     address: "0xb3042734b608a1B16e9e86B374A3f3e389B4cDf0"
+        #     decimals: 18

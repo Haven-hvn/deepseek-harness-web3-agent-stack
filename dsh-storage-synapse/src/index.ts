@@ -29,7 +29,6 @@ import { basename } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { httpError, resolveFetch } from './synapse.ts'
 import type { Cid, PinStatus } from './synapse.ts'
 import type { SynapsePinnedEvent } from './types.ts'
 
@@ -38,44 +37,91 @@ export type { SynapsePinnedEvent } from './types.ts'
 
 /** Cordis plugin name. */
 export const name = 'storage-synapse'
-/** Signing identity and the tool registry. */
+/** Signing identity, credential resolution for Filecoin key, and the tool registry. */
 export const inject = ['wallet', 'tools']
 
 /** Plugin configuration. */
 export interface Config {
-  /**
-   * Synapse/IPFS node HTTP API base URL. The default is the port of Haven's
-   * default (`http://127.0.0.1:5001`, the standard Kubo API address).
-   */
-  url?: string
-  /**
-   * Configured `dsh-wallet` wallet name that signs every request. Required:
-   * this package authenticates by wallet signature, not by a stored storage
-   * key — there is deliberately no key/credential field here.
-   */
+  /** Configured `dsh-wallet` wallet name that identifies the payer. Required. */
   wallet: string
+  /**
+   * Credential reference for the Filecoin private key (e.g. HAVEN_PRIVATE_KEY).
+   * Resolved via ctx.credentials / process.env — no raw key in config. Required
+   * for Filecoin Synapse (filecoin-pin + @filoz/synapse-sdk) paying USDFC.
+   */
+  privateKeyRef: string
+  /** Filecoin RPC URL (e.g. wss://api.calibration.node.glif.io/rpc/v1). Required. */
+  rpcUrl: string
+  /** Filecoin network: calibration (default) or mainnet. */
+  networkMode?: 'calibration' | 'mainnet'
+  /** Whether to enable the Filecoin CDN for retrievals. */
+  withCDN?: boolean
 }
 
 /** Config schema. */
 export const Config: z<Config> = z.object({
-  url: z.string().default('http://127.0.0.1:5001'),
   wallet: z.string().required(),
+  privateKeyRef: z.string().required(),
+  rpcUrl: z.string().required(),
+  networkMode: z.union(['calibration', 'mainnet']).default('calibration'),
+  withCDN: z.boolean().default(false),
 })
 
 /**
- * The `ctx.synapse` seam: Haven's `StorageAdapter` operation surface over
- * one configured node, with wallet-signed authentication.
+ * The `ctx.synapse` seam: Filecoin Synapse SDK only (haven-cli parity).
+ * No Kubo, no localhost:5001 — uploads go through filecoin-pin paying USDFC.
  */
 export class SynapseRuntime {
-  private readonly url: string
+  private filecoin: import('./synapse.ts').FilecoinBackend | null = null
+  // Gated Filecoin config: only the credential NAME and RPC URL are stored long-term.
+  // The raw private key is resolved per operation via the harness gate (ctx.credentials / env) and never cached.
+  private readonly _privateKeyRef: string
+  private readonly _rpcUrl: string
+  private readonly _networkMode?: 'calibration' | 'mainnet'
+  private readonly _withCDN?: boolean
 
   constructor(
     private readonly ctx: Context,
     private readonly wallet: string,
-    url: string,
+    opts: { privateKeyRef: string; rpcUrl: string; networkMode?: 'calibration' | 'mainnet'; withCDN?: boolean },
   ) {
-    this.url = url.replace(/\/+$/, '')
+    if (!opts.privateKeyRef || !opts.rpcUrl) {
+      throw new Error('dsh-storage-synapse: privateKeyRef+rpcUrl required (Filecoin-only, no Kubo fallback)')
+    }
+    this._privateKeyRef = opts.privateKeyRef
+    this._rpcUrl = opts.rpcUrl
+    this._networkMode = opts.networkMode
+    this._withCDN = opts.withCDN
   }
+
+  private async resolvePrivateKey(): Promise<string> {
+    // Per-operation gate: re-resolve the credential each call (wallet seam contract: consumers re-resolve at each operation and must not cache)
+    const ref = this._privateKeyRef
+    const creds: any = (this.ctx as any).credentials
+    let v: string | undefined
+    if (creds?.get) {
+      try { v = creds.get(ref) as string | undefined } catch {}
+    }
+    if (!v) v = process.env[ref]
+    if (!v) throw new Error(`dsh-storage-synapse: credential ${ref} not found (set ${ref} env or OWS vault) — Filecoin Onchain Cloud requires ${ref} + ${this._rpcUrl}`)
+    return v
+  }
+
+  private async ensureBackend(): Promise<import('./synapse.ts').FilecoinBackend> {
+    if (this.filecoin) return this.filecoin
+    const { FilecoinBackend } = await import('./synapse.ts')
+    const getPrivateKey = () => this.resolvePrivateKey()
+    this.filecoin = new FilecoinBackend({
+      privateKeyRef: this._privateKeyRef,
+      getPrivateKey,
+      rpcUrl: this._rpcUrl,
+      networkMode: this._networkMode,
+      withCDN: this._withCDN,
+    })
+    return this.filecoin
+  }
+
+  private get backend(): 'filecoin' { return 'filecoin' }
 
   /**
    * Store bytes on the node (CIDv1). Storing on the local node also pins
@@ -85,12 +131,8 @@ export class SynapseRuntime {
    * @returns the content identifier.
    */
   async store(data: Uint8Array, signal?: AbortSignal): Promise<{ cid: Cid }> {
-    const formData = new FormData()
-    formData.append('file', new Blob([data as BlobPart]))
-    const response = await this.request('add?cid-version=1', { body: formData, signal })
-    if (!response.ok) throw httpError('add', response)
-    const result = await response.json() as { Hash: string }
-    return { cid: result.Hash }
+    const be = await this.ensureBackend()
+    return be.store(data)
   }
 
   /**
@@ -100,9 +142,8 @@ export class SynapseRuntime {
    * @returns the raw bytes.
    */
   async retrieve(cid: Cid, signal?: AbortSignal): Promise<Uint8Array> {
-    const response = await this.request(`cat?arg=${encodeURIComponent(cid)}`, { signal })
-    if (!response.ok) throw httpError('cat', response)
-    return new Uint8Array(await response.arrayBuffer())
+    const be = await this.ensureBackend()
+    return be.retrieve(cid, signal)
   }
 
   /**
@@ -113,11 +154,10 @@ export class SynapseRuntime {
    * @returns the pin status after the operation.
    */
   async pin(cid: Cid, signal?: AbortSignal): Promise<PinStatus> {
-    const response = await this.request(`pin/add?arg=${encodeURIComponent(cid)}`, { signal })
-    if (!response.ok) throw httpError('pin/add', response)
-    const status: PinStatus = { cid, provider: 'synapse', expiresAt: 0, redundancy: 1 }
+    const be = await this.ensureBackend()
+    const st = await be.pin(cid)
     this.ctx.emit('synapse/pinned', { cid } satisfies SynapsePinnedEvent)
-    return status
+    return st
   }
 
   /**
@@ -129,45 +169,10 @@ export class SynapseRuntime {
    * @returns the pin status (`expiresAt: -1`, `redundancy: 0` when not pinned).
    */
   async checkPin(cid: Cid, signal?: AbortSignal): Promise<PinStatus> {
-    try {
-      const response = await this.request(`pin/ls?arg=${encodeURIComponent(cid)}&type=all`, { signal })
-      if (!response.ok) return { cid, provider: 'synapse', expiresAt: -1, redundancy: 0 }
-      const result = await response.json() as { Keys?: Record<string, { Type: string }> }
-      if (result.Keys?.[cid] !== undefined) {
-        return { cid, provider: 'synapse', expiresAt: 0, redundancy: 1 }
-      }
-      return { cid, provider: 'synapse', expiresAt: -1, redundancy: 0 }
-    } catch {
-      return { cid, provider: 'synapse', expiresAt: -1, redundancy: 0 }
-    }
+    const be = await this.ensureBackend()
+    return be.checkPin(cid)
   }
 
-  /**
-   * One signed POST to the node. The auth headers are minted HERE, per
-   * request: a canonical challenge binds the signature to this operation and
-   * a timestamp, `ctx.wallet.signMessage` runs the resolve→load→sign→drop
-   * pipeline, and the node verifies signature-over-challenge against the
-   * presented address. Nothing persists between requests.
-   */
-  private async request(
-    pathWithQuery: string,
-    options: { body?: FormData; signal?: AbortSignal },
-  ): Promise<Response> {
-    const [path] = pathWithQuery.split('?', 1) as [string]
-    const challenge = `synapse:${path}:${Date.now()}`
-    const { address, signature } = await this.ctx.wallet.signMessage(this.wallet, challenge)
-    const fetchImpl = resolveFetch()
-    return fetchImpl(`${this.url}/api/v0/${pathWithQuery}`, {
-      method: 'POST',
-      ...options.body !== undefined ? { body: options.body } : {},
-      ...options.signal !== undefined ? { signal: options.signal } : {},
-      headers: {
-        'x-synapse-address': address,
-        'x-synapse-challenge': challenge,
-        'x-synapse-signature': signature,
-      },
-    })
-  }
 }
 
 /** JSON-schema of the pin-status value both tools return. */
@@ -194,7 +199,17 @@ function renderStatus(value: PinStatus): { type: 'text'; text: string }[] {
  * @param config - Validated configuration.
  */
 export function apply(ctx: Context, config: Config): void {
-  const synapse = new SynapseRuntime(ctx, config.wallet, config.url ?? 'http://127.0.0.1:5001')
+  // Resolve Filecoin private key for real Synapse SDK when configured (haven-cli parity).
+  // No raw key is in config: privateKeyRef is a credential NAME (e.g. HAVEN_PRIVATE_KEY)
+  // resolved here per-operation-style and immediately handed to the backend.
+  // Filecoin-only: privateKeyRef+rpcUrl required.
+  // Gated: store only the credential NAME and RPC URL; raw key is resolved per operation via the harness gate (like xmtp signatures)
+  const synapse = new SynapseRuntime(ctx, config.wallet, {
+    privateKeyRef: config.privateKeyRef,
+    rpcUrl: config.rpcUrl,
+    networkMode: config.networkMode,
+    withCDN: config.withCDN,
+  })
   ctx.provide('synapse', synapse)
 
   ctx.effect(() => ctx.tools.register(defineTool({

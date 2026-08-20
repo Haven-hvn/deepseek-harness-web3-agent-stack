@@ -41,9 +41,9 @@
     "@deepseek-ai/schemastery": "==3.18.1"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "==4.0.1",
-    "@deepseek-ai/dsh-credentials": "==0.1.0-rc.7",
-    "@deepseek-ai/dsh-invariants": "==0.1.0-rc.7"
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-credentials": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-invariants": "0.1.0-rc.7"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "==4.0.1",
