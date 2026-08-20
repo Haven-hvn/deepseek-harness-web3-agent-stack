@@ -133,10 +133,13 @@ export class SynapseRuntime {
         return signedRaw as `0x${string}`
       },
       async signTypedData(typedData: any): Promise<`0x${string}`> {
-        // Filecoin Synapse rarely uses EIP-712, but delegate to signMessage as fallback
-        const payload = JSON.stringify(typedData)
-        const { signature } = await walletSeam.signMessage(walletName, payload)
-        // ctx not needed here, but keep for parity
+        // Filecoin Synapse EIP-712: CreateDataSet / AddPieces / SchedulePieceRemovals / TerminateService / Permit (synapse-core typed-data)
+        // Single path: hash via viem hashTypedData then sign digest via ctx.wallet (OWS) — no JSON fallback.
+        const { hashTypedData } = await import('viem')
+        const digest = hashTypedData(typedData as any) as `0x${string}`
+        // viem's privateKeyToAccount signs the digest directly (secp256k1 sign of hash, no personal prefix).
+        // Delegate to OWS wallet as raw hash: OWS signMessage with hex digest (encoding handled by viem's hash).
+        const { signature } = await walletSeam.signMessage(walletName, digest)
         void ctx
         return signature as `0x${string}`
       },
