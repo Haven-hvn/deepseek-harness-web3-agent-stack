@@ -5,6 +5,21 @@ set -euo pipefail
 # Builds, tests, starts xmtp-prod (0ddc475555c17970da3bb476f4dfe2ab7f76c9829df42341538b1feb017f90aa / 0xa85dD3FbD8C2c831Ef156036F14638CcFf03b44e, production), spits Convos QR + wallet
 # Usage: bash quickstart.sh  (or: MUSE_SPARK_API_KEY=... bash quickstart.sh)
 
+# Prefer persisted key from bashrc/credentials so a stale shell env doesn't keep an old revoked key
+set +u
+if [ -f "$HOME/.bashrc" ]; then
+  # shellcheck disable=SC1090
+  . "$HOME/.bashrc" 2>/dev/null || true
+fi
+set -u
+if [ -f "$HOME/.dsh/.credentials.yaml" ]; then
+  _CRED_KEY=$(grep -E "MUSE_SPARK_API_KEY" "$HOME/.dsh/.credentials.yaml" 2>/dev/null | awk '{print $2}' | tr -d '"' | head -n1 || true)
+  if [ -n "${_CRED_KEY:-}" ]; then
+    export MUSE_SPARK_API_KEY="$_CRED_KEY"
+  fi
+fi
+unset _CRED_KEY 2>/dev/null || true
+
 if [ -z "${MUSE_SPARK_API_KEY:-}" ]; then
   echo "MUSE_SPARK_API_KEY is required. Get one from Muse Spark and run: MUSE_SPARK_API_KEY=<your-key> bash quickstart.sh" >&2
   exit 1

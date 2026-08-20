@@ -394,47 +394,50 @@ class XmtpChannelRuntime {
 
   /** Route one inbound message (text or attachment) through the conversation's agent and send the reply back. */
   private async deliver(message: XmtpDecodedMessage): Promise<void> {
-    console.log('[xmtp] deliver start', message.conversationId.slice(0,8), String(message.content).slice(0,60))
     const conversationId = message.conversationId
-    const content = await this.resolveAttachmentContent(message)
-    if (content.length === 0) return
-    const agent = (await this.agentFor(conversationId)).agent
-    await agent.whenIdle()
-    const firstSeq = agent.session.seq
-    agent.followup(createUserMessage({
-      content: content as never,
-      source: { kind: 'user' },
-    }))
-    await agent.whenIdle()
-    if (this.stopped) return
-    const { text: reply, images } = lastAssistantContent(agent.session.events, firstSeq)
-    // Ensure conversation handle is fresh (handles GC / group sync edge)
-    try { await this.client?.conversations.sync() } catch {}
-    const conversation = await this.client?.conversations.getConversationById(conversationId)
-    if (!conversation) return
-    // Send images first as attachments (if supported), then text
-    for (const img of images) {
-      try {
-        const ref = img.attachment as { id?: string } & Record<string, unknown>
-        // Try to read bytes back from the attachment store for sending
-        const attachments = (this.ctx as unknown as { attachments?: { readImage: (r: unknown) => Promise<{ data: Uint8Array; mediaType: string; filename?: string }> } }).attachments
-        if (attachments && ref) {
-          try {
-            const stored = await attachments.readImage(ref)
-            const sendAttachment = (conversation as unknown as { sendAttachment?: (a: unknown) => Promise<unknown> }).sendAttachment
-            if (sendAttachment) {
-              await sendAttachment.call(conversation, { mimeType: stored.mediaType, content: stored.data, filename: (stored as { filename?: string }).filename })
-              continue
-            }
-          } catch {}
-        }
-      } catch {}
-    }
-    if (reply !== '') {
-      await conversation.sendText(reply)
-    } else if (images.length === 0) {
-      return
-    }
+    const prev = this.deliveries.get(conversationId) ?? Promise.resolve()
+    const cur = prev.then(async () => {
+      console.log('[xmtp] deliver start', conversationId.slice(0,8), String(message.content).slice(0,60))
+      const content = await this.resolveAttachmentContent(message)
+      if (content.length === 0) return
+      const agent = (await this.agentFor(conversationId)).agent
+      await agent.whenIdle()
+      const firstSeq = agent.session.seq
+      agent.followup(createUserMessage({
+        content: content as never,
+        source: { kind: 'user' },
+      }))
+      await agent.whenIdle()
+      if (this.stopped) return
+      const { text: reply, images } = lastAssistantContent(agent.session.events, firstSeq)
+      try { await this.client?.conversations.sync() } catch {}
+      const conversation = await this.client?.conversations.getConversationById(conversationId)
+      if (!conversation) return
+      for (const img of images) {
+        try {
+          const ref = img.attachment as { id?: string } & Record<string, unknown>
+          const attachments = (this.ctx as unknown as { attachments?: { readImage: (r: unknown) => Promise<{ data: Uint8Array; mediaType: string; filename?: string }> } }).attachments
+          if (attachments && ref) {
+            try {
+              const stored = await attachments.readImage(ref)
+              const sendAttachment = (conversation as unknown as { sendAttachment?: (a: unknown) => Promise<unknown> }).sendAttachment
+              if (sendAttachment) {
+                await sendAttachment.call(conversation, { mimeType: stored.mediaType, content: stored.data, filename: (stored as { filename?: string }).filename })
+                continue
+              }
+            } catch {}
+          }
+        } catch {}
+      }
+      if (reply !== '') {
+        await conversation.sendText(reply)
+      } else if (images.length === 0) {
+        return
+      }
+    })
+    this.deliveries.set(conversationId, cur.catch(() => {}))
+    await cur
+    if (this.deliveries.get(conversationId) === cur) this.deliveries.delete(conversationId)
   }
 
   /** One agent per conversation, created on first message (headless-runner precedent). */
