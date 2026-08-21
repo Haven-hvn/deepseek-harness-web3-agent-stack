@@ -38,7 +38,7 @@ export type { SynapsePinnedEvent } from './types.ts'
 
 /** Cordis plugin name. */
 export const name = 'storage-synapse'
-/** Signing identity (OWS) and the tool registry. Treasury is optional (best-effort). */
+/** Signing identity (OWS) and the tool registry. Treasury is best-effort via ctx.get(). */
 export const inject = ['wallet', 'tools']
 
 /** Plugin configuration — wallet-gated OWS (filecoin-pin 1.3.0 AccountConfig), no privateKeyRef. */
@@ -51,6 +51,12 @@ export interface Config {
   networkMode?: 'calibration' | 'mainnet'
   /** Whether to enable the Filecoin CDN for retrievals. */
   withCDN?: boolean
+  /** Workaround for calibration #615: number of copies (default 1 to avoid 2-copy replication failure). */
+  copies?: number
+  /** Workaround for calibration #615: provider IDs to exclude (e.g. [4,9] flaky primaries). */
+  excludeProviderIds?: number[]
+  /** Workaround for calibration #615: explicit provider IDs to use (overrides auto-selection). */
+  providerIds?: number[]
 }
 
 /** Config schema — no credential fields, only wallet name + public RPC URL. */
@@ -59,6 +65,9 @@ export const Config: z<Config> = z.object({
   rpcUrl: z.string().required(),
   networkMode: z.union(['calibration', 'mainnet']).default('calibration'),
   withCDN: z.boolean().default(false),
+  copies: z.number().step(1).min(1).max(3).default(1),
+  excludeProviderIds: z.array(z.number().step(1).min(0)).default([4, 9]),
+  providerIds: z.array(z.number().step(1).min(0)),
 })
 
 /**
@@ -71,11 +80,14 @@ export class SynapseRuntime {
   private readonly _rpcUrl: string
   private readonly _networkMode?: 'calibration' | 'mainnet' | undefined
   private readonly _withCDN?: boolean | undefined
+  private readonly _copies: number
+  private readonly _excludeProviderIds?: bigint[] | undefined
+  private readonly _providerIds?: bigint[] | undefined
 
   constructor(
     private readonly ctx: Context,
     private readonly wallet: string,
-    opts: { rpcUrl: string; networkMode?: 'calibration' | 'mainnet' | undefined; withCDN?: boolean | undefined },
+    opts: { rpcUrl: string; networkMode?: 'calibration' | 'mainnet' | undefined; withCDN?: boolean | undefined; copies?: number; excludeProviderIds?: number[]; providerIds?: number[] },
   ) {
     if (!opts.rpcUrl) {
       throw new Error('dsh-storage-synapse: rpcUrl required (Filecoin-only, no Kubo fallback)')
@@ -83,12 +95,18 @@ export class SynapseRuntime {
     this._rpcUrl = opts.rpcUrl
     this._networkMode = opts.networkMode
     this._withCDN = opts.withCDN
+    this._copies = opts.copies ?? 1
+    this._excludeProviderIds = opts.excludeProviderIds?.length ? opts.excludeProviderIds.map(n => BigInt(n)) : undefined
+    this._providerIds = opts.providerIds?.length ? opts.providerIds.map(n => BigInt(n)) : undefined
   }
 
   /** Build a viem Account delegating signing to ctx.wallet (OWS vault) — treasury-aware. */
   private async createAccount(): Promise<import('viem').Account> {
     const walletSeam: any = (this.ctx as any).wallet
-    const treasury: any = (this.ctx as any).treasury
+    const treasury: any = (() => {
+      try { return (this.ctx as any).get?.('treasury') } catch {}
+      try { return (this.ctx as any).treasury } catch { return undefined }
+    })()
     if (!walletSeam?.address || typeof walletSeam.signTransaction !== 'function') {
       throw new Error('dsh-storage-synapse: ctx.wallet not mounted or missing signTransaction (needs dsh-wallet + dsh-wallet-ethereum)')
     }
@@ -111,14 +129,23 @@ export class SynapseRuntime {
       },
       async signTransaction(transaction: any): Promise<`0x${string}`> {
         // Treasury pre-check (best-effort, fail fast on DEPLETED) — mirror dsh-erc8004
-        if (treasury?.authorize) {
+        // Treasury gate: respect dormant (unfunded) state — don't block when ledger never funded (haven-core zero-value rule would brick fresh install)
+        if (treasury?.authorize && treasury?.report) {
           try {
-            const decision = treasury.authorize('storage', 5_000)
-            if (decision && decision.authorized === false) {
-              throw new Error(`treasury blocked Filecoin store: ${decision.reason ?? decision.code ?? 'insufficient funds'}`)
+            const rep: any = treasury.report()
+            const hasBalances = Array.isArray(rep?.balances) && rep.balances.length > 0
+            if (!hasBalances) {
+              console.log(`[synapse] treasury dormant (no balances yet) — skipping storage gate`)
+            } else {
+              const decision = treasury.authorize('storage', 5_000)
+              console.log(`[synapse] treasury authorize storage 5000 state=${rep?.state} total=${rep?.totalValueUsd} -> ${decision.approved ? 'approved' : 'DENIED'} ${decision.reason}`)
+              if (decision && (decision as any).approved === false) {
+                throw new Error(`treasury blocked Filecoin store: ${decision.reason ?? (decision as any).code ?? 'insufficient funds'} (state=${rep?.state} total=${rep?.totalValueUsd})`)
+              }
             }
           } catch (e: any) {
             if (e?.message?.includes('treasury blocked')) throw e
+            console.log(`[synapse] treasury authorize check failed open: ${e?.message ?? e}`)
           }
         }
         const serialized = serializeTransaction(transaction)
@@ -155,6 +182,9 @@ export class SynapseRuntime {
       rpcUrl: this._rpcUrl,
       networkMode: this._networkMode,
       withCDN: this._withCDN,
+      copies: this._copies,
+      excludeProviderIds: this._excludeProviderIds,
+      providerIds: this._providerIds,
     })
     return this.filecoin
   }
@@ -169,9 +199,9 @@ export class SynapseRuntime {
    * @param signal - abort signal bounding the request.
    * @returns the content identifier.
    */
-  async store(data: Uint8Array, _signal?: AbortSignal): Promise<{ cid: Cid }> {
+  async store(data: Uint8Array, _signal?: AbortSignal, onProgress?: (event: unknown) => void): Promise<{ cid: Cid }> {
     const be = await this.ensureBackend()
-    return be.store(data)
+    return be.store(data, { signal: _signal, onProgress })
   }
 
   /**
@@ -242,6 +272,9 @@ export function apply(ctx: Context, config: Config): void {
     rpcUrl: config.rpcUrl,
     networkMode: config.networkMode,
     withCDN: config.withCDN,
+    copies: (config as any).copies,
+    excludeProviderIds: (config as any).excludeProviderIds?.length ? (config as any).excludeProviderIds : undefined,
+    providerIds: (config as any).providerIds?.length ? (config as any).providerIds : undefined,
   })
   ctx.provide('synapse', synapse)
 
@@ -256,13 +289,28 @@ export function apply(ctx: Context, config: Config): void {
     },
     output: { schema: PIN_STATUS_SCHEMA, render: (_args, value) => renderStatus(value) },
     async execute(args: { path?: string; cid?: string }, exec): Promise<PinStatus> {
+      console.log(`[synapse_pin] called path=${args.path ?? ''} cid=${args.cid ?? ''}`)
       if ((args.path === undefined) === (args.cid === undefined)) {
         throw new Error('provide exactly one of path or cid')
       }
-      const cid = args.path !== undefined
-        ? (await synapse.store(await readFile(args.path), exec.signal)).cid
-        : args.cid as Cid
-      return synapse.pin(cid, exec.signal)
+      const signal: AbortSignal | undefined = (exec as any)?.signal
+      const onProgress = (event: unknown) => {
+        try { console.log(`[synapse_pin] progress ${JSON.stringify(event)?.slice(0,300)}`) } catch {}
+        try { (exec as any)?.onProgress?.(event); } catch {}
+        try { (synapse as any).ctx?.emit?.('synapse/progress', event as any); } catch {}
+      }
+      try {
+        const cid = args.path !== undefined
+          ? (await synapse.store(await readFile(args.path), signal, onProgress)).cid
+          : args.cid as Cid
+        console.log(`[synapse_pin] store done cid=${cid}, pinning...`)
+        const st = await synapse.pin(cid, signal)
+        console.log(`[synapse_pin] done ${JSON.stringify(st)}`)
+        return st
+      } catch (e: any) {
+        console.log(`[synapse_pin] error ${e?.message ?? e} ${e?.stack?.slice(0,600) ?? ''}`)
+        throw e
+      }
     },
     presentCall: args => ({
       card: 'generic',
@@ -278,7 +326,7 @@ export function apply(ctx: Context, config: Config): void {
       cid: { type: 'string', required: true, description: 'Content identifier to check.' },
     },
     output: { schema: PIN_STATUS_SCHEMA, render: (_args, value) => renderStatus(value) },
-    execute: (args: { cid: string }, exec): Promise<PinStatus> => synapse.checkPin(args.cid, exec.signal),
+    execute: (args: { cid: string }, exec): Promise<PinStatus> => synapse.checkPin(args.cid, (exec as any)?.signal),
     presentCall: args => ({ card: 'generic', title: `Pin status of ${args.cid}`, kind: 'read' }),
   })))
 }

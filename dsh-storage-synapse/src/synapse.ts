@@ -39,6 +39,9 @@ interface FilecoinBackendOpts {
   rpcUrl: string
   networkMode?: 'calibration' | 'mainnet' | undefined
   withCDN?: boolean | undefined
+  copies?: number | undefined
+  excludeProviderIds?: bigint[] | undefined
+  providerIds?: bigint[] | undefined
 }
 
 export class FilecoinBackend {
@@ -60,14 +63,41 @@ export class FilecoinBackend {
     return synapse
   }
 
-  async store(data: Uint8Array): Promise<{ cid: Cid; pieceCid?: string | undefined }> {
+  async store(data: Uint8Array, opts?: { onProgress?: (event: unknown) => void; signal?: AbortSignal }): Promise<{ cid: Cid; pieceCid?: string | undefined }> {
+    console.log(`[synapse] store start bytes=${data.length}`)
     const synapse = await this.ensureSynapse()
+    console.log(`[synapse] synapse ready`)
     const { createUnixfsCarBuilder } = await import('filecoin-pin/core/unixfs')
     const { executeUpload } = await import('filecoin-pin/core/upload')
+    const { CID } = await import('multiformats/cid')
+    const { writeFile, readFile, unlink } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { randomBytes } = await import('node:crypto')
+    const tmpPath = join(tmpdir(), `dsh-pin-${randomBytes(6).toString('hex')}.bin`)
+    await writeFile(tmpPath, data)
     const builder: any = (createUnixfsCarBuilder as any)()
-    const car: any = await builder.addBytes(data)
-    const result: any = await (executeUpload as any)(synapse, car)
-    const cid: string = result?.cid ?? result?.rootCid ?? car?.rootCid ?? ''
+    console.log(`[synapse] building CAR tmp=${tmpPath}`)
+    const car: any = await builder.buildCar(tmpPath)
+    console.log(`[synapse] CAR built rootCid=${car.rootCid} carPath=${car.carPath}`)
+    const carBytes = await readFile(car.carPath)
+    console.log(`[synapse] carBytes=${carBytes.length}`)
+    const rootCid: any = CID.parse(car.rootCid)
+    const log = (lvl: string, ...a: any[]) => { try { console.log(`[synapse:${lvl}]`, ...a) } catch {} }
+    const logger: any = { debug: (...a: any[]) => log('debug', ...a), info: (...a: any[]) => log('info', ...a), warn: (...a: any[]) => log('warn', ...a), error: (...a: any[]) => log('error', ...a) }
+    const uploadOpts: any = {
+      logger,
+      ipniValidation: { enabled: false },
+      ...(opts?.onProgress ? { onProgress: opts.onProgress } : {}),
+      ...(opts?.signal ? { signal: opts.signal } : {}),
+      ...(this.opts.copies !== undefined ? { copies: this.opts.copies } : {}),
+      ...(this.opts.providerIds ? { providerIds: this.opts.providerIds } : {}),
+      ...(this.opts.excludeProviderIds ? { excludeProviderIds: this.opts.excludeProviderIds } : {}),
+    }
+    console.log(`[synapse] executeUpload start copies=${this.opts.copies} exclude=${String(this.opts.excludeProviderIds)}`)
+    let result: any
+    try { result = await (executeUpload as any)(synapse, carBytes, rootCid, uploadOpts); console.log(`[synapse] executeUpload done result=${JSON.stringify(result)?.slice(0,500)}`) } catch (e: any) { console.log(`[synapse] executeUpload error ${e?.message ?? e} ${e?.stack?.slice(0,500) ?? ''}`); throw e } finally { try { await unlink(tmpPath) } catch {} try { await builder.cleanup?.(car?.carPath) } catch {} }
+    const cid: string = car?.rootCid ?? result?.cid ?? result?.rootCid ?? ''
     if (!cid) throw new Error('dsh-storage-synapse: filecoin store returned empty CID')
     const pieceCid: string | undefined = result?.pieceCid ?? result?.piece
     return { cid, pieceCid }

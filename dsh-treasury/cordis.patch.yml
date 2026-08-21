@@ -43,7 +43,7 @@
       name: 'dsh-treasury/policy'
       config:
         enabled: false
-        inferenceUsdPerMillionTokens: 2000000
+        inferenceUsdPerMillionTokens: 0
         defaultToolCostUsd: 0
         toolCosts: {}
         toolCategories: {}

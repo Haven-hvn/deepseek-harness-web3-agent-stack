@@ -120,7 +120,10 @@ export class Erc8004Runtime {
   /** Register tokenURI on the ERC-8004 Identity Registry via wallet-gated signing. Emits erc8004/registered. */
   async register(tokenUri: string): Promise<{ agentId: string; txHash: `0x${string}`; tokenUri: string }> {
     const walletSeam: any = (this.ctx as any).wallet
-    const treasury: any = (this.ctx as any).treasury
+    const treasury: any = (() => {
+      try { return (this.ctx as any).get?.('treasury') } catch {}
+      try { return (this.ctx as any).treasury } catch { return undefined }
+    })()
     if (!walletSeam?.address || typeof walletSeam.signTransaction !== 'function') {
       throw new Error('dsh-erc8004: ctx.wallet not mounted or missing signTransaction')
     }

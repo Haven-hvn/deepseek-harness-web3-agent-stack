@@ -117,6 +117,7 @@ export const DEFAULT_CHAINS: readonly RpcChainConfig[] = [
     chainId: 314159,
     rpcUrls: [
       'https://api.calibration.node.glif.io/rpc/v1',
+      'https://filecoin-calibration.chainup.net/rpc/v1',
     ],
     nativeToken: 'tFIL',
     nativeDecimals: 18,

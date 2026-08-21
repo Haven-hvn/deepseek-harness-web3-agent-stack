@@ -24,6 +24,9 @@
         # OWS wallet-gated (filecoin-pin 1.3.0 AccountConfig): viem Account
         # delegates signTransaction/signMessage to ctx.wallet (OWS vault xmtp-agent)
         # + treasury authorize/recordExpense — no privateKeyRef, no raw key.
-        rpcUrl: wss://api.calibration.node.glif.io/rpc/v1
+        rpcUrl: https://api.calibration.node.glif.io/rpc/v1
         networkMode: calibration
         withCDN: false
+        # filecoin-pin#615 workaround: calibration 2-copy replication fails on flaky primaries 4,9
+        copies: 1
+        excludeProviderIds: [4, 9]

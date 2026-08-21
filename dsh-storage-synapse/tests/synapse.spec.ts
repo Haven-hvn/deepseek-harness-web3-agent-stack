@@ -80,7 +80,7 @@ describe('gated filecoin requests (OWS wallet seam)', () => {
   it('resolves the credential per operation via the harness gate — no raw key in config', async () => {
     const { ctx } = await harness()
     const validated: any = storageSynapse.Config({ wallet: 'agent', rpcUrl: 'wss://api.calibration.node.glif.io/rpc/v1' } as any)
-    expect(Object.keys(validated).sort()).toEqual(['networkMode', 'rpcUrl', 'wallet', 'withCDN'])
+    expect(Object.keys(validated).sort()).toEqual(['copies', 'excludeProviderIds', 'networkMode', 'providerIds', 'rpcUrl', 'wallet', 'withCDN'])
     expect(validated.wallet).toBe('agent')
     expect(validated.rpcUrl).toBe('wss://api.calibration.node.glif.io/rpc/v1')
     expect((validated as any).privateKey).toBeUndefined()
@@ -106,7 +106,7 @@ describe('gated filecoin requests (OWS wallet seam)', () => {
 
   it('configuration carries a wallet NAME only — no key or credential field exists', () => {
     const validated: any = storageSynapse.Config({ wallet: 'agent', rpcUrl: 'wss://api.calibration.node.glif.io/rpc/v1' } as any)
-    expect(Object.keys(validated).sort()).toEqual(['networkMode', 'rpcUrl', 'wallet', 'withCDN'])
+    expect(Object.keys(validated).sort()).toEqual(['copies', 'excludeProviderIds', 'networkMode', 'providerIds', 'rpcUrl', 'wallet', 'withCDN'])
     expect((validated as any).privateKey).toBeUndefined()
     expect((validated as any).secret).toBeUndefined()
   })
