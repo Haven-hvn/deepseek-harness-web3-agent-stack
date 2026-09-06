@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "../.."
+		},
+		{
+			"path": "../../../haven-cli"
+		},
+		{
+			"path": "../../../haven-aol"
+		}
+	],
+	"settings": {}
+}

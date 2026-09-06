@@ -1,0 +1,17 @@
+# dsh-haven-aol bundle: token-gated decryption over the Haven-AOL ICP canister.
+#
+# Gate signatures come from ctx.wallet (OWS vault) per operation via the
+# signGate seam — no private key, no credential ref in config or code.
+# Covers protocol v1 (per-CID), v3 (corpus+epoch), v4 (market-cap drip).
+# Deferred: attestHolding (no SDK wrapper anywhere yet), encrypt-side
+# (IBE-encrypt against @icp-sdk/vetkeys unverified) — see README.
+#
+# install: dsh plugin --profile <name> add /path/to/dsh-haven-aol
+- insert:
+    - id: haven-aol
+      name: 'dsh-haven-aol'
+      config:
+        wallet: agent
+        canisterId: dciac-uaaaa-aaaad-qlzuq-cai
+        icpHost: https://icp-api.io
+        fetchRootKey: false
