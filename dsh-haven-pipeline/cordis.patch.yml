@@ -1,0 +1,15 @@
+# dsh-haven-pipeline bundle: read-only Haven CLI bridge.
+#
+# Exposes haven entity/download/jobs READS as model-facing tools via a thin
+# subprocess bridge (haven ... --json). No signing, no spending, no private
+# key in Node or config. Writes (upload / download cid / jobs run) are
+# deliberately absent — they port natively to ctx.wallet + ctx.synapse +
+# ctx.arkiv in a later phase, never via subprocess.
+#
+# install: dsh plugin --profile <name> add /path/to/dsh-haven-pipeline
+- insert:
+    - id: haven-pipeline
+      name: 'dsh-haven-pipeline'
+      config:
+        havenBin: haven
+        bridgeTimeoutMs: 60000
