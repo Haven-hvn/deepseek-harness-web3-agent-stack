@@ -9,11 +9,12 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { CredentialProvider } from '@deepseek-ai/dsh-credentials'
-import type { CredentialInfo, CredentialRef, ResolvedCredential } from '@deepseek-ai/dsh-credentials'
+import type { CredentialInfo, CredentialKey, CredentialRecord, CredentialRecordEntry, CredentialRecordInfo, CredentialRef, ResolvedCredential } from '@deepseek-ai/dsh-credentials'
 
 /** Seeded in-memory credential source. */
 export class MemoryCredentials extends CredentialProvider {
   private readonly store = new Map<string, string>()
+  private readonly records = new Map<CredentialKey, CredentialRecord>()
 
   constructor(ctx: Context, seed: Record<string, string> = {}) {
     super(ctx)
@@ -50,6 +51,37 @@ export class MemoryCredentials extends CredentialProvider {
     if (this.store.delete(ref)) {
       this.notifyUpdated(ref)
     }
+    return Promise.resolve()
+  }
+
+  override readRecord(key: CredentialKey): Promise<CredentialRecord | undefined> {
+    return Promise.resolve(this.records.get(key))
+  }
+
+  override describeRecord(key: CredentialKey): Promise<CredentialRecordInfo> {
+    const stored = this.records.get(key)
+    return Promise.resolve(stored === undefined
+      ? { configured: false, writable: true }
+      : { configured: true, kind: stored.kind, writable: true })
+  }
+
+  override listRecords(): Promise<readonly CredentialRecordEntry[]> {
+    return Promise.resolve([...this.records].map(([key, record]) => ({ key, kind: record.kind })))
+  }
+
+  override async modifyRecord(
+    key: CredentialKey,
+    mutate: (current: CredentialRecord | undefined) => Promise<CredentialRecord | undefined>,
+  ): Promise<CredentialRecord | undefined> {
+    const current = this.records.get(key)
+    const next = await mutate(current)
+    if (next === undefined) return current
+    this.records.set(key, next)
+    return next
+  }
+
+  override deleteRecord(key: CredentialKey): Promise<void> {
+    this.records.delete(key)
     return Promise.resolve()
   }
 }

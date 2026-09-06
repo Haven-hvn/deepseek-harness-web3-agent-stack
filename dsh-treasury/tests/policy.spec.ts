@@ -14,10 +14,11 @@ import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
-import LlmRuntime, { CallId, createUserMessage, LlmAdapter } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { ToolCallId, createUserMessage, LlmAdapter } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import Storage, { storageBackendServiceKey } from '@deepseek-ai/dsh-storage'
 import * as storageDomain from '@deepseek-ai/dsh-storage-domain'
@@ -44,6 +45,7 @@ async function mountTreasury(ctx: Context, options: {
   ctx.storage.backend.register('memory', backend)
   ctx.provide(storageBackendServiceKey('memory'), backend)
   await ctx.plugin(storageDomain, { backend: 'memory' })
+  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(TokenMeter)
   await ctx.plugin(treasury, options.treasury ?? {})
   await ctx.plugin(treasuryPolicy, {
@@ -86,7 +88,7 @@ describe('tools/pre-execute gate (through the executor)', () => {
     }
     let calls = 0
     const execute = (name: string) => ctx.tools.execute({
-      callId: CallId(`call-${calls += 1}`),
+      callId: ToolCallId(`call-${calls += 1}`),
       name,
       arguments: {},
       signal: testSignal,
@@ -257,8 +259,8 @@ describe('agent/request gate (through the agent loop)', () => {
       source: { kind: 'user' },
     }))
     await agent.whenIdle()
-    const turnEnd = [...agent.session.events].reverse()
-      .find((event): event is SessionEvent<'turn/end'> => event.type === 'turn/end')
+    const turnEnd = agent.session.snapshotEvents()
+      .findLast((event): event is SessionEvent<'turn/end'> => event.type === 'turn/end')
     return { agent, turnEnd }
   }
 

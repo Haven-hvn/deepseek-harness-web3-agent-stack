@@ -30,6 +30,11 @@
 # `inferenceUsdPerMillionTokens` is your model's price (2000000 µUSD =
 # $2.00/1M tokens) — keep 2000000 even while disabled so metering stays
 # accurate once enabled.
+#
+# TOKEN METER PREREQUISITE — the policy prices requests through
+# `ctx.tokenMeter`, which additionally requires the `session-projection` row
+# (present in any profile that runs agents). Without it the meter — and
+# therefore the policy — stays dormant and denies nothing.
 
 - insert:
     - id: treasury

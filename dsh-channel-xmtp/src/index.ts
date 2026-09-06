@@ -30,6 +30,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import type { AgentHandle, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
+import type {} from '@deepseek-ai/dsh-agent-default-model'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
@@ -409,7 +410,7 @@ class XmtpChannelRuntime {
       }))
       await agent.whenIdle()
       if (this.stopped) return
-      const { text: reply, images } = lastAssistantContent(agent.session.events, firstSeq)
+      const { text: reply, images } = lastAssistantContent(agent.session.snapshotEvents(), firstSeq)
       try { await this.client?.conversations.sync() } catch {}
       const conversation = await this.client?.conversations.getConversationById(conversationId)
       if (!conversation) return

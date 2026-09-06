@@ -4,7 +4,7 @@
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { CallId } from '@deepseek-ai/dsh-llm'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import * as erc8004 from '../src/index.ts'
@@ -67,7 +67,7 @@ async function harness() {
   rt.ownerOf = vi.fn(async () => await ctx.wallet.address('agent'))
   let calls = 0
   const execute = (name: string, args: Record<string, unknown>) => ctx.tools.execute({
-    callId: CallId(`call-${++calls}`),
+    callId: ToolCallId(`call-${++calls}`),
     name,
     arguments: args,
     signal: new AbortController().signal,

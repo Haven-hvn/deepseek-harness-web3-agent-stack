@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { CallId } from '@deepseek-ai/dsh-llm'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import * as storageSynapse from '../src/index.ts'
@@ -64,7 +64,7 @@ async function harness() {
   })
   let calls = 0
   const execute = (name: string, args: Record<string, unknown>) => ctx.tools.execute({
-    callId: CallId(`call-${calls += 1}`),
+    callId: ToolCallId(`call-${calls += 1}`),
     name,
     arguments: args,
     signal: testSignal,
