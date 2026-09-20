@@ -66,6 +66,32 @@ export interface OwsSigner {
     index?: number,
     vaultPath?: string,
   ): OwsSignResult
+  /**
+   * Raw secp256k1 sign over a 0x 32-byte digest (no EIP-191 prefix).
+   * Maps to OWS `sign_hash` (`sign_hash_with_api_key` in agent mode).
+   * Optional: older OWS builds expose only signMessage/signTransaction.
+   */
+  signDigest?(
+    wallet: string,
+    chain: string,
+    digestHex: string,
+    passphrase?: string,
+    index?: number,
+    vaultPath?: string,
+  ): OwsSignResult
+  /**
+   * EIP-712 typed-data sign (vault hashes via eip712.rs, EVM-only).
+   * Maps to OWS `sign_typed_data`. Optional until the NAPI wrapper surfaces it.
+   */
+  signTypedData?(
+    wallet: string,
+    chain: string,
+    typedDataJson: string,
+    passphrase?: string,
+    index?: number,
+    address?: string,
+    vaultPath?: string,
+  ): OwsSignResult
 }
 
 /**

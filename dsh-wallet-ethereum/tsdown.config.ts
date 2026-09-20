@@ -6,7 +6,7 @@ import { defineConfig } from 'tsdown'
  * published entry points from source without monorepo context).
  */
 export default defineConfig({
-  entry: ['src/index.ts', 'src/ows.ts', 'src/invariant.ts'],
+  entry: ['src/index.ts', 'src/ows.ts', 'src/raw.ts', 'src/invariant.ts'],
   outDir: 'lib',
   format: ['esm'],
   platform: 'node',

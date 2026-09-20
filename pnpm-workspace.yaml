@@ -8,3 +8,5 @@ packages:
   - dsh-persona
   - dsh-arkiv
   - dsh-erc8004
+  - dsh-haven-pipeline
+  - dsh-haven-aol

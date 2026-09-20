@@ -232,6 +232,17 @@ export class WalletRuntime extends Service {
     return this.sign(name, 'sign-transaction', payload)
   }
 
+  /**
+   * Sign a raw 32-byte digest (no prefix) with one configured wallet.
+   * Requires the chain adapter to implement the optional `signDigest`.
+   * @param name - configured wallet name.
+   * @param digestHex - 0x-prefixed 32-byte digest hex.
+   * @returns the signing address and hex-encoded signature.
+   */
+  signDigest(name: string, digestHex: string): Promise<{ address: WalletAddress; signature: WalletSignature }> {
+    return this.sign(name, 'sign-digest', digestHex)
+  }
+
   /** The shared operation pipeline behind both signing entry points. */
   private async sign(
     name: string,
@@ -240,10 +251,24 @@ export class WalletRuntime extends Service {
   ): Promise<{ address: WalletAddress; signature: WalletSignature }> {
     const { adapter, descriptor, source } = await this.beginOperation(name)
     const { address, keyMaterial } = await adapter.loadKey(source)
-    const signature = operation === 'sign-message'
-      ? await adapter.signMessage(keyMaterial, payload)
-      : await adapter.signTransaction(keyMaterial, payload)
-    // Commit point: the adapter returned. Observers get identity facts only.
+    if (operation === 'sign-message') {
+      const signature = await adapter.signMessage(keyMaterial, payload)
+      // Commit point: the adapter returned. Observers get identity facts only.
+      this.ctx.emit('wallet/signed', { wallet: name, chain: descriptor.chain, operation, address })
+      return { address, signature }
+    }
+    if (operation === 'sign-transaction') {
+      const signature = await adapter.signTransaction(keyMaterial, payload)
+      this.ctx.emit('wallet/signed', { wallet: name, chain: descriptor.chain, operation, address })
+      return { address, signature }
+    }
+    if (typeof adapter.signDigest !== 'function') {
+      throw new WalletError(
+        'chain-unsupported',
+        `no adapter signDigest for chain "${descriptor.chain}" — chain adapter does not expose raw digest signing`,
+      )
+    }
+    const signature = await adapter.signDigest(keyMaterial, payload)
     this.ctx.emit('wallet/signed', { wallet: name, chain: descriptor.chain, operation, address })
     return { address, signature }
   }

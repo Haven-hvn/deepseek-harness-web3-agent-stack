@@ -1,0 +1,33 @@
+{
+  "name": "dsh-haven-pipeline",
+  "description": "Haven CLI read-only bridge for DeepSeek Harness: haven_entity_get / haven_entity_query / haven_download_info / haven_jobs_list via thin subprocess bridge (haven ... --json) — no signing, no spending, no private key",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": { "types": "./lib/index.d.ts", "default": "./lib/index.js" },
+    "./bridge": { "types": "./lib/bridge.d.ts", "default": "./lib/bridge.js" },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": ["lib", "src", "cordis.patch.yml"],
+  "license": "MIT",
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "scripts": { "build": "tsdown", "prepare": "tsdown" },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "=3.18.2"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/dsh-tools": "0.1.2-rc.1"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "=4.0.2",
+    "@deepseek-ai/dsh-tools": "=0.1.2-rc.1",
+    "tsdown": "=0.23.0",
+    "typescript": "=7.0.2",
+    "vitest": "=5.0.0"
+  }
+}

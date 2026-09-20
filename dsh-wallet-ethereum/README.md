@@ -1,10 +1,21 @@
 # dsh-wallet-ethereum
 
-OWS-backed Ethereum signing provider for the [`dsh-wallet`](../dsh-wallet/README.md)
-seam. Implements the `CryptoAdapter` contract (Haven's adapter shape) by
-delegating every cryptographic operation to
-[`@open-wallet-standard/core`](https://www.npmjs.com/package/@open-wallet-standard/core)
-— the Rust core running in-process via NAPI.
+Ethereum signing provider for the [`dsh-wallet`](../dsh-wallet/README.md)
+seam. Implements the `CryptoAdapter` contract (Haven's adapter shape) in two
+custody modes, selected by `provider`:
+
+- **`ows`** (default) — delegates every operation to
+  [`@open-wallet-standard/core`](https://www.npmjs.com/package/@open-wallet-standard/core)
+  — the Rust core running in-process via NAPI. Keys live in the OWS vault,
+  are decrypted per call behind OWS's policy engine, and are zeroized after
+  each operation — they never enter this process. **EIP-191 only**: there is
+  no raw-digest signing on this path.
+- **`raw`** — signs directly from a 0x private key held in the credential
+  store (resolved per operation through the wallet's `keyRef`, never in
+  config). Supports `signDigest`: raw secp256k1 over a 32-byte digest with no
+  EIP-191 prefix — exactly what EIP-712 gates (the Haven-AOL canister, which
+  verifies `ecrecover` over the raw gate digest) require. OWS signatures are
+  rejected there with `#InvalidSignature`.
 
 This is the haven-adapters OWS migration plan
 (`haven-adapters/docs/01-ows-crypto-adapter-migration-plan.md`) realized as a
@@ -50,13 +61,33 @@ Configure a wallet against your OWS vault in the profile's `cordis.patch.yml`:
         keyRef: HAVEN_WALLET_PASSPHRASE  # credential REFERENCE to the passphrase or ows_key_… token
 ```
 
+Raw-key mode (EIP-712 gates) needs no vault and no
+`@open-wallet-standard/core` — the key lives in the process environment under
+the `keyRef` name, and the address derives from the key (the `wallet`
+selector is ignored beyond diagnostics):
+
+```yaml
+- id: wallet
+  config:
+    wallets:
+      agent:
+        chain: evm
+        wallet: agent
+        keyRef: PRIVATE_KEY              # credential REFERENCE — never the key
+- id: wallet-ethereum
+  config:
+    chains: [evm]
+    provider: raw
+```
+
 ## Config
 
 | key | default | meaning |
 |---|---|---|
+| `provider` | `ows` | `ows` (vault, EIP-191 only) or `raw` (private key from credential store, adds `signDigest`) |
 | `chains` | `[evm]` | chain families to register this adapter for |
-| `vaultPath` | OWS default (`~/.ows`) | vault directory root |
-| `accountIndex` | `0` | account index within each wallet's derivation path |
+| `vaultPath` | OWS default (`~/.ows`) | vault directory root (`ows` only) |
+| `accountIndex` | `0` | account index within each wallet's derivation path (`ows` only) |
 
 ## Extension points
 
@@ -64,6 +95,8 @@ Configure a wallet against your OWS vault in the profile's `cordis.patch.yml`:
   `OwsSigner` (set before the plugin mounts; the native import never runs).
 - `OwsEthereumCryptoAdapter` is exported for direct construction in bespoke
   compositions.
+- `RawEthereumCryptoAdapter` (`./raw`) — the raw-key adapter behind
+  `provider: raw`, exported for direct construction and unit testing.
 
 ## Model Experience
 
@@ -74,9 +107,10 @@ KV-cache effect.
 
 - No per-wallet nonce management or same-wallet request serialization —
   matching the OWS concurrency stance; callers coordinate above the seam.
-- EIP-712 typed-data and EIP-7702 authorization signing (OWS `signTypedData`,
-  `signAuthorization`) are not surfaced because the seam contract carries only
-  Haven's message/transaction pair; extend the seam first when a consumer
-  exists.
+- EIP-7702 authorization signing (OWS `signAuthorization`) is not surfaced
+  because the seam contract carries only Haven's message/transaction pair
+  plus raw digests; extend the seam first when a consumer exists.
+- EIP-712 typed-data signing on the `ows` path is unavailable (EIP-191 only);
+  use `provider: raw` (`signDigest`) for EIP-712 gates such as Haven-AOL.
 - The optional-peer range for `@open-wallet-standard/core` is `*` because the
   package tracks a young standard; pin a tested version in your profile.

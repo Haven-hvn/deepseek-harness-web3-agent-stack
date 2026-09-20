@@ -1,11 +1,17 @@
 /**
- * OWS-backed Ethereum wallet provider: implements the `dsh-wallet`
- * `CryptoAdapter` contract (Haven's adapter shape) by delegating every
- * cryptographic operation to Open Wallet Standard bindings. Private keys live
- * in the OWS vault and never enter this process — `keyMaterial` here is a
- * typed *session descriptor* (wallet id, chain, credential, account index),
- * and OWS decrypts, signs, and zeroizes per call behind its own policy
- * engine.
+ * Ethereum wallet provider: implements the `dsh-wallet`
+ * `CryptoAdapter` contract (Haven's adapter shape) in two custody modes,
+ * selected by `provider`:
+ *
+ * - `ows` (default): delegates every operation to Open Wallet Standard
+ *   bindings. Private keys live in the OWS vault and never enter this
+ *   process — `keyMaterial` is a typed *session descriptor*.
+ * - `raw`: signs directly from a 0x private key held in the credential store
+ *   (per-operation resolve→load→sign→drop, never in config). Supports
+ *   `signDigest` — raw secp256k1 over a 32-byte digest, no EIP-191 prefix —
+ *   which is what EIP-712 gates (Haven-AOL canister) verify. OWS `signMessage`
+ *   is EIP-191-only, so its signatures are rejected there with
+ *   `#InvalidSignature`.
  *
  * This realizes the haven-adapters OWS migration plan
  * (`docs/01-ows-crypto-adapter-migration-plan.md`) as a dsh plugin:
@@ -25,9 +31,12 @@ import z from '@deepseek-ai/schemastery'
 import type { CryptoAdapter, WalletAddress, WalletKeySource, WalletSignature } from 'dsh-wallet'
 import { internals, loadOwsSigner } from './ows.ts'
 import type { OwsSigner, OwsWalletInfo } from './ows.ts'
+import { RawEthereumCryptoAdapter } from './raw.ts'
 
 export { internals, loadOwsSigner } from './ows.ts'
 export type { OwsAccountInfo, OwsSignResult, OwsSigner, OwsWalletInfo } from './ows.ts'
+export { RawEthereumCryptoAdapter } from './raw.ts'
+export type { RawKeyContext } from './raw.ts'
 
 /** Cordis plugin name. */
 export const name = 'wallet-ethereum'
@@ -54,6 +63,14 @@ const CHAIN_FAMILY_PREFIXES: Record<string, string> = {
 /** Plugin configuration. */
 export interface Config {
   /**
+   * Signing provider. `ows` (default) delegates to the OWS vault (EIP-191
+   * only — no raw digest signing); `raw` signs from a 0x private key held in
+   * the credential store (supports `signDigest` for EIP-712 gates such as
+   * Haven-AOL). The key itself never appears in config — `keyRef` names the
+   * credential holding it.
+   */
+  provider?: 'ows' | 'raw'
+  /**
    * Chain families to register this OWS adapter for. `evm` is the package's
    * reason to exist; add other families only when your deployment signs on
    * them through the same vault.
@@ -66,6 +83,7 @@ export interface Config {
 }
 
 export const Config: z<Config> = z.object({
+  provider: z.union(['ows', 'raw']).default('ows'),
   chains: z.array(z.string()).default(['evm']),
   vaultPath: z.string(),
   accountIndex: z.number().default(0),
@@ -223,6 +241,42 @@ export class OwsEthereumCryptoAdapter implements CryptoAdapter {
       throw translateOwsError('signTransaction', context.wallet, context.chain, cause)
     }
   }
+
+  /**
+   * Sign a raw 32-byte digest with secp256k1 (no EIP-191 prefix).
+   * Delegates to OWS `signDigest` (`sign_hash`); fails loud when the
+   * OWS build only exposes signMessage/signTransaction.
+   * @param keyMaterial - the {@link OwsKeyContext} minted by this operation's loadKey.
+   * @param digestHex - 0x-prefixed 32-byte digest hex.
+   * @returns the hex-encoded 65-byte signature.
+   */
+  async signDigest(keyMaterial: unknown, digestHex: string): Promise<WalletSignature> {
+    const context = asOwsContext(keyMaterial)
+    if (!/^0x[0-9a-fA-F]{64}$/.test(digestHex)) {
+      throw new Error('dsh-wallet-ethereum: signDigest expects a 0x-prefixed 32-byte digest hex string')
+    }
+    const fn = this.signer.signDigest
+    if (typeof fn !== 'function') {
+      throw new Error(
+        'dsh-wallet-ethereum: OWS build exposes only EIP-191 signMessage — raw digest signing unavailable. '
+        + 'Update @open-wallet-standard/core to a build with signDigest/sign_hash, or use signTypedData when surfaced.',
+      )
+    }
+    try {
+      const result = fn.call(
+        this.signer,
+        context.wallet,
+        context.chain,
+        digestHex,
+        context.credential,
+        context.accountIndex,
+        context.vaultPath,
+      )
+      return result.signature
+    } catch (cause) {
+      throw translateOwsError('signDigest', context.wallet, context.chain, cause)
+    }
+  }
 }
 
 /**
@@ -235,10 +289,13 @@ export class OwsEthereumCryptoAdapter implements CryptoAdapter {
 export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   const chains = [...new Set(config.chains ?? ['evm'])]
   const accountIndex = config.accountIndex ?? 0
+  const provider = config.provider ?? 'ows'
+  if (provider !== 'ows' && provider !== 'raw') {
+    throw new Error(`dsh-wallet-ethereum: provider must be "ows" or "raw", got ${JSON.stringify(provider)}`)
+  }
   if (!Number.isInteger(accountIndex) || accountIndex < 0) {
     throw new Error(`dsh-wallet-ethereum: accountIndex must be a non-negative integer, got ${accountIndex}`)
   }
-  const signer = internals.signer ?? await loadOwsSigner()
   for (const chain of chains) {
     if (CHAIN_FAMILY_PREFIXES[chain] === undefined) {
       throw new Error(
@@ -246,6 +303,18 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
         + `(known: ${Object.keys(CHAIN_FAMILY_PREFIXES).join(', ')})`,
       )
     }
+  }
+  if (provider === 'raw') {
+    // Raw-key path: no OWS import, no vault. The private key resolves per
+    // operation from each wallet's keyRef; the address derives from the key.
+    for (const chain of chains) {
+      const adapter = new RawEthereumCryptoAdapter(chain)
+      ctx.effect(() => ctx.wallet.register(chain, adapter))
+    }
+    return
+  }
+  const signer = internals.signer ?? await loadOwsSigner()
+  for (const chain of chains) {
     const adapter = new OwsEthereumCryptoAdapter(signer, chain, {
       accountIndex,
       ...config.vaultPath === undefined ? {} : { vaultPath: config.vaultPath },
