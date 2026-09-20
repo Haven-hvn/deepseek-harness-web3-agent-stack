@@ -46,9 +46,15 @@ async function harness() {
   const ctx = new Context()
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
+  // Stub wallet (spike stand-in): decrypt tests need an EOA address to reach
+  // the signGate seam, where the unwired default throws AolSigningError.
+  ;(ctx as any).provide('wallet', {
+    address: async () => '0x1111111111111111111111111111111111111111',
+    list: () => [],
+  })
   await ctx.plugin(havenAol, {
     wallet: 'agent',
-    canisterId: 'dciac-uaaaa-aaaad-qlzuq-cai',
+    canisterId: 'gny6k-fqaaa-aaaab-ag3ra-cai',
     icpHost: 'https://icp-api.io',
     fetchRootKey: false,
   })
@@ -144,7 +150,9 @@ describe('gated decrypt', () => {
         eip712VerifyingContract: VERIFIER,
       })
       expect(res.isError).toBe(true)
-      expect(JSON.stringify(res.content)).toContain('AolSigningError')
+      // NOTE: the tool runtime serializes thrown errors as `Error: <message>`,
+      // dropping the class name — assert the stable message substring instead.
+      expect(JSON.stringify(res.content)).toContain('EIP-712 gate signing is unwired')
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
@@ -156,7 +164,7 @@ describe('gated decrypt', () => {
     // (spike stand-in: 65-byte canned signature).
     const { AolRuntime } = await import('../src/aol.ts')
     const rt = new AolRuntime({
-      canisterId: 'dciac-uaaaa-aaaad-qlzuq-cai',
+      canisterId: 'gny6k-fqaaa-aaaab-ag3ra-cai',
       icpHost: 'https://icp-api.io',
       fetchRootKey: false,
       signGate: async () => ('0x' + 'ab'.repeat(65)) as `0x${string}`,

@@ -35,6 +35,8 @@ import {
   parseGateMetadataAny,
   parseGateMetadata,
   parseGateMetadataV3,
+  // NOTE: parseGateMetadataAny dispatches v1/v3 only (SDK metadata.ts) —
+  // v4 is parsed explicitly in gateInfo(). Both are SDK-verbatim parsers.
   parseGateMetadataV4,
   isBondAddress,
   currentEpoch,
@@ -337,7 +339,7 @@ export class AolRuntime {
 
   /** Parse any-version gate metadata into a model-readable summary. Pure, no IO. */
   gateInfo(gateMetadataJson: string): GateSummary {
-    const meta = parseGateMetadataAny(gateMetadataJson) as unknown as
+    const meta = (parseGateMetadataAny(gateMetadataJson) ?? parseGateMetadataV4(gateMetadataJson)) as unknown as
       | { version: 1; cid: string; chain: Chain; tokenAddress: string; threshold: bigint; encryptedAesKey: string }
       | { version: 3; cid: string; chain: Chain; tokenAddress: string; threshold: string; epoch: number; encryptedAesKey: string }
       | { version: 4; cid: string; chain: Chain; tokenAddress: string; threshold: string; epoch: number; marketCapTarget: number; oracleAddress: string; encryptedAesKey: string }

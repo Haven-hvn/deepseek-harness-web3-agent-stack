@@ -1,6 +1,11 @@
 # dsh-haven-aol
 
-Haven-AOL token-gated decryption for DeepSeek Harness: `ctx.aol` plus four model-facing tools over the [`haven-aol`](https://www.npmjs.com/package/haven-aol) TypeScript SDK and the ICP backend canister (mainnet `dciac-uaaaa-aaaad-qlzuq-cai`).
+Haven-AOL token-gated decryption for DeepSeek Harness: `ctx.aol` plus four model-facing tools over the `haven-aol` TypeScript SDK and the ICP backend canister (mainnet `gny6k-fqaaa-aaaab-ag3ra-cai`).
+
+> TEMP: `haven-aol` is not on npm despite its README claim, so `package.json`
+> uses `file:../../haven-aol/packages/typescript` (requires `npm install` +
+> `npm run build` there first for `dist/`). This breaks isolated-bundle
+> installs elsewhere — publish `haven-aol` to npm and revert to `"=0.1.0"`.
 
 ## Tools
 
@@ -19,17 +24,28 @@ Gate denials (`InsufficientBalance`, `MarketCapNotReached {required, actual}` in
 - v1 canister calls use the SDK's own `canister.ts` wrappers.
 - v3/v4 canister calls (`requestDecryptionKeyV3/V4`, `getMarketCap`) are vendored in `src/aol.ts` following the SDK's IDL-factory pattern; record shapes copied from `src/backend/backend.did`. Upstream them to the SDK when convenient.
 
-## The EIP-712 signing spike (blocking live decrypts)
+## The EIP-712 signing spike (resolved via raw-key provider)
 
-The EIP-712 gate signature is the only signing operation. `ctx.wallet.signMessage` is **EIP-191** (personal prefix); the canister verifies `ecrecover` over the **raw EIP-712 digest** (`\x19\x01‖domain‖structHash`). A personal-prefixed signature is rejected with `#InvalidSignature`, and OWS exposes no `signDigest`/`signTypedData`. Until resolved, the `signGate` seam is **unset and every gated call throws `AolSigningError`** — fail-loud, no silently-invalid signature ever produced.
+The EIP-712 gate signature is the only signing operation. `ctx.wallet.signMessage` is **EIP-191** (personal prefix); the canister verifies `ecrecover` over the **raw EIP-712 digest** (`\x19\x01‖domain‖structHash`). A personal-prefixed signature is rejected with `#InvalidSignature`, and OWS exposes no `signDigest`/`signTypedData` through its Node wrapper (see `spike-ows-eip712.mjs`).
 
-To resolve:
+Resolution: skip OWS for the signing wallet — `dsh-wallet-ethereum` with `provider: raw` signs the digest raw via `ctx.wallet.signDigest`, which this plugin already prefers (`runtimeForCall`). No code changes were needed here:
 
-1. Probe OWS `signMessage`'s `encoding` parameter modes: for each mode, sign `TypedDataEncoder.hash(...)` output for a fixture gate request and check `ecrecover` locally.
-2. If a mode yields raw secp256k1, inject `signGate` in `apply()` (wires to `ctx.wallet` + digest computation).
-3. If none does, the fallback is a `signDigest` addition to `dsh-wallet-ethereum` — verify `@open-wallet-standard/core` exposes raw signing first.
+```yaml
+- id: wallet
+  config:
+    wallets:
+      agent: { chain: evm, wallet: agent, keyRef: PRIVATE_KEY }
+- id: wallet-ethereum
+  config: { chains: [evm], provider: raw }
+- id: haven-aol
+  config:
+    wallet: agent
+    canisterId: gny6k-fqaaa-aaaab-ag3ra-cai
+    icpHost: https://icp-api.io
+    fetchRootKey: false
+```
 
-Reads (`aol_gate_info`, `aol_epoch`) and client-side `aol_market_cap` Bond-pin rejection work without the spike.
+Without a wired `signDigest` (default OWS path), the `signGate` seam stays **unset and every gated call throws `AolSigningError`** — fail-loud, no silently-invalid signature ever produced. Reads (`aol_gate_info`, `aol_epoch`) and client-side `aol_market_cap` Bond-pin rejection work without any signer.
 
 ## Config
 
@@ -37,7 +53,7 @@ Reads (`aol_gate_info`, `aol_epoch`) and client-side `aol_market_cap` Bond-pin r
 - id: haven-aol
   config:
     wallet: agent
-    canisterId: dciac-uaaaa-aaaad-qlzuq-cai
+    canisterId: gny6k-fqaaa-aaaab-ag3ra-cai
     icpHost: https://icp-api.io
     fetchRootKey: false   # local replica only — never mainnet
 ```

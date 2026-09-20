@@ -1,4 +1,17 @@
-# The dsh-wallet-ethereum bundle patch: the OWS-backed EVM signing provider.
+# The dsh-wallet-ethereum bundle patch: the EVM signing provider.
+#
+# Two custody modes via `provider` (default `ows`):
+# - `ows`: OWS vault (EIP-191 only — no raw digest signing).
+# - `raw`: private key from the credential store per operation (adds
+#   `signDigest` for EIP-712 gates such as Haven-AOL). No vault, no OWS
+#   native module. The wallet's `keyRef` names the env var holding the key;
+#   the address derives from the key.
+#
+# Raw example (EIP-712 gates):
+#   - id: wallet-ethereum
+#     config:
+#       chains: [evm]
+#       provider: raw
 #
 # This layer inserts ONLY its own row. The wallet seam row (`id: wallet`)
 # belongs to the dsh-wallet bundle — install both:

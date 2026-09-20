@@ -1,6 +1,6 @@
 {
   "name": "dsh-wallet-ethereum",
-  "description": "OWS-backed Ethereum wallet provider for DeepSeek Harness: implements the dsh-wallet CryptoAdapter contract over Open Wallet Standard bindings \u2014 keys live in the OWS vault, signing is per-operation and policy-gated, sign-only (never broadcast)",
+  "description": "Ethereum wallet provider for DeepSeek Harness: dsh-wallet CryptoAdapter in two custody modes - OWS vault (default, EIP-191 only) or raw private key (signDigest for EIP-712 gates such as Haven-AOL)",
   "version": "0.1.0",
   "type": "module",
   "main": "lib/index.js",
@@ -16,7 +16,11 @@
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./src/*": "./src/*",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./raw": {
+      "types": "./lib/raw.d.ts",
+      "default": "./lib/raw.js"
+    }
   },
   "files": [
     "lib",
@@ -34,7 +38,8 @@
     "prepare": "tsdown"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "=3.18.2"
+    "@deepseek-ai/schemastery": "=3.18.2",
+    "ethers": "=6.16.0"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "4.0.2",
@@ -54,6 +59,7 @@
     "dsh-wallet": "workspace:=0.1.0",
     "tsdown": "=0.23.0",
     "typescript": "=7.0.2",
-    "vitest": "=5.0.0"
+    "vitest": "=5.0.0",
+    "ethers": "=6.16.0"
   }
 }

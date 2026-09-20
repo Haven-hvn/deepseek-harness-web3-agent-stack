@@ -76,6 +76,16 @@ export interface CryptoAdapter {
    * @returns the hex-encoded signature or signed payload.
    */
   signTransaction(keyMaterial: unknown, payload: string): Promise<WalletSignature>
+
+  /**
+   * Sign a raw 32-byte digest with secp256k1 WITHOUT any message prefix
+   * (no EIP-191 personal prefix). Optional: adapters that cannot do raw
+   * signing omit it and consumers must fail loud.
+   * @param keyMaterial - opaque material minted by {@link loadKey} in this operation.
+   * @param digestHex - 0x-prefixed 32-byte digest hex.
+   * @returns the hex-encoded 65-byte signature.
+   */
+  signDigest?(keyMaterial: unknown, digestHex: string): Promise<WalletSignature>
 }
 
 /** One configured wallet: which chain family, which provider-scoped wallet, which credential *reference*. */
@@ -113,7 +123,7 @@ export interface WalletSignedEvent {
   /** Chain family. */
   readonly chain: string
   /** Which signing operation completed. */
-  readonly operation: 'sign-message' | 'sign-transaction'
+  readonly operation: 'sign-message' | 'sign-transaction' | 'sign-digest'
   /** Public address that signed. */
   readonly address: WalletAddress
 }

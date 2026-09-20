@@ -1,6 +1,6 @@
 {
   "name": "dsh-haven-aol",
-  "description": "Haven-AOL token-gated decryption for DeepSeek Harness: ctx.aol (aol_decrypt v1/v3/v4 + aol_gate_info + aol_epoch + aol_market_cap over haven-aol TS SDK + ICP canister) — EIP-712 gate signatures via ctx.wallet (OWS), no raw keys",
+  "description": "Haven-AOL token-gated decryption for DeepSeek Harness: ctx.aol (aol_decrypt v1/v3/v4 + aol_gate_info + aol_epoch + aol_market_cap over haven-aol TS SDK + ICP canister) — raw EIP-712 digest signing via ctx.wallet",
   "version": "0.1.0",
   "type": "module",
   "main": "lib/index.js",
@@ -19,7 +19,7 @@
   "scripts": { "build": "tsdown", "prepare": "tsdown" },
   "dependencies": {
     "@deepseek-ai/schemastery": "=3.18.2",
-    "haven-aol": "=0.1.0",
+    "haven-aol": "file:../../haven-aol/packages/typescript",
     "@icp-sdk/core": "^5.4.0",
     "@icp-sdk/vetkeys": "^0.5.0-beta.0",
     "ethers": "=6.16.0"
@@ -31,7 +31,10 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "=4.0.2",
+    "@deepseek-ai/dsh-llm": "=0.1.2-rc.1",
+    "@deepseek-ai/dsh-system-prompt": "=0.1.2-rc.1",
     "@deepseek-ai/dsh-tools": "=0.1.2-rc.1",
+    "@open-wallet-standard/core": "1.4.2",
     "dsh-wallet": "workspace:=0.1.0",
     "tsdown": "=0.23.0",
     "typescript": "=7.0.2",

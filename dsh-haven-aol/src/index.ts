@@ -28,6 +28,8 @@ import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type {} from 'dsh-wallet'
 import { AolRuntime, type Chain } from './aol.ts'
+import type { SignGate } from './aol.ts'
+import { signGateFromTestKey } from './test_signer.ts'
 import type { AolDecryptedEvent } from './types.ts'
 
 export { AolRuntime, HavenAolError, freshNonce, type Chain, type SignGate } from './aol.ts'
@@ -35,8 +37,12 @@ export type { AolDecryptedEvent, AolSigningError } from './types.ts'
 
 /** Cordis plugin name. */
 export const name = 'haven-aol'
-/** Signing identity (OWS, via the signGate seam once wired) and the tool registry. */
-export const inject = ['wallet', 'tools'] as const
+/**
+ * Only the tool registry blocks mounting. The wallet is best-effort via
+ * ctx.get(): reads (gate_info/epoch/market_cap) never sign, and aol_decrypt
+ * fails loud with an actionable error when no wallet is mounted.
+ */
+export const inject = ['tools'] as const
 
 /** Plugin configuration — public endpoints + wallet name only. No secrets. */
 export interface Config {
@@ -56,7 +62,7 @@ export interface Config {
 
 export const Config: z<Config> = z.object({
   wallet: z.string().required(),
-  canisterId: z.string().default('dciac-uaaaa-aaaad-qlzuq-cai'),
+  canisterId: z.string().default('gny6k-fqaaa-aaaab-ag3ra-cai'),
   icpHost: z.string().default('https://icp-api.io'),
   fetchRootKey: z.boolean().default(false),
   eip712ChainId: z.number(),
@@ -65,6 +71,8 @@ export const Config: z<Config> = z.object({
 
 interface WalletSeam {
   address(name: string): Promise<string>
+  /** Vault raw-digest sign (dsh-wallet sign-digest passthrough). Optional until the wallet chain supports it. */
+  signDigest?(name: string, digestHex: string): Promise<{ address: string; signature: string } | string>
 }
 
 function requireWallet(ctx: Context): WalletSeam {
@@ -95,15 +103,43 @@ function renderJson(value: unknown): { type: 'text'; text: string }[] {
  * @param config - Validated configuration.
  */
 export function apply(ctx: Context, config: Config): void {
+  // TEST-ONLY: raw-key EIP-712 digest signer. Never set in production —
+  // production signing must come from a vault-backed signDigest.
+  const testKey = (globalThis.process?.env?.HAVEN_AOL_TEST_PRIVATE_KEY ?? '').trim()
+  let testSignGate: SignGate | undefined
+  if (testKey) {
+    console.warn('[dsh-haven-aol] TEST-ONLY HAVEN_AOL_TEST_PRIVATE_KEY set — raw digest signing enabled')
+    testSignGate = signGateFromTestKey(testKey)
+  }
   const aol = new AolRuntime({
-    canisterId: config.canisterId ?? 'dciac-uaaaa-aaaad-qlzuq-cai',
+    canisterId: config.canisterId ?? 'gny6k-fqaaa-aaaab-ag3ra-cai',
     icpHost: config.icpHost ?? 'https://icp-api.io',
     fetchRootKey: config.fetchRootKey ?? false,
     ...(config.eip712ChainId !== undefined ? { eip712ChainId: BigInt(config.eip712ChainId) } : {}),
     ...(config.eip712VerifyingContract !== undefined ? { eip712VerifyingContract: config.eip712VerifyingContract } : {}),
-    // signGate stays unset: gate signing is fail-loud until the OWS
-    // raw-digest spike resolves (README). Inject it here when wired.
+    ...(testSignGate ? { signGate: testSignGate } : {}),
+    // signGate stays unset otherwise: gate signing is fail-loud until a
+    // vault signDigest (or the TEST-ONLY key above) is available.
   })
+  const baseOpts = {
+    canisterId: config.canisterId ?? 'gny6k-fqaaa-aaaab-ag3ra-cai',
+    icpHost: config.icpHost ?? 'https://icp-api.io',
+    fetchRootKey: config.fetchRootKey ?? false,
+    ...(config.eip712ChainId !== undefined ? { eip712ChainId: BigInt(config.eip712ChainId) } : {}),
+    ...(config.eip712VerifyingContract !== undefined ? { eip712VerifyingContract: config.eip712VerifyingContract } : {}),
+  }
+  /** Per-call runtime: vault signDigest first, TEST-ONLY key fallback, else fail-loud. */
+  function runtimeForCall(wallet: WalletSeam): AolRuntime {
+    if (typeof wallet.signDigest === 'function') {
+      const signGate: SignGate = async (digestHex) => {
+        const res = await wallet.signDigest!(config.wallet, digestHex)
+        const sig = typeof res === 'string' ? res : res.signature
+        return sig as `0x${string}`
+      }
+      return new AolRuntime({ ...baseOpts, signGate })
+    }
+    return aol
+  }
   ctx.provide('aol', aol)
 
   const signalOf = (exec: unknown): AbortSignal | undefined =>
@@ -183,6 +219,7 @@ export function apply(ctx: Context, config: Config): void {
       }
       const wallet = requireWallet(ctx)
       const evmAddress = await wallet.address(config.wallet)
+      const rt = runtimeForCall(wallet)
       let encrypted: Uint8Array
       if (args.path !== undefined) {
         encrypted = await readFile(args.path)
@@ -203,9 +240,9 @@ export function apply(ctx: Context, config: Config): void {
         ...(args.nonce !== undefined ? { nonce: BigInt(args.nonce) } : {}),
       }
       let plaintext: Uint8Array
-      if (summary.version === 1) plaintext = await aol.decryptV1(common as never)
-      else if (summary.version === 3) plaintext = await aol.decryptV3(common as never)
-      else plaintext = await aol.decryptV4(common as never)
+      if (summary.version === 1) plaintext = await rt.decryptV1(common as never)
+      else if (summary.version === 3) plaintext = await rt.decryptV3(common as never)
+      else plaintext = await rt.decryptV4(common as never)
       await writeFile(args.outputPath, plaintext)
       const event: AolDecryptedEvent = {
         version: summary.version, cid: summary.cid, outputPath: args.outputPath, bytes: plaintext.length,
