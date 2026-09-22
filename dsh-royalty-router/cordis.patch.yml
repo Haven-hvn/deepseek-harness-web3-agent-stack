@@ -1,0 +1,25 @@
+# dsh-royalty-router bundle: mint.club graduation advisor + launcher.
+#
+# rr_advise (offline intent + model warnings), rr_venue (live curve-vs-pool
+# quotes), rr_build (launch dry-run: struct, value, approvals, predicted
+# addresses) are free reads. rr_launch (approve → simulate → send),
+# rr_sweep (pending royalties into locked liquidity) and rr_heartbeat
+# (activity stamp) sign per operation through ctx.wallet — no key material
+# in Node or config. Execute tools need dsh-wallet + dsh-wallet-ethereum
+# mounted and a `wallet:` name below; reads work without them.
+#
+# install: dsh plugin --profile <name> add /path/to/dsh-royalty-router
+#
+# Local fork: no config edit needed — export these and the
+# plugin points at the fork (env wins over the config below):
+#   FORK_RPC=http://127.0.0.1:8545 FORK_FACTORY=0x... (else RPC/FACTORY)
+- insert:
+    - id: royalty-router
+      name: 'dsh-royalty-router'
+      config:
+        rpcUrl: https://mainnet.base.org
+        chainId: 8453
+        # factory: 0x...   # required for rr_build / rr_launch; until the
+        #                  # live factory is deployed, point at a local fork
+        # wallet: my-wallet # dsh-wallet name signing rr_launch / rr_sweep /
+        #                  # rr_heartbeat; reads work without it
