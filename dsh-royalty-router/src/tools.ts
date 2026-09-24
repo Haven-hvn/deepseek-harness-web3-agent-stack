@@ -58,32 +58,45 @@ export function assertAddress(value: unknown, field: string): `0x${string}` {
   return value as `0x${string}`;
 }
 
-/** Decimal-string bigint, or an actionable error. */
+/** Decimal-string bigint, or an actionable error. Safe-integer numbers are
+ * accepted too (small values survive JSON losslessly); larger magnitudes
+ * must arrive quoted. */
 export function big(value: unknown, field: string): bigint {
   try {
     if (typeof value === "string" && /^-?\d+$/.test(value.trim())) return BigInt(value.trim());
+    if (typeof value === "number" && Number.isSafeInteger(value)) return BigInt(value);
   } catch { /* fall through to the error below */ }
   throw new Error(`dsh-royalty-router: ${field} must be a decimal-string integer`);
 }
 
-/** Plain number for bps/fee/spacing fields. */
+/** Plain number for bps/fee/spacing fields; decimal-string integers are
+ * accepted too (models burned by the lossless-JSON rule send everything
+ * quoted — rejecting those would trap callers both ways). */
 export function num(value: unknown, field: string): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new Error(`dsh-royalty-router: ${field} must be a number`);
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && /^-?\d+$/.test(value.trim())) {
+    const n = Number(value.trim());
+    if (Number.isSafeInteger(n)) return n;
   }
-  return value;
+  throw new Error(`dsh-royalty-router: ${field} must be a number or decimal-string integer`);
 }
 
-/** Recursively render bigints as decimal strings (Infinity-safe) for tool output. */
+/** Recursively render bigints as decimal strings (Infinity-safe) for tool output.
+ * Mirrors JSON semantics for the rest: `undefined` (and functions/symbols)
+ * are dropped from objects and nulled in arrays — the harness lossless
+ * validator rejects `undefined` anywhere, while `JSON.stringify` would
+ * silently drop it, hiding the mismatch until boot. */
 export function jsonSafe(value: unknown): unknown {
   if (typeof value === "bigint") return value.toString();
   if (typeof value === "number" && !Number.isFinite(value)) {
     return value > 0 ? "infinity" : "-infinity";
   }
-  if (Array.isArray(value)) return value.map(jsonSafe);
+  if (Array.isArray(value)) return value.map((v) => jsonSafe(v) ?? null);
   if (value !== null && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, jsonSafe(v)]),
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, v]) => v !== undefined && typeof v !== "function" && typeof v !== "symbol")
+        .map(([k, v]) => [k, jsonSafe(v)]),
     );
   }
   return value;

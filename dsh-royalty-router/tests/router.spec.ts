@@ -15,8 +15,10 @@ import {
   buildIntent,
   buildTool,
   jsonSafe,
+  num,
   venueTool,
 } from '../src/tools.ts'
+import { assembleSignedTransaction } from '../src/wallet.ts'
 import { resolveDeployment } from '../src/chain.ts'
 
 const WETH = '0x4200000000000000000000000000000000000006'
@@ -112,12 +114,28 @@ describe('input validation', () => {
     expect(() => big('', 'amountIn')).toThrow('decimal-string integer')
     expect(big('  1000  ', 'amountIn')).toBe(1000n)
   })
+
+  it('accepts quoted-or-plain numbers both ways (no caller trap)', () => {
+    expect(num(1500, 'mintRoyaltyBps')).toBe(1500)
+    expect(num('1500', 'mintRoyaltyBps')).toBe(1500)
+    expect(() => num('12.5', 'fee')).toThrow('must be a number')
+    expect(() => num('abc', 'fee')).toThrow('must be a number')
+    expect(big(1000, 'curveMint')).toBe(1000n)
+    expect(big('1000', 'curveMint')).toBe(1000n)
+    expect(() => big(1e21, 'curveMint')).toThrow('decimal-string integer')
+  })
 })
 
 describe('jsonSafe', () => {
   it('renders nested bigints as decimal strings and guards Infinity', () => {
     expect(jsonSafe({ a: 10n, b: [1n, { c: 2n }], d: Infinity, e: 'x' }))
       .toEqual({ a: '10', b: ['1', { c: '2' }], d: 'infinity', e: 'x' })
+  })
+
+  it('drops undefined object values and nulls array holes (harness lossless rule)', () => {
+    expect(jsonSafe({ a: 1, b: undefined, c: { d: undefined, e: 2 } }))
+      .toEqual({ a: 1, c: { e: 2 } })
+    expect(jsonSafe([1, undefined, 2])).toEqual([1, null, 2])
   })
 })
 
@@ -193,5 +211,48 @@ describe('buildIntent', () => {
     const intent = buildIntent({ ...geometricArgs(), mintRoyaltyBps: 500, burnRoyaltyBps: 500 })
     expect(intent.mintRoyaltyBps).toBe(500)
     expect(intent.steps.length).toBeGreaterThan(2)
+  })
+})
+
+describe('assembleSignedTransaction (offline, local secp256k1 only)', () => {
+  it('combines a bare RSV into a signed tx recovering the signer; passes full txs through', async () => {
+    const { keccak256, serializeTransaction } = await import('viem')
+    const { privateKeyToAccount } = await import('viem/accounts')
+    // Well-known Anvil default key #0 (public, worthless, fork-only).
+    const account = privateKeyToAccount(
+      '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80',
+    )
+    const unsigned = {
+      chainId: 8453,
+      to: '0x1111111111111111111111111111111111111111',
+      value: 100n,
+      nonce: 7,
+      gas: 100000n,
+      maxFeePerGas: 1000000000n,
+      maxPriorityFeePerGas: 1000000000n,
+      type: 'eip1559',
+      data: '0x1234',
+    } as const
+    // What OWS returns for the same payload: bare 65-byte RSV.
+    const digest = keccak256(serializeTransaction(unsigned as never))
+    const rsv = await account.sign({ hash: digest })
+    expect(rsv.length).toBe(132)
+    // Byte-identical to viem's own native signing: the strongest possible
+    // assertion (viem's parseTransaction never populates `from`, so compare
+    // bytes and recover explicitly instead).
+    const native = await account.signTransaction(unsigned as never)
+    const assembled = await assembleSignedTransaction(unsigned, rsv)
+    expect(assembled).toBe(native)
+    const { recoverAddress } = await import('viem')
+    await expect(recoverAddress({ hash: digest, signature: rsv as never })).resolves.toBe(account.address)
+    // OWS shape: bare 65-byte RSV as 130 prefix-less hex chars.
+    const assembledBare = await assembleSignedTransaction(unsigned, rsv.slice(2))
+    expect(assembledBare).toBe(native)
+    // Raw-provider shape (already-signed tx) passes through untouched.
+    const signed = await account.signTransaction(unsigned as never)
+    await expect(assembleSignedTransaction(unsigned, signed)).resolves.toBe(signed)
+    // 130 hex chars with an impossible v byte are rejected, not broadcast.
+    await expect(assembleSignedTransaction(unsigned, `${rsv.slice(0, 130)}ff`)).rejects.toThrow('malformed RSV')
+    await expect(assembleSignedTransaction(unsigned, 'not-hex')).rejects.toThrow('non-hex signature')
   })
 })

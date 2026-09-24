@@ -8,7 +8,8 @@
  *
  * Reads never touch this module: only `rr_launch` / `rr_sweep` /
  * `rr_heartbeat` build a signing client through it, and only when a
- * `wallet` name is configured.
+ * `wallet` name is configured. (The plugin declares the wallet seam in
+ * `inject`, so this module is reachable wherever the plugin mounts.)
  *
  * @module dsh-royalty-router/wallet
  */
@@ -45,8 +46,8 @@ export async function createSigningAccount(
     async signTransaction(transaction: any): Promise<`0x${string}`> {
       const { serializeTransaction } = await import("viem");
       const serialized = serializeTransaction(transaction);
-      const { signature: signedRaw } = await walletSeam.signTransaction(walletName, serialized);
-      return signedRaw as `0x${string}`;
+      const { signature } = await walletSeam.signTransaction(walletName, serialized);
+      return assembleSignedTransaction(transaction, signature as string);
     },
     async signTypedData(typedData: any): Promise<`0x${string}`> {
       const { hashTypedData } = await import("viem");
@@ -84,4 +85,41 @@ export function requireWalletName(config: { wallet?: string }): string {
     );
   }
   return config.wallet;
+}
+
+/**
+ * Normalize the provider-dependent `signTransaction` seam result into the
+ * complete signed transaction viem expects callers to broadcast.
+ *
+ * The seam does not standardize this: the `raw` adapter returns a full
+ * signed tx, while OWS returns a bare 65-byte RSV (`0x` + 130 hex chars).
+ * A bare signature handed to `sendRawTransaction` fails node-side with
+ * "invalid string length" — exactly what the first fork rehearsal hit —
+ * so RSV input is combined with the unsigned transaction here. No new
+ * custody code: the signature still comes per operation from `ctx.wallet`.
+ */
+export async function assembleSignedTransaction(
+  transaction: unknown,
+  signature: string,
+): Promise<`0x${string}`> {
+  if (typeof signature !== "string") {
+    throw new Error("dsh-royalty-router: wallet seam returned a non-hex signature");
+  }
+  // OWS returns bare 65-byte RSV as 130 hex chars WITHOUT a 0x prefix;
+  // other providers may return 0x-prefixed RSV or a full signed tx.
+  const hex = signature.startsWith("0x") ? signature.slice(2) : signature;
+  if (!/^[0-9a-fA-F]+$/.test(hex) || hex.length === 0) {
+    throw new Error("dsh-royalty-router: wallet seam returned a non-hex signature");
+  }
+  if (hex.length !== 130) return `0x${hex}` as `0x${string}`;
+  const { serializeTransaction } = await import("viem");
+  const v = parseInt(hex.slice(128, 130), 16);
+  if (!Number.isInteger(v) || v > 28) {
+    throw new Error("dsh-royalty-router: wallet seam returned a malformed RSV signature");
+  }
+  return serializeTransaction(transaction as never, {
+    r: `0x${hex.slice(0, 64)}`,
+    s: `0x${hex.slice(64, 128)}`,
+    yParity: v >= 27 ? v - 27 : v,
+  } as never) as `0x${string}`;
 }

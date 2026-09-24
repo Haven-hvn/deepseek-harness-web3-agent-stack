@@ -5,8 +5,10 @@
 # addresses) are free reads. rr_launch (approve → simulate → send),
 # rr_sweep (pending royalties into locked liquidity) and rr_heartbeat
 # (activity stamp) sign per operation through ctx.wallet — no key material
-# in Node or config. Execute tools need dsh-wallet + dsh-wallet-ethereum
-# mounted and a `wallet:` name below; reads work without them.
+# in Node or config. The plugin injects ['tools', 'wallet'] (Cordis forbids
+# touching undeclared services), so dsh-wallet must be mounted;
+# dsh-wallet-ethereum is additionally required for signing, and execute
+# tools need a `wallet:` name below.
 #
 # install: dsh plugin --profile <name> add /path/to/dsh-royalty-router
 #

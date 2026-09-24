@@ -17,7 +17,9 @@
  * `ctx.wallet` (the dsh-storage-synapse `toAccount` bridge pattern; works
  * with both `ows` and `raw` providers) and need a `wallet` name in config
  * plus `dsh-wallet` + `dsh-wallet-ethereum` mounted. No new custody code:
- * configuration carries names, never keys.
+ * configuration carries names, never keys. The plugin declares
+ * `inject = ['tools', 'wallet']`, so both must be mounted (reads never call
+ * the seam, but Cordis forbids touching undeclared services).
  *
  * @module dsh-royalty-router
  */
@@ -36,11 +38,14 @@ export * from './tools.ts'
 /** Cordis plugin name. */
 export const name = 'royalty-router'
 /**
- * Only the tool registry — reads mount anywhere `tools` exists. Execute
- * tools additionally need `ctx.wallet` at call time and fail actionable
- * without it, so wallet-less profiles keep the advisor reads.
+ * Tool registry plus the wallet seam. Cordis only lets a plugin touch
+ * services it declares, so the wallet must be listed even though only the
+ * execute tools call it — reads never invoke `ctx.wallet`, but the plugin
+ * stays dormant where `dsh-wallet` is not mounted (same shape as
+ * `dsh-storage-synapse`). `dsh-wallet-ethereum` is additionally required
+ * for actual signing.
  */
-export const inject = ['tools'] as const
+export const inject = ['tools', 'wallet'] as const
 
 /** Plugin configuration — RPC endpoint, chain, optional factory. No secrets. */
 export interface Config {
@@ -81,17 +86,17 @@ const curveShape = {
 
 const intentShape = {
   name: { type: 'string', required: true, description: 'Token name.' },
-  symbol: { type: 'string', required: true, description: 'Token symbol (must be free on this chain).' },
+  symbol: { type: 'string', required: true, description: 'Token symbol, must be free on this chain.' },
   reserveToken: { type: 'string', required: true, description: 'mint.club reserve token (0x...).' },
   feeRecipient: { type: 'string', required: true, description: 'LP-fee remainder recipient (0x...).' },
-  curve: { type: 'object', description: 'Geometric curve spec (recommended path; ignored when steps is given).' },
-  steps: { type: 'array', description: 'Explicit [{rangeTo, price}] decimal-string steps (alternative to curve).' },
-  mintRoyaltyBps: { type: 'number', description: 'Mint royalty bps (default 1500; required with explicit steps).' },
-  burnRoyaltyBps: { type: 'number', description: 'Burn royalty bps (default 1500; required with explicit steps).' },
-  curveMint: { type: 'string', description: 'Extra seed tokens minted from the curve (wei, decimal string).' },
-  seed: { type: 'object', description: '{tokens, secondary} decimal-string seed targets.' },
+  curve: { type: 'object', additionalProperties: true, description: 'Geometric curve spec; ignored when steps is given. Standard: {freeRange:"1000000000000000000000", maxSupply:"1000000000000000000000000", startPrice:"100000000000000", endPrice:"1000000000000000"}. All values MUST be decimal strings in quotes (wei); JSON numbers are rejected as lossy.' },
+  steps: { type: 'array', description: 'Explicit [{rangeTo, price}] steps (alternative to curve). rangeTo/price MUST be decimal strings in quotes; JSON numbers are rejected as lossy.' },
+  mintRoyaltyBps: { type: 'number', description: 'Mint royalty bps (default 1500).' },
+  burnRoyaltyBps: { type: 'number', description: 'Burn royalty bps (default 1500).' },
+  curveMint: { type: 'string', description: 'Seed tokens minted from the curve (wei). MUST be a decimal string in quotes.' },
+  seed: { type: 'object', additionalProperties: true, description: '{tokens, secondary} seed targets (wei). Both MUST be decimal strings in quotes.' },
   secondary: { type: 'string', description: "Pool's other side (0x...; default native)." },
-  fee: { type: 'number', description: 'Pool fee pips (default 3000 = 0.3%).' },
+  fee: { type: 'number', description: 'Pool fee pips (default 3000).' },
   tickSpacing: { type: 'number', description: 'Pool tick spacing (default 60).' },
 } as const
 
@@ -119,7 +124,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'rr_advise',
     description:
-      'Advise a mint.club graduation launch: fills the model-recommended intent (15% royalty both ways, 0.3% pool fee, smooth 20-step curve, hard seed) and reports where it departs from the model. Fully offline — no RPC, no key. Call before rr_build to decide whether a launch is worth attempting.',
+      'Advise a mint.club graduation launch: fills the model-recommended intent and reports departures from it. Fully offline — no RPC, no key.',
     parameters: intentShape as never,
     output: { schema: { type: 'object', additionalProperties: true } as never, render: (_a, v) => renderJson(v) as never },
     execute: async (args: never): Promise<unknown> => adviseIntentTool(args as never),
@@ -130,14 +135,14 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'rr_venue',
     description:
-      'Quote one trade on both venues (mint.club curve vs GlueHook Uniswap V4 pool) plus the crossover size above which the curve wins. Live RPC reads only — no signing. amountIn is a decimal string (reserve wei for buy, token wei for sell).',
+      'Quote one trade on both venues (mint.club curve vs pool) plus the crossover size. Reads only. amountIn is a decimal string (reserve wei to buy, token wei to sell).',
     parameters: {
       token: { type: 'string', required: true, description: 'Token address (0x...).' },
       secondary: { type: 'string', description: "Pool's other side (default native)." },
       fee: { type: 'number', description: 'Pool fee pips (default 3000).' },
       tickSpacing: { type: 'number', description: 'Pool tick spacing (default 60).' },
       side: { type: 'string', required: true, description: '"buy" or "sell".' },
-      amountIn: { type: 'string', required: true, description: 'Exact trade size (decimal string).' },
+      amountIn: { type: 'string', required: true, description: 'Exact trade size. MUST be a decimal string in quotes (reserve wei to buy, token wei to sell); JSON numbers are rejected as lossy.' },
     } as never,
     output: { schema: { type: 'object', additionalProperties: true } as never, render: (_a, v) => renderJson(v) as never },
     execute: async (args: never): Promise<unknown> =>
@@ -149,7 +154,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'rr_build',
     description:
-      'Dry-run a graduation launch: full Launch struct, msg.value, required approvals, predicted token and poolId. Reads live creationFee and symbol availability. Requires a factory address in plugin config (until the live factory is deployed, point at a local fork deployment). Signs nothing.',
+      'Dry-run a graduation launch: struct, msg.value, approvals, predicted token and poolId. Needs a factory address. Signs nothing.',
     parameters: intentShape as never,
     output: { schema: { type: 'object', additionalProperties: true } as never, render: (_a, v) => renderJson(v) as never },
     execute: async (args: never): Promise<unknown> =>
@@ -161,7 +166,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'rr_launch',
     description:
-      'Launch a graduation: builds the intent, simulates (a revert costs nothing), then sends the factory launch. Caller must fund the reserve/seed and hold it in the configured wallet. Signs via ctx.wallet — no key material in Node or config. Simulate before sending, and on swapper routes quote a real minOut — the reference swapper trusts the caller-provided floor.',
+      'Launch a graduation: build intent, simulate, then send. Caller funds the reserve/seed in the configured wallet. Signs via ctx.wallet. On swapper routes quote a real minOut.',
     parameters: intentShape as never,
     output: { schema: { type: 'object', additionalProperties: true } as never, render: (_a, v) => renderJson(v) as never },
     execute: async (args: never): Promise<unknown> =>
@@ -173,10 +178,10 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'rr_sweep',
     description:
-      'Sweep one router pending royalties into permanently locked pool liquidity (keeper keeps the bounty). Simulates first so a revert costs nothing. Call when the router is ready (pending clears MIN_CLAIM); otherwise use rr_heartbeat. Signs via ctx.wallet.',
+      'Sweep the pending royalties of one router into locked liquidity. Call when ready (pending clears MIN_CLAIM); else rr_heartbeat. Signs via ctx.wallet.',
     parameters: {
       router: { type: 'string', required: true, description: 'Router address (0x...).' },
-      minOut: { type: 'string', description: 'Swap floor for swapper routes as a decimal string (default "0" — fine on swap-free routes).' },
+      minOut: { type: 'string', description: 'Swap floor for swapper routes. MUST be a decimal string in quotes (default "0").' },
     } as never,
     output: { schema: { type: 'object', additionalProperties: true } as never, render: (_a, v) => renderJson(v) as never },
     execute: async (args: never): Promise<unknown> =>
@@ -188,7 +193,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'rr_heartbeat',
     description:
-      'Stamp activity on a router with nothing worth sweeping so a live token never looks stale. Permissionless and moves no funds, but still sends a transaction — signs via ctx.wallet.',
+      'Stamp activity on a router with nothing worth sweeping. Moves no funds; still sends a tx. Signs via ctx.wallet.',
     parameters: {
       router: { type: 'string', required: true, description: 'Router address (0x...).' },
     } as never,

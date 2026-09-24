@@ -32,7 +32,7 @@ Reads are `presentCall: {kind:'read'}` — free, never gated, never metered. Exe
     # wallet: my-wallet # dsh-wallet name signing rr_launch / rr_sweep / rr_heartbeat
 ```
 
-`inject = ['tools']` only, so the advisor reads mount anywhere. Execute tools additionally need `ctx.wallet` (`dsh-wallet` + `dsh-wallet-ethereum`) and a `wallet:` name — without them they fail actionable and the reads keep working. The plugin holds no secrets: configuration carries names and credential references, signing happens per operation inside `dsh-wallet`. Bigint args arrive as decimal strings and are validated (`0x`-address shape, decimal-integer shape) with actionable errors.
+`inject = ['tools', 'wallet']`, so both must be mounted (same shape as `dsh-storage-synapse` — Cordis forbids touching a service the plugin does not declare). Reads never call the seam, but the plugin stays dormant where `dsh-wallet` is absent; `dsh-wallet-ethereum` is additionally required for signing, and execute tools need a `wallet:` name. The plugin holds no secrets: configuration carries names and credential references, signing happens per operation inside `dsh-wallet`. Bigint args arrive as decimal strings and are validated (`0x`-address shape, decimal-integer shape) with actionable errors.
 
 ## What is deliberately absent (keeper loop)
 
