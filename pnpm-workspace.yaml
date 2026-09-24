@@ -10,3 +10,4 @@ packages:
   - dsh-erc8004
   - dsh-haven-pipeline
   - dsh-haven-aol
+  - dsh-royalty-router
