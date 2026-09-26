@@ -1,0 +1,16 @@
+# Example deployment overlay: aim the generic Prowlarr tools at an arXiv
+# indexer for AI-research monitoring. Nothing here is arXiv-specific code —
+# only configuration. Place in the profile's cordis.patch.yml (or pass with
+# --patch) and restate every key the row needs; a patch replaces `config`
+# wholesale.
+#
+# Find the indexer id with the `research_indexers` tool (or Prowlarr's
+# Indexers page), then pin it here.
+- id: tool-prowlarr
+  config:
+    baseUrl: http://localhost:9696
+    toolPrefix: research          # tools: research_search, research_indexers
+    allowedIndexerIds: [1]        # the arXiv indexer id in your Prowlarr
+    defaultSearchType: search
+    defaultLimit: 50
+    maxLimit: 100

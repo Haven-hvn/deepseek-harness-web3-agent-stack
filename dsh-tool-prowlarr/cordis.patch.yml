@@ -1,0 +1,12 @@
+# The dsh-tool-prowlarr bundle patch: read-only Prowlarr search tools.
+#
+#   dsh plugin --profile <name> add /path/to/dsh-tool-prowlarr
+#
+# Inserts only its own row. Requires the tool registry (`tools`), present in
+# every agent-running profile. The API key falls back to $PROWLARR_API_KEY and
+# the base URL to $PROWLARR_URL; keep the key out of this file.
+- insert:
+    - id: tool-prowlarr
+      name: 'dsh-tool-prowlarr'
+      config:
+        baseUrl: http://localhost:9696
