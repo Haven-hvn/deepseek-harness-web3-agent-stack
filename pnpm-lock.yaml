@@ -39,6 +39,9 @@ importers:
       '@deepseek-ai/dsh-tools':
         specifier: '=0.1.7-rc.2'
         version: 0.1.7-rc.2(ead59e2384682bf741eae1c9eaa56bcd)
+      dsh-exactly-once:
+        specifier: workspace:=0.1.0
+        version: link:../dsh-exactly-once
       dsh-wallet:
         specifier: workspace:=0.1.0
         version: link:../dsh-wallet
@@ -134,6 +137,9 @@ importers:
       '@deepseek-ai/dsh-tools':
         specifier: '=0.1.7-rc.2'
         version: 0.1.7-rc.2(ead59e2384682bf741eae1c9eaa56bcd)
+      dsh-exactly-once:
+        specifier: workspace:=0.1.0
+        version: link:../dsh-exactly-once
       dsh-wallet:
         specifier: workspace:=0.1.0
         version: link:../dsh-wallet
@@ -285,6 +291,9 @@ importers:
       '@deepseek-ai/dsh-tools':
         specifier: '=0.1.7-rc.2'
         version: 0.1.7-rc.2(ead59e2384682bf741eae1c9eaa56bcd)
+      dsh-exactly-once:
+        specifier: workspace:=0.1.0
+        version: link:../dsh-exactly-once
       tsdown:
         specifier: '=0.23.0'
         version: 0.23.0(typescript@7.0.2)
@@ -337,6 +346,9 @@ importers:
       '@deepseek-ai/dsh-tools':
         specifier: '=0.1.7-rc.2'
         version: 0.1.7-rc.2(ead59e2384682bf741eae1c9eaa56bcd)
+      dsh-exactly-once:
+        specifier: workspace:=0.1.0
+        version: link:../dsh-exactly-once
       dsh-wallet:
         specifier: workspace:=0.1.0
         version: link:../dsh-wallet
@@ -374,6 +386,9 @@ importers:
       '@types/node':
         specifier: '=26.6.3'
         version: 26.6.3
+      dsh-exactly-once:
+        specifier: workspace:=0.1.0
+        version: link:../dsh-exactly-once
       tsdown:
         specifier: '=0.23.0'
         version: 0.23.0(typescript@7.0.2)

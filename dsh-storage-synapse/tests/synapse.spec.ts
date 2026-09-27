@@ -155,6 +155,134 @@ describe('synapse_pin through the executor (the harness natively pins)', () => {
   })
 })
 
+describe('exactly-once: content ledger + pin read-back (real runtime path)', () => {
+  interface FakeBackend {
+    stores: Uint8Array[]
+    checks: string[]
+    checkImpl: (cid: string) => Promise<{ cid: string; provider: string; expiresAt: number; redundancy: number }>
+  }
+
+  /** Mount like harness() but stub at the backend layer so the REAL runtime (ledger + hook) runs. */
+  async function ledgerHarness() {
+    const ctx = new Context()
+    await ctx.plugin(MemoryCredentials, { HAVEN_PRIVATE_KEY: '0x' + '11'.repeat(32), AGENT_WALLET_PASSPHRASE: 'hunter2' })
+    const { default: WalletRuntime } = await import('dsh-wallet')
+    await ctx.plugin(WalletRuntime as any, {
+      wallets: { agent: { chain: 'evm', wallet: 'agent-main', keyRef: 'AGENT_WALLET_PASSPHRASE' } },
+    })
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(storageSynapse, {
+      wallet: 'agent',
+      rpcUrl: 'wss://api.calibration.node.glif.io/rpc/v1',
+      networkMode: 'calibration',
+      withCDN: false,
+    } as any)
+    const backend: FakeBackend = {
+      stores: [],
+      checks: [],
+      checkImpl: async (cid: string) => ({ cid, provider: 'filecoin', expiresAt: 0, redundancy: 1 }),
+    }
+    const rt: any = ctx.synapse
+    rt.filecoin = {
+      store: async (data: Uint8Array) => {
+        backend.stores.push(data)
+        return { cid: `bafy-stored-${backend.stores.length}` }
+      },
+      pin: async (cid: string) => ({ cid, provider: 'filecoin', expiresAt: 0, redundancy: 1 }),
+      checkPin: async (cid: string) => {
+        backend.checks.push(cid)
+        return backend.checkImpl(cid)
+      },
+      retrieve: async (cid: string) => new TextEncoder().encode(`bytes-for-${cid}`),
+    }
+    return { ctx, rt, backend }
+  }
+
+  it('stores identical bytes once (deterministic CID, one upload)', async () => {
+    const { rt, backend } = await ledgerHarness()
+    const data = new TextEncoder().encode('same-bytes')
+    const first = await rt.store(data)
+    const second = await rt.store(new TextEncoder().encode('same-bytes'))
+    expect(second).toEqual(first)
+    expect(backend.stores).toHaveLength(1)
+    const third = await rt.store(new TextEncoder().encode('other-bytes'))
+    expect(third.cid).not.toBe(first.cid)
+    expect(backend.stores).toHaveLength(2)
+  })
+
+  it('checkPinTool replays pinned CIDs and proceeds on absent ones', async () => {
+    const { rt, backend } = await ledgerHarness()
+    const prior = { ...storageSynapse.internals }
+    storageSynapse.internals.checkRetries = 1
+    storageSynapse.internals.checkRetryMs = 0
+    try {
+      await expect(rt.checkPinTool({ cid: 'bafypinned' })).resolves.toEqual({
+        kind: 'replay',
+        value: { cid: 'bafypinned', provider: 'filecoin', expiresAt: 0, redundancy: 1 },
+      })
+      backend.checkImpl = async (cid: string) => ({ cid, provider: 'filecoin', expiresAt: -1, redundancy: 0 })
+      await expect(rt.checkPinTool({ cid: 'bafygone' })).resolves.toEqual({ kind: 'proceed' })
+      await expect(rt.checkPinTool({})).resolves.toEqual({ kind: 'unknown' })
+    } finally {
+      storageSynapse.internals.checkRetries = prior.checkRetries
+      storageSynapse.internals.checkRetryMs = prior.checkRetryMs
+    }
+  })
+
+  it('checkPinTool resolves path retries by content hash', async () => {
+    const { rt } = await ledgerHarness()
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-synapse-eo-'))
+    try {
+      const file = join(dir, 'artifact.txt')
+      await writeFile(file, 'pin-me')
+      const stored = await rt.store(new TextEncoder().encode('pin-me'))
+      const replay = await rt.checkPinTool({ path: file })
+      expect(replay.kind).toBe('replay')
+      expect(replay.value.cid).toBe(stored.cid)
+      await writeFile(join(dir, 'other.txt'), 'never-uploaded')
+      await expect(rt.checkPinTool({ path: join(dir, 'other.txt') })).resolves.toEqual({ kind: 'unknown' })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('bounded retries ride out Filecoin false negatives, then proceed', async () => {
+    const { rt, backend } = await ledgerHarness()
+    const prior = { ...storageSynapse.internals }
+    storageSynapse.internals.checkRetries = 3
+    storageSynapse.internals.checkRetryMs = 0
+    try {
+      let calls = 0
+      backend.checkImpl = async (cid: string) => {
+        calls += 1
+        const pinned = calls >= 3
+        return { cid, provider: 'filecoin', expiresAt: pinned ? 0 : -1, redundancy: pinned ? 1 : 0 }
+      }
+      const replay = await rt.checkPinTool({ cid: 'bafyeventual' })
+      expect(replay.kind).toBe('replay')
+      expect(backend.checks).toHaveLength(3)
+      backend.checkImpl = async (cid: string) => ({ cid, provider: 'filecoin', expiresAt: -1, redundancy: 0 })
+      await expect(rt.checkPinTool({ cid: 'bafygone' })).resolves.toEqual({ kind: 'proceed' })
+    } finally {
+      storageSynapse.internals.checkRetries = prior.checkRetries
+      storageSynapse.internals.checkRetryMs = prior.checkRetryMs
+    }
+  })
+
+  it('registers the read-back hook lazily even when the guard mounts last', async () => {
+    const { ctx, rt } = await ledgerHarness()
+    expect((rt as any).hookDisposer).toBeUndefined()
+    const ExactlyOnce = await import('dsh-exactly-once')
+    await ctx.plugin(ExactlyOnce as any, {})
+    await rt.store(new TextEncoder().encode('hook-me'))
+    const guard = ctx.reflect.get('exactlyOnce') as any
+    expect(guard.checks.has('synapse_pin')).toBe(true)
+    rt.unhook()
+    expect(guard.checks.has('synapse_pin')).toBe(false)
+  })
+})
+
 describe('filecoin failures are loud everywhere except checkPin', () => {
   it('store propagates filecoin errors with the operation name', async () => {
     const { ctx } = await harness()

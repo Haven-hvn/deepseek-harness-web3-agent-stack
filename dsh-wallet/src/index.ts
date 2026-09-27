@@ -155,6 +155,7 @@ export class WalletRuntime extends Service {
 
   private readonly adapters = new Map<string, CryptoAdapter>()
   private readonly wallets = new Map<string, ResolvedDescriptor>()
+  private readonly locks = new Map<string, Promise<void>>()
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx, 'wallet')
@@ -241,6 +242,29 @@ export class WalletRuntime extends Service {
    */
   signDigest(name: string, digestHex: string): Promise<{ address: WalletAddress; signature: WalletSignature }> {
     return this.sign(name, 'sign-digest', digestHex)
+  }
+
+  /**
+   * Run one task in the named wallet's exclusive lane: tasks for the same
+   * wallet run strictly in call order, so a fetch-nonce → sign → send
+   * sequence wrapped here cannot interleave with another sender on the
+   * same wallet (no shared-nonce replacement races). Different wallets
+   * proceed independently, and a rejected task never blocks the lane.
+   * Signing stays per-operation inside the task — the lock orders, it
+   * never holds secrets.
+   * @param name - configured wallet name.
+   * @param task - the critical section to run exclusively.
+   * @returns the task's result.
+   */
+  async withLock<T>(name: string, task: () => Promise<T>): Promise<T> {
+    if (!this.wallets.has(name)) {
+      const known = [...this.wallets.keys()].join(', ') || 'none'
+      throw new WalletError('wallet-not-found', `wallet "${name}" is not configured (configured: ${known})`)
+    }
+    const prior = this.locks.get(name) ?? Promise.resolve()
+    const run = prior.then(task)
+    this.locks.set(name, run.then(() => undefined, () => undefined))
+    return run
   }
 
   /** The shared operation pipeline behind both signing entry points. */

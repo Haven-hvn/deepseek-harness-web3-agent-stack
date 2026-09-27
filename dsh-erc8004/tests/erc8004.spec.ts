@@ -220,6 +220,246 @@ describe('erc8004 tools via ToolRuntime (public)', () => {
   })
 })
 
+describe('exactly-once: timeout-after-broadcast + read-back (real register path)', () => {
+  const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
+  const URI = 'ipfs://bafybeihhal5hlbylkibniig6j72wdrm7lr4nf6z47natleh2jkyosrg7di/agent-card.json'
+  const CID = 'bafybeihhal5hlbylkibniig6j72wdrm7lr4nf6z47natleh2jkyosrg7di'
+
+  function minedReceipt(tokenId: bigint): any {
+    return {
+      status: 'success',
+      logs: [{ topics: [TRANSFER_TOPIC, `0x${'0'.repeat(64)}`, `0x${'0'.repeat(64)}`, `0x${tokenId.toString(16).padStart(64, '0')}`] }],
+    }
+  }
+
+  interface FakeChain {
+    sends: string[]
+    nonces: number[]
+    waitImpl: (hash: string) => Promise<any>
+    receiptImpl: (hash: string) => Promise<any>
+    txImpl: (hash: string) => Promise<any>
+  }
+
+  /** Mount like harness() but drive the REAL register() against a scripted chain. */
+  async function chainHarness() {
+    const ctx = new Context()
+    await ctx.plugin(MemoryCredentials, { HAVEN_PRIVATE_KEY: '0x' + 'aa'.repeat(32) })
+    const { default: WalletRuntime } = await import('dsh-wallet')
+    await ctx.plugin(WalletRuntime as any, {
+      wallets: { agent: { chain: 'evm', wallet: 'agent-main', keyRef: 'HAVEN_PRIVATE_KEY' } },
+    })
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    const mockSynapse: any = {
+      store: vi.fn(async (data: Uint8Array) => ({ cid: CID, pieceCid: 'bafkpiece123' })),
+    }
+    ;(ctx as any).synapse = mockSynapse
+    await ctx.plugin(erc8004 as any, {
+      wallet: 'agent',
+      baseRpcUrl: 'https://sepolia.base.org',
+      identityRegistry: '0x8004A818BFB912233c491871b3d84c89A494BD9e',
+      chainId: 84532,
+    })
+    const FIXED_ADDR = '0x44896a716F7b5Ed343C6962b3D56FaA5377Cd052'
+    // @ts-ignore mock
+    ctx.wallet.address = vi.fn(async (name: string) => FIXED_ADDR)
+    // @ts-ignore mock
+    ctx.wallet.list = vi.fn(() => [{ name: 'agent', chain: 'evm', wallet: 'agent-main' }])
+    // @ts-ignore mock signTransaction gate — sign-only, returns signed raw tx
+    ctx.wallet.signTransaction = vi.fn(async (name: string, payload: string) => ({
+      address: FIXED_ADDR,
+      signature: '0xf86c808504a817c80083030d40948004A818BFB912233c491871b3d84c89A494BD9e80801ba0' as any,
+    }))
+    ;(ctx as any).treasury = {
+      authorize: vi.fn(() => ({ authorized: true })),
+      recordExpense: vi.fn(async () => {}),
+      report: vi.fn(() => ({ state: 'FUNDED', totalValueUsd: 1_000_000, dailyBurnUsd: 1000, runwayDays: 30, balances: [], recentExpenses: [] })),
+    }
+    const rt: any = ctx.erc8004
+    rt.tokenURI = vi.fn(async () => URI)
+    rt.ownerOf = vi.fn(async () => await ctx.wallet.address('agent'))
+    const chain: FakeChain = {
+      sends: [],
+      nonces: [],
+      waitImpl: async () => minedReceipt(398n),
+      receiptImpl: async () => minedReceipt(398n),
+      txImpl: async () => null,
+    }
+    const fakePublicClient = {
+      getTransactionCount: async () => {
+        const nonce = chain.nonces.length
+        chain.nonces.push(nonce)
+        return nonce
+      },
+      estimateGas: async () => 200_000n,
+      getGasPrice: async () => 1_000_000_000n,
+      sendRawTransaction: async ({ serializedTransaction }: { serializedTransaction: string }) => {
+        chain.sends.push(serializedTransaction)
+        return `0x${chain.sends.length.toString(16).padStart(64, '0')}` as `0x${string}`
+      },
+      waitForTransactionReceipt: ({ hash }: { hash: string }) => chain.waitImpl(hash),
+      getTransactionReceipt: ({ hash }: { hash: string }) => chain.receiptImpl(hash),
+      getTransaction: ({ hash }: { hash: string }) => chain.txImpl(hash),
+    }
+    rt.backend = { getPublicClient: async () => fakePublicClient }
+    return { ctx, rt, chain, mockSynapse }
+  }
+
+  it('broadcasts once; a repeat after mining reuses the attempt (single tx)', async () => {
+    const { rt, chain } = await chainHarness()
+    const first = await rt.register(URI)
+    expect(first.agentId).toBe('398')
+    expect(chain.sends).toHaveLength(1)
+    const second = await rt.register(URI)
+    expect(second).toEqual(first)
+    expect(chain.sends).toHaveLength(1)
+  })
+
+  it('timeout-after-broadcast resolves to the SAME txHash on retry (single-tx proof)', async () => {
+    const { rt, chain } = await chainHarness()
+    const priorTimeout = erc8004.internals.receiptTimeoutMs
+    erc8004.internals.receiptTimeoutMs = 30
+    try {
+      chain.waitImpl = async () => new Promise<any>(() => {}) // the receipt wait hangs
+      await expect(rt.register(URI)).rejects.toThrow(/no receipt for 0x0+1/)
+      expect(chain.sends).toHaveLength(1)
+      // The chain did mine it; the retry must resolve the recorded
+      // broadcast, never send a second transaction.
+      const retry = await rt.register(URI)
+      expect(retry.txHash).toBe(`0x${(1).toString(16).padStart(64, '0')}`)
+      expect(retry.agentId).toBe('398')
+      expect(chain.sends).toHaveLength(1)
+    } finally {
+      erc8004.internals.receiptTimeoutMs = priorTimeout
+    }
+  })
+
+  it('a dropped broadcast re-sends under a fresh hash', async () => {
+    const { rt, chain } = await chainHarness()
+    const priorTimeout = erc8004.internals.receiptTimeoutMs
+    erc8004.internals.receiptTimeoutMs = 30
+    try {
+      chain.waitImpl = async () => new Promise<any>(() => {})
+      await expect(rt.register(URI)).rejects.toThrow(/no receipt for/)
+      chain.receiptImpl = async () => { throw new Error('unknown transaction') }
+      chain.txImpl = async () => null // neither receipt nor mempool entry: dropped
+      chain.waitImpl = async () => minedReceipt(398n)
+      const retry = await rt.register(URI)
+      expect(chain.sends).toHaveLength(2)
+      expect(retry.txHash).toBe(`0x${(2).toString(16).padStart(64, '0')}`)
+      expect(retry.agentId).toBe('398')
+    } finally {
+      erc8004.internals.receiptTimeoutMs = priorTimeout
+    }
+  })
+
+  it('a pending broadcast never re-sends: the retry waits instead', async () => {
+    const { rt, chain } = await chainHarness()
+    const priorTimeout = erc8004.internals.receiptTimeoutMs
+    erc8004.internals.receiptTimeoutMs = 30
+    try {
+      chain.waitImpl = async () => new Promise<any>(() => {})
+      await expect(rt.register(URI)).rejects.toThrow(/no receipt for/)
+      chain.receiptImpl = async () => null
+      chain.txImpl = async (hash: string) => ({ hash }) // still in the mempool
+      await expect(rt.register(URI)).rejects.toThrow(/still pending/)
+      expect(chain.sends).toHaveLength(1)
+    } finally {
+      erc8004.internals.receiptTimeoutMs = priorTimeout
+    }
+  })
+
+  it('a reverted registration re-sends (no effect committed)', async () => {
+    const { rt, chain } = await chainHarness()
+    const waits = [async () => ({ status: 'reverted', logs: [] }), async () => minedReceipt(398n)]
+    chain.waitImpl = async () => (waits.shift() ?? (async () => minedReceipt(398n)))()
+    await expect(rt.register(URI)).rejects.toThrow(/reverted on-chain/)
+    const retry = await rt.register(URI)
+    expect(chain.sends).toHaveLength(2)
+    expect(retry.agentId).toBe('398')
+  })
+
+  it('concurrent registers for one tokenUri converge on one broadcast', async () => {
+    const { rt, chain } = await chainHarness()
+    const [a, b] = await Promise.all([rt.register(URI), rt.register(URI)])
+    expect(a.txHash).toBe(b.txHash)
+    expect(chain.sends).toHaveLength(1)
+  })
+
+  it('concurrent registers for different URIs serialize broadcasts without deadlock', async () => {
+    const { rt, chain } = await chainHarness()
+    const uriB = 'ipfs://bafyother/agent-card.json'
+    const [a, b] = await Promise.all([rt.register(URI), rt.register(uriB)])
+    expect(a.tokenUri).toBe(URI)
+    expect(b.tokenUri).toBe(uriB)
+    expect(chain.sends).toHaveLength(2)
+    expect(new Set(chain.nonces).size).toBe(2) // one lane: no shared nonce
+  })
+
+  it('checkRegister replays mined registrations and stays silent otherwise', async () => {
+    const { rt } = await chainHarness()
+    await rt.register(URI)
+    await expect(rt.checkRegister({ tokenUri: URI })).resolves.toEqual({
+      kind: 'replay',
+      value: {
+        agentId: '398',
+        tokenUri: URI,
+        txHash: `0x${(1).toString(16).padStart(64, '0')}`,
+        cid: CID,
+      },
+    })
+    await expect(rt.checkRegister({ tokenUri: 'ipfs://bafyunknown/agent-card.json' })).resolves.toEqual({ kind: 'unknown' })
+  })
+
+  it('checkRegister answers build-path retries by deterministic card hash', async () => {
+    const { rt } = await chainHarness()
+    await rt.registerAgent({ name: 'Hooked Agent' })
+    const replay = await rt.checkRegister({ name: 'Hooked Agent' })
+    expect(replay.kind).toBe('replay')
+    expect(replay.value.tokenUri).toContain(CID)
+    await expect(rt.checkRegister({ name: 'Never Registered' })).resolves.toEqual({ kind: 'unknown' })
+  })
+
+  it('checkRegister reports unknown (never proceed) while a broadcast is pending', async () => {
+    const { rt, chain } = await chainHarness()
+    const priorTimeout = erc8004.internals.receiptTimeoutMs
+    erc8004.internals.receiptTimeoutMs = 30
+    try {
+      chain.waitImpl = async () => new Promise<any>(() => {})
+      await expect(rt.register(URI)).rejects.toThrow(/no receipt for/)
+      chain.receiptImpl = async () => null
+      chain.txImpl = async (hash: string) => ({ hash })
+      await expect(rt.checkRegister({ tokenUri: URI })).resolves.toEqual({ kind: 'unknown' })
+      chain.txImpl = async () => null // dropped: re-dispatch is safe
+      await expect(rt.checkRegister({ tokenUri: URI })).resolves.toEqual({ kind: 'proceed' })
+    } finally {
+      erc8004.internals.receiptTimeoutMs = priorTimeout
+    }
+  })
+
+  it('registers the read-back hook lazily even when the guard mounts last', async () => {
+    const { ctx, rt } = await chainHarness()
+    expect((rt as any).hookDisposer).toBeUndefined() // unguarded: nothing registered
+    const ExactlyOnce = await import('dsh-exactly-once')
+    await ctx.plugin(ExactlyOnce as any, {})
+    await rt.register(URI) // first write call hooks up, regardless of mount order
+    const guard = ctx.reflect.get('exactlyOnce') as any
+    expect(guard).toBeDefined()
+    expect(guard.checks.has('erc8004_register')).toBe(true)
+    rt.unhook()
+    expect(guard.checks.has('erc8004_register')).toBe(false)
+  })
+
+  it('registerAgent resumes without re-pin or re-send', async () => {
+    const { rt, chain, mockSynapse } = await chainHarness()
+    const first = await rt.registerAgent({ name: 'Resumable' })
+    const second = await rt.registerAgent({ name: 'Resumable' })
+    expect(second).toEqual(first)
+    expect(mockSynapse.store).toHaveBeenCalledTimes(1)
+    expect(chain.sends).toHaveLength(1)
+  })
+})
+
 describe('persona onboarding', () => {
   it('cordis.patch.yml contains ERC-8004 onboarding FIRST MESSAGE', async () => {
     const { readFile } = await import('node:fs/promises')

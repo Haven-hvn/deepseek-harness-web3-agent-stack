@@ -9,8 +9,9 @@ import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import * as AcquisitionPlugin from '../src/index.ts'
-import { AcquireService } from '../src/acquire.ts'
+import { AcquireService, isDefinitePreQueue, refKeyFor, torrentKeyFor, urlKeyFor } from '../src/acquire.ts'
 import type { AcquireServiceOptions } from '../src/acquire.ts'
+import { AcquisitionError } from '../src/errors.ts'
 import { QBittorrentClient } from '../src/qbittorrent.ts'
 import { TransmissionClient } from '../src/transmission.ts'
 import { resolveConfig } from '../src/index.ts'
@@ -52,6 +53,7 @@ let qbAdds: Buffer[] = []
 let qbTorrents: Array<Record<string, unknown>> = []
 let qbFailOnce403 = false
 let qbAddReply = 'Ok.'
+let qbAddStatus = 200
 
 beforeAll(async () => {
   qb = createServer(async (req, res) => {
@@ -72,7 +74,7 @@ beforeAll(async () => {
     }
     if (req.method === 'POST' && url.pathname === '/api/v2/torrents/add') {
       qbAdds.push(await readBody(req))
-      res.writeHead(200, { 'content-type': 'text/plain' }); res.end(qbAddReply); return
+      res.writeHead(qbAddStatus, { 'content-type': 'text/plain' }); res.end(qbAddReply); return
     }
     if (req.method === 'GET' && url.pathname === '/api/v2/torrents/info') {
       if (qbFailOnce403) {
@@ -101,6 +103,7 @@ afterEach(() => {
   qbTorrents = []
   qbFailOnce403 = false
   qbAddReply = 'Ok.'
+  qbAddStatus = 200
 })
 
 describe('QBittorrentClient', () => {
@@ -384,12 +387,139 @@ describe('AcquireService', () => {
   it('fails over to the next backend on transient errors', async () => {
     trTorrents = [{ hashString: 'abcdef0123456789', status: 4, percentDone: 0.1, error: 0, leftUntilDone: 10 }]
     const dir = tmpRoot()
-    // Nothing listens on port 9: connection refused (transient) on the first backend.
-    const service = new AcquireService(serviceOptions(dir, { qbittorrent: { url: 'http://127.0.0.1:9' } }))
+    // Nothing listens on port 54321: connection refused (the request
+    // provably never arrived) on the first backend. Port 9 would do the
+    // same, but undici rejects it as "bad port" before connecting.
+    const service = new AcquireService(serviceOptions(dir, { qbittorrent: { url: 'http://127.0.0.1:54321' } }))
     const result = await service.submit({ magnet: MAGNET })
     expect(result.backend).toBe('transmission')
     expect(result.state).toBe('downloading')
     expect(trAdds).toHaveLength(1)
+  })
+  it('resubmits resolve by content identity (one backend torrent, one handle)', async () => {
+    qbTorrents = [{ state: 'downloading', progress: 0.4 }]
+    const dir = tmpRoot()
+    const service = new AcquireService(serviceOptions(dir))
+    const first = await service.submit({ magnet: MAGNET, title: 'Film' })
+    expect(first.backend).toBe('qbittorrent')
+    expect(qbAdds).toHaveLength(1)
+    const second = await service.submit({ magnet: MAGNET, title: 'Film' })
+    expect(second.handle).toBe(first.handle)
+    expect(second.state).toBe('downloading')
+    expect(qbAdds).toHaveLength(1)
+  })
+  it('resubmits after completion replay without re-fetching', async () => {
+    routes['/doc2'] = { status: 200, body: '%PDF-1.4 fake-bytes' }
+    const dir = tmpRoot()
+    const service = new AcquireService(serviceOptions(dir))
+    const first = await service.submit({ url: `${filesUrl}/doc2`, title: 'Doc' })
+    expect(first.state).toBe('completed')
+    const second = await service.submit({ url: `${filesUrl}/doc2`, title: 'Doc' })
+    expect(second).toEqual(first)
+  })
+  it('failed records allow a fresh attempt under a new handle', async () => {
+    qbTorrents = [{ state: 'missingFiles', progress: 0.9 }]
+    const dir = tmpRoot()
+    const service = new AcquireService(serviceOptions(dir))
+    const failed = await service.submit({ magnet: MAGNET })
+    expect(failed.state).toBe('failed')
+    qbTorrents = [{ state: 'downloading', progress: 0.2 }]
+    const retry = await service.submit({ magnet: MAGNET })
+    expect(retry.handle).not.toBe(failed.handle)
+    expect(retry.state).toBe('downloading')
+    expect(qbAdds).toHaveLength(2)
+  })
+  it('verifies before failing over: queued-despite-error stays on the first backend', async () => {
+    qbAddStatus = 500 // the add POST landed, the response did not
+    qbTorrents = [{ state: 'downloading', progress: 0.3 }]
+    const dir = tmpRoot()
+    const service = new AcquireService(serviceOptions(dir))
+    const result = await service.submit({ magnet: MAGNET })
+    expect(result.backend).toBe('qbittorrent')
+    expect(result.state).toBe('downloading')
+    expect(qbAdds).toHaveLength(1)
+    expect(trAdds).toHaveLength(0)
+  })
+  it('verifies before failing over: absent-after-error fails over safely', async () => {
+    qbAddStatus = 500
+    qbTorrents = []
+    trTorrents = [{ hashString: 'abcdef0123456789', status: 4, percentDone: 0.1, error: 0, leftUntilDone: 10 }]
+    const dir = tmpRoot()
+    const service = new AcquireService(serviceOptions(dir))
+    const result = await service.submit({ magnet: MAGNET })
+    expect(result.backend).toBe('transmission')
+    expect(result.state).toBe('downloading')
+    expect(trAdds).toHaveLength(1)
+  })
+  it('an unanswerable backend persists an uncertain record instead of double-queueing', async () => {
+    const dir = tmpRoot()
+    let calls = 0
+    const hangingFetch = ((_url: unknown, init?: { signal?: AbortSignal }) => {
+      calls += 1
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+      })
+    }) as unknown as typeof fetch
+    const stuck = new AcquireService(serviceOptions(dir, { fetchFn: hangingFetch, clientTimeoutMs: 100 }))
+    // Submit hangs, then the verify probe hangs too: uncertain, no failover.
+    await expect(stuck.submit({ magnet: MAGNET })).rejects.toThrow(/uncertain/)
+    expect(calls).toBe(2)
+    // A restart recovers through the record: nothing was queued (the
+    // submit never landed), so the resubmit honestly reports missing after
+    // exactly one fresh attempt — the uncertain key never wedges.
+    qbTorrents = []
+    const recovered = new AcquireService(serviceOptions(dir))
+    const retry = await recovered.submit({ magnet: MAGNET })
+    expect(retry.backend).toBe('qbittorrent')
+    expect(retry.state).toBe('missing')
+    expect(qbAdds).toHaveLength(1)
+  })
+  it('skips disabled backends instead of failing', async () => {
+    trTorrents = [{ hashString: 'abcdef0123456789', status: 4, percentDone: 0.1, error: 0, leftUntilDone: 10 }]
+    const dir = tmpRoot()
+    const options = serviceOptions(dir)
+    delete (options as unknown as Record<string, unknown>).qbittorrent
+    const service = new AcquireService(options)
+    const result = await service.submit({ magnet: MAGNET })
+    expect(result.backend).toBe('transmission')
+    expect(result.state).toBe('downloading')
+  })
+  it('checkSubmit replays by content identity and stays silent otherwise', async () => {
+    qbTorrents = [{ state: 'downloading', progress: 0.4 }]
+    const dir = tmpRoot()
+    const service = new AcquireService(serviceOptions(dir))
+    const first = await service.submit({ magnet: MAGNET })
+    await expect(service.checkSubmit({ magnet: MAGNET })).resolves.toEqual({
+      kind: 'replay',
+      value: expect.objectContaining({ handle: first.handle, state: 'downloading' }),
+    })
+    await expect(service.checkSubmit({ magnet: 'magnet:?xt=urn:btih:0000000000000000000000000000000000000000' }))
+      .resolves.toEqual({ kind: 'unknown' })
+    await expect(service.checkSubmit({})).resolves.toEqual({ kind: 'unknown' })
+  })
+  it('content keys identify torrents by infohash and hash URLs/refs (never cleartext)', async () => {
+    expect(torrentKeyFor({ magnet: MAGNET })).toBe('torrent:43f4001de4ab25d521c63684e2b69804193ed9d9')
+    expect(torrentKeyFor({ torrent: new Uint8Array([1]) })).toBeUndefined()
+    expect(torrentKeyFor({ magnet: 'magnet:?xt=urn:other' })).toBeUndefined()
+    const urlKey = urlKeyFor('https://user:pass@example.com/file?sig=abc#frag')
+    expect(urlKey).toMatch(/^url-sha:[0-9a-f]{64}$/)
+    expect(urlKey).not.toContain('pass')
+    expect(urlKeyFor('https://example.com/a')).toBe(urlKeyFor('https://example.com/a#ignored'))
+    expect(refKeyFor('https://prowlarr/1/download?apikey=secret')).toMatch(/^ref-sha:[0-9a-f]{64}$/)
+  })
+  it('classifies pre-queue transport failures for safe failover', () => {
+    const refused = new AcquisitionError('request failed', 'ACQUIRE_BACKEND_ERROR', {
+      cause: new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) }),
+    })
+    expect(isDefinitePreQueue(refused)).toBe(true)
+    const dns = new AcquisitionError('request failed', 'ACQUIRE_BACKEND_ERROR', {
+      cause: Object.assign(new Error('getaddrinfo'), { code: 'ENOTFOUND' }),
+    })
+    expect(isDefinitePreQueue(dns)).toBe(true)
+    expect(isDefinitePreQueue(new AcquisitionError('timed out', 'ACQUIRE_BACKEND_ERROR', {
+      cause: new Error('The operation was aborted due to timeout'),
+    }))).toBe(false)
+    expect(isDefinitePreQueue(new AcquisitionError('boom', 'ACQUIRE_BACKEND_ERROR'))).toBe(false)
   })
   it('validates sources and handles, and records backend failures', async () => {
     const dir = tmpRoot()

@@ -13,9 +13,13 @@
  * @module dsh-erc8004
  */
 
+import { createHash } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+// Type-only: the read-back hook contract (runtime access to the guard stays
+// optional via `ctx.reflect.get`, so this plugin mounts cleanly unguarded).
+import type { CheckContext, CheckDecision } from 'dsh-exactly-once'
 import { buildDefaultCard, Erc8004Backend, ERC8004_ABI, type AgentCard } from './erc8004.ts'
 import type { Erc8004CardStoredEvent, Erc8004RegisteredEvent } from './types.ts'
 
@@ -24,6 +28,70 @@ export type { Erc8004CardStoredEvent, Erc8004RegisteredEvent } from './types.ts'
 
 export const name = 'erc8004'
 export const inject = ['wallet', 'tools'] as const
+
+/** Test seam: bounds the register receipt wait (production: two minutes). */
+export const internals = { receiptTimeoutMs: 120_000 }
+
+/** One registration attempt, from first broadcast to mined. */
+interface AttemptRecord {
+  readonly tokenUri: string
+  readonly cid: string
+  txHash: `0x${string}` | undefined
+  agentId: string | undefined
+  pieceCid: string | undefined
+  state: 'broadcast' | 'mined' | 'reverted'
+}
+
+/** Attempt key for one deterministic card build (filename shades the tokenUri). */
+function cardKeyFor(card: AgentCard, filename: string): string {
+  return `card:${createHash('sha256').update(`${filename}\n${JSON.stringify(card)}`).digest('hex')}`
+}
+
+/** Root CID out of an `ipfs://<cid>/...` tokenUri (same derivation as the tool). */
+function cidFromTokenUri(tokenUri: string): string {
+  return tokenUri.replace('ipfs://', '').split('/')[0] ?? ''
+}
+
+/** Whether an RPC failure means "unknown transaction" rather than node trouble. */
+function isNotFoundMessage(error: unknown): boolean {
+  return /not.?found|unknown transaction|does not exist|no transaction|not available/i.test(errorMessage(error))
+}
+
+/** Best-effort message out of an arbitrary thrown value. */
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === 'object' && error !== null && 'message' in error && typeof error.message === 'string') {
+    return error.message
+  }
+  return String(error)
+}
+
+/** Race one promise against a deadline (viem-version-proof receipt bound). */
+async function withTimeout<T>(work: Promise<T>, ms: number, onTimeout: () => Error): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(onTimeout()), ms)
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
+
+/** Parse the ERC-721 tokenId out of a registration receipt's Transfer log. */
+function parseAgentId(receipt: { logs?: Array<{ topics?: unknown[] }> } | null | undefined): string {
+  try {
+    const log = receipt?.logs?.find(entry => (entry.topics?.[0] as string | undefined)?.toLowerCase() === TRANSFER_TOPIC)
+    const topic = log?.topics?.[3] as string | undefined
+    if (topic !== undefined) return BigInt(topic).toString(10)
+  } catch {}
+  return '0'
+}
 
 export interface Config {
   wallet: string
@@ -49,6 +117,12 @@ export const Config: z<Config> = z.object({
 
 export class Erc8004Runtime {
   private backend: Erc8004Backend | null = null
+  /** Registration attempts by `uri:<tokenUri>` and `card:<sha256>` keys. */
+  private readonly attempts = new Map<string, AttemptRecord>()
+  /** In-flight receipt waits by txHash: concurrent registers attach, never re-send. */
+  private readonly receipts = new Map<string, Promise<any>>()
+  /** Disposer for the lazily registered exactly-once hook (none while unguarded). */
+  private hookDisposer: (() => void) | undefined
   private readonly _baseRpcUrl: string
   private readonly _identityRegistry: `0x${string}`
   private readonly _chainId: number
@@ -119,6 +193,214 @@ export class Erc8004Runtime {
 
   /** Register tokenURI on the ERC-8004 Identity Registry via wallet-gated signing. Emits erc8004/registered. */
   async register(tokenUri: string): Promise<{ agentId: string; txHash: `0x${string}`; tokenUri: string }> {
+    this.hook()
+    for (;;) {
+      // Plan and broadcast atomically in the wallet lane: concurrent
+      // registers for one tokenUri converge on one record, and the
+      // fetch-nonce → sign → send sequence never interleaves with another
+      // sender on this wallet. The receipt wait stays outside the lane so
+      // one slow chain never stalls the wallet.
+      const action = await this.withWalletLock(() => this.planAndBroadcast(tokenUri))
+      if (action.settled !== undefined) return action.settled
+      const record = action.record
+      if (record.txHash !== undefined && this.receipts.has(record.txHash)) {
+        // A wait is already in flight for this broadcast (ours or a
+        // concurrent register's): attach to it instead of re-sending.
+        return await this.awaitSettle(record)
+      }
+      if (!action.fresh) {
+        // A stale broadcast (an earlier wait ended without settling):
+        // settle it against chain state first. Dropped/reverted loops back
+        // to a fresh broadcast; pending throws instead of double-sending.
+        const resolved = await this.resolveAttempt(record)
+        if (resolved !== undefined) return resolved
+        continue
+      }
+      return await this.awaitSettle(record)
+    }
+  }
+
+  /** Run one task in this runtime's wallet lane (direct where the seam predates `withLock`). */
+  private async withWalletLock<T>(task: () => Promise<T>): Promise<T> {
+    const seam: any = (this.ctx as any).wallet
+    if (seam !== null && seam !== undefined && typeof seam.withLock === 'function') {
+      return await seam.withLock(this.wallet, task)
+    }
+    return await task()
+  }
+
+  /** Ledger plan plus, when needed, the broadcast itself. Runs inside the wallet lane. */
+  private async planAndBroadcast(tokenUri: string): Promise<
+    | { settled: { agentId: string; txHash: `0x${string}`; tokenUri: string } }
+    | { settled: undefined; record: AttemptRecord; fresh: boolean }
+  > {
+    const prior = this.attempts.get(`uri:${tokenUri}`)
+    if (prior !== undefined && prior.state === 'mined' && prior.agentId !== undefined && prior.txHash !== undefined) {
+      return { settled: { agentId: prior.agentId, txHash: prior.txHash, tokenUri: prior.tokenUri } }
+    }
+    if (prior !== undefined && prior.state === 'broadcast' && prior.txHash !== undefined) {
+      return { settled: undefined, record: prior, fresh: false }
+    }
+    // No prior, reverted, or provably dropped (txHash cleared): broadcast.
+    // The prior object is reused so card-path metadata (pieceCid) survives.
+    const record = await this.broadcastRegister(tokenUri, prior)
+    return { settled: undefined, record, fresh: true }
+  }
+
+  /**
+   * Register the `erc8004_register` read-back hook once the guard is
+   * present. Lazy (called from every write path) so registration never
+   * depends on plugin mount order; a no-op while unguarded, idempotent
+   * once registered.
+   */
+  hook(): void {
+    if (this.hookDisposer !== undefined) return
+    const guard = this.ctx.reflect.get('exactlyOnce') as
+      | { registerCheck?: (name: string, fn: (check: CheckContext) => Promise<CheckDecision>) => () => void }
+      | undefined
+    if (guard === null || guard === undefined || typeof guard.registerCheck !== 'function') return
+    this.hookDisposer = guard.registerCheck('erc8004_register', check => this.checkRegister(check.args))
+  }
+
+  /** Retire the read-back hook (plugin disposal). */
+  unhook(): void {
+    try {
+      this.hookDisposer?.()
+    } catch {}
+    this.hookDisposer = undefined
+  }
+
+  /**
+   * Read-back hook for `erc8004_register` repeats after ambiguous
+   * outcomes. A direct `tokenUri` retry resolves by attempt record; a
+   * build-path retry rebuilds the deterministic card (pure plus one
+   * address read — no storage spend) and resolves by card hash.
+   * @param input - the retried tool arguments.
+   * @returns replay when the registration is known-mined, proceed when it
+   *   provably never committed, unknown otherwise.
+   */
+  async checkRegister(input: unknown): Promise<CheckDecision> {
+    this.hook()
+    const args = (input ?? {}) as {
+      tokenUri?: unknown; name?: unknown; description?: unknown; mcpEndpoint?: unknown; filename?: unknown
+    }
+    if (typeof args.tokenUri === 'string' && args.tokenUri !== '') {
+      return await this.checkTokenUri(args.tokenUri)
+    }
+    try {
+      const walletSeam: any = (this.ctx as any).wallet
+      const owner: string = await walletSeam.address(this.wallet)
+      const overrides: Record<string, unknown> = {}
+      if (typeof args.name === 'string') overrides['name'] = args.name
+      if (typeof args.description === 'string') overrides['description'] = args.description
+      if (typeof args.mcpEndpoint === 'string') overrides['mcpEndpoint'] = args.mcpEndpoint
+      const card = this.buildCard(owner, overrides as never)
+      const filename = typeof args.filename === 'string' ? args.filename : 'agent-card.json'
+      const record = this.attempts.get(cardKeyFor(card, filename))
+      if (record === undefined) return { kind: 'unknown' }
+      return await this.checkRecord(record)
+    } catch {
+      return { kind: 'unknown' }
+    }
+  }
+
+  /** Resolve one direct-`tokenUri` attempt to a hook verdict. */
+  private async checkTokenUri(tokenUri: string): Promise<CheckDecision> {
+    const record = this.attempts.get(`uri:${tokenUri}`)
+    if (record === undefined) return { kind: 'unknown' }
+    return await this.checkRecord(record)
+  }
+
+  /** Resolve one attempt record to a hook verdict. */
+  private async checkRecord(record: AttemptRecord): Promise<CheckDecision> {
+    if (record.state === 'mined' && record.agentId !== undefined && record.txHash !== undefined) {
+      return {
+        kind: 'replay',
+        value: {
+          agentId: record.agentId,
+          tokenUri: record.tokenUri,
+          txHash: record.txHash,
+          cid: record.cid,
+          ...(record.pieceCid !== undefined ? { pieceCid: record.pieceCid } : {}),
+        },
+      }
+    }
+    if (record.state === 'reverted' || record.txHash === undefined) return { kind: 'proceed' }
+    try {
+      const resolved = await this.resolveAttempt(record)
+      if (resolved === undefined) return { kind: 'proceed' }
+      return {
+        kind: 'replay',
+        value: {
+          agentId: resolved.agentId,
+          tokenUri: resolved.tokenUri,
+          txHash: resolved.txHash,
+          cid: record.cid,
+          ...(record.pieceCid !== undefined ? { pieceCid: record.pieceCid } : {}),
+        },
+      }
+    } catch {
+      return { kind: 'unknown' }
+    }
+  }
+
+  /**
+   * Settle one prior attempt against chain state.
+   * @param record - the recorded broadcast.
+   * @returns the mined registration, or `undefined` when the broadcast is
+   *   provably gone (dropped or reverted) and re-sending is safe. Throws
+   *   when the chain cannot answer (pending or RPC failure): re-sending
+   *   then would risk a duplicate.
+   */
+  private async resolveAttempt(record: AttemptRecord): Promise<{ agentId: string; txHash: `0x${string}`; tokenUri: string } | undefined> {
+    if (record.state === 'mined' && record.agentId !== undefined && record.txHash !== undefined) {
+      return { agentId: record.agentId, txHash: record.txHash, tokenUri: record.tokenUri }
+    }
+    if (record.state === 'reverted' || record.txHash === undefined) return undefined
+    const be = await this.ensureBackend()
+    const publicClient: any = await be.getPublicClient()
+    let receipt: any = null
+    try {
+      receipt = await publicClient.getTransactionReceipt({ hash: record.txHash })
+    } catch (error: unknown) {
+      if (!isNotFoundMessage(error)) {
+        throw new Error(`dsh-erc8004: cannot verify prior broadcast ${record.txHash} (${errorMessage(error)}) — retry later instead of re-sending`)
+      }
+      receipt = null
+    }
+    if (receipt === null || receipt === undefined) {
+      // No receipt: dropped, or still mempool-pending? A pending tx must
+      // never be re-sent under a fresh nonce.
+      let pending: unknown = null
+      try {
+        pending = await publicClient.getTransaction({ hash: record.txHash })
+      } catch {
+        pending = null
+      }
+      if (pending !== null && pending !== undefined) {
+        throw new Error(`dsh-erc8004: prior broadcast ${record.txHash} is still pending — wait for it instead of re-sending`)
+      }
+      // Provably nothing in flight: clear the hash so the next plan
+      // re-broadcasts instead of resolving this record again.
+      record.txHash = undefined
+      return undefined
+    }
+    if (receipt.status !== 'success') {
+      record.state = 'reverted'
+      return undefined
+    }
+    const agentId = record.agentId ?? parseAgentId(receipt)
+    record.agentId = agentId
+    record.state = 'mined'
+    return { agentId, txHash: record.txHash, tokenUri: record.tokenUri }
+  }
+
+  /**
+   * Fetch-nonce → sign → send for one registration, recorded before
+   * returning. Runs inside the wallet lane; the receipt wait in
+   * {@link awaitSettle} runs outside it.
+   */
+  private async broadcastRegister(tokenUri: string, prior: AttemptRecord | undefined): Promise<AttemptRecord> {
     const walletSeam: any = (this.ctx as any).wallet
     const treasury: any = (() => {
       try { return (this.ctx as any).get?.('treasury') } catch {}
@@ -176,39 +458,129 @@ export class Erc8004Runtime {
     // wallet returns signed transaction hex (OWS sign-only) — send via publicClient
     const hash: `0x${string}` = await publicClient.sendRawTransaction({ serializedTransaction: signedRaw as `0x${string}` })
 
-    const receipt: any = await publicClient.waitForTransactionReceipt({ hash })
-    let agentId = '0'
+    const key = `uri:${tokenUri}`
+    let record = prior ?? this.attempts.get(key)
+    if (record === undefined) {
+      record = { tokenUri, cid: cidFromTokenUri(tokenUri), txHash: undefined, agentId: undefined, pieceCid: undefined, state: 'broadcast' }
+      this.attempts.set(key, record)
+    }
+    record.txHash = hash
+    record.agentId = undefined
+    record.state = 'broadcast'
+    return record
+  }
+
+  /**
+   * Wait for one broadcast's receipt (bounded), then settle the record,
+   * record the treasury expense, and emit `erc8004/registered`. Runs
+   * outside the wallet lane; concurrent settlers for one hash share a
+   * single wait. A timeout throws but leaves the broadcast — and the
+   * still-pending wait — as read-back evidence for the retry.
+   */
+  private async awaitSettle(record: AttemptRecord): Promise<{ agentId: string; txHash: `0x${string}`; tokenUri: string }> {
+    const hash = record.txHash
+    if (hash === undefined) throw new Error('dsh-erc8004: cannot settle a broadcast without a txHash')
+    const treasury: any = (() => {
+      try { return (this.ctx as any).get?.('treasury') } catch {}
+      try { return (this.ctx as any).treasury } catch { return undefined }
+    })()
+    const be = await this.ensureBackend()
+    const publicClient: any = await be.getPublicClient()
+    const existing = this.receipts.get(hash)
+    const wait: Promise<any> = existing ?? publicClient.waitForTransactionReceipt({ hash })
+    if (existing === undefined) {
+      this.receipts.set(hash, wait)
+      const release = (): void => { if (this.receipts.get(hash) === wait) this.receipts.delete(hash) }
+      wait.then(release, release)
+    }
+    let receipt: any
     try {
-      const transferTopic = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
-      const log: any = receipt.logs?.find((l: any) => l.topics?.[0]?.toLowerCase() === transferTopic)
-      if (log?.topics?.[3]) {
-        agentId = BigInt(log.topics[3] as string).toString(10)
-      }
-    } catch {}
+      receipt = await withTimeout(
+        wait,
+        internals.receiptTimeoutMs,
+        () => new Error(`dsh-erc8004: no receipt for ${hash} after ${internals.receiptTimeoutMs}ms — the registration may have committed; retry and the attempt ledger resolves it before any re-send`),
+      )
+    } catch (error: unknown) {
+      // Our budget ran out, not the chain's: unregister so the retry
+      // settles this broadcast against chain state (resolveAttempt) instead
+      // of attaching to a wait that may never resolve (dropped tx). The
+      // wait itself keeps polling; a late receipt still settles whoever
+      // holds it, and the record keeps the hash either way.
+      if (this.receipts.get(hash) === wait) this.receipts.delete(hash)
+      throw error
+    }
+    if (receipt === null || receipt === undefined || receipt.status !== 'success') {
+      record.state = 'reverted'
+      throw new Error(`dsh-erc8004: registration transaction ${hash} reverted on-chain (no effect committed)`)
+    }
+    const agentId = record.agentId ?? parseAgentId(receipt)
+    record.agentId = agentId
+    record.state = 'mined'
 
     // Treasury post-commit: record expense if mounted (best-effort)
+    const ESTIMATED_GAS_COST_USDC = 2_000 // ~$0.002 per register; treasury is µUSD, so 2000
     if (treasury?.recordExpense || treasury?.addExpense) {
       try {
-        const record = treasury.recordExpense ?? treasury.addExpense
-        await record.call(treasury, { category: 'storage', amountUsd: ESTIMATED_GAS_COST_USDC / 1_000_000, description: `erc8004 register ${tokenUri}` })
+        const recordExpense = treasury.recordExpense ?? treasury.addExpense
+        await recordExpense.call(treasury, { category: 'storage', amountUsd: ESTIMATED_GAS_COST_USDC / 1_000_000, description: `erc8004 register ${record.tokenUri}` })
       } catch {}
     } else if (treasury?.emit) {
       // Fallback: at least emit for policy visibility
       try { treasury.emit?.('expense', { category: 'storage', amount: ESTIMATED_GAS_COST_USDC }) } catch {}
     }
 
-    this.ctx.emit('erc8004/registered', { agentId, tokenUri, txHash: hash, owner } satisfies Erc8004RegisteredEvent)
-    return { agentId, txHash: hash, tokenUri }
+    const walletSeam: any = (this.ctx as any).wallet
+    const owner: string = await walletSeam.address(this.wallet)
+    this.ctx.emit('erc8004/registered', { agentId, tokenUri: record.tokenUri, txHash: hash, owner } satisfies Erc8004RegisteredEvent)
+    return { agentId, txHash: hash, tokenUri: record.tokenUri }
   }
 
   /** Full flow: build card → store on Filecoin (via synapse) → register on Base Sepolia (via wallet). */
   async registerAgent(overrides?: Partial<AgentCard> & { filename?: string | undefined }): Promise<{ card: AgentCard; cid: string; tokenUri: string; agentId: string; txHash: `0x${string}`; pieceCid?: string | undefined }> {
+    this.hook()
     const walletSeam: any = (this.ctx as any).wallet
     if (!walletSeam?.address) throw new Error('dsh-erc8004: ctx.wallet not mounted')
     const owner = await walletSeam.address(this.wallet)
     const card = this.buildCard(owner, overrides)
     const filename = overrides?.filename ?? 'agent-card.json'
+    // Resume: the same card rebuilds byte-identically, so a prior attempt
+    // settles here with no re-pin and no re-send when already mined.
+    const cardKey = cardKeyFor(card, filename)
+    const prior = this.attempts.get(cardKey)
+    if (prior !== undefined) {
+      const resumed = await this.resolveAttempt(prior)
+      if (resumed !== undefined) {
+        return {
+          card,
+          cid: prior.cid,
+          tokenUri: prior.tokenUri,
+          agentId: resumed.agentId,
+          txHash: resumed.txHash,
+          ...(prior.pieceCid !== undefined ? { pieceCid: prior.pieceCid } : {}),
+        }
+      }
+      // Dropped or reverted: the card is already pinned, so re-register
+      // the same tokenUri without storing again. register() re-plans in
+      // the wallet lane (never nested: this path holds no lock).
+      const resent = await this.register(prior.tokenUri)
+      return {
+        card,
+        cid: prior.cid,
+        tokenUri: prior.tokenUri,
+        agentId: resent.agentId,
+        txHash: resent.txHash,
+        ...(prior.pieceCid !== undefined ? { pieceCid: prior.pieceCid } : {}),
+      }
+    }
     const { cid, tokenUri, pieceCid } = await this.storeCard(card, filename)
+    let record = this.attempts.get(`uri:${tokenUri}`)
+    if (record === undefined) {
+      record = { tokenUri, cid, txHash: undefined, agentId: undefined, pieceCid, state: 'broadcast' }
+      this.attempts.set(`uri:${tokenUri}`, record)
+    } else if (pieceCid !== undefined) {
+      record.pieceCid = pieceCid
+    }
+    this.attempts.set(cardKey, record)
     const { agentId, txHash } = await this.register(tokenUri)
     return { card, cid, tokenUri, agentId, txHash, pieceCid }
   }
@@ -270,6 +642,11 @@ export function apply(ctx: Context, config: Config): void {
     ...(config.image !== undefined ? { image: config.image } : {}),
   } as any)
   ctx.provide('erc8004', runtime)
+
+  // The read-back hook registers lazily from the runtime's write paths
+  // (mount-order-proof: no dependence on when the guard mounts); this
+  // effect only retires the hook when the plugin goes down.
+  ctx.effect(() => () => runtime.unhook())
 
   ctx.effect(() =>
     ctx.tools.register(

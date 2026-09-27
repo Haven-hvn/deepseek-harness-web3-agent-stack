@@ -35,6 +35,16 @@ Resolution order per submit:
    type check, import
 3. `.nzb` bodies → refused (`ACQUIRE_UNSUPPORTED`; no Usenet backend)
 
+Exactly-once: every record carries a content key (torrent infohash, hashed
+URL, hashed release ref), so resubmitting the same source resolves to its
+handle — refreshed from the backend — instead of queueing twice. Failover
+verifies before trying the next backend: an ambiguous submit error
+(timeout, reset, 5xx) probes the first backend by infohash, adopting the
+torrent when it queued and failing over only when it provably did not (a
+backend that cannot answer either yields an uncertain record plus an
+ambiguous error — poll `<prefix>_status`, never resubmit elsewhere).
+Failed/missing records stay retryable under a new handle.
+
 ## Configuration
 
 ```yaml

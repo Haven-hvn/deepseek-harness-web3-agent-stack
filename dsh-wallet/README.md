@@ -51,6 +51,10 @@ Service `ctx.wallet` (`WalletRuntime`, injects `credentials`):
 - `signMessage(name, payload)` / `signTransaction(name, payload)` —
   `Promise<{ address, signature }>`. Sign-only: broadcasting belongs to
   whoever holds the signed payload.
+- `withLock(name, task)` — run `task` in the wallet's exclusive lane.
+  Same-wallet tasks run strictly in call order, so a fetch-nonce →
+  sign → send sequence wrapped here cannot share a nonce with a
+  concurrent sender; different wallets proceed independently.
 
 Every operation runs resolve → `loadKey` → sign → drop: `ctx.credentials
 .resolve(keyRef)` is called inside the operation (never cached, per the
@@ -85,9 +89,10 @@ A separate tool plugin may expose signing to the model; gate it with policy
 
 ## Known Limitations and Deferred Work
 
-- No concurrency coordination across operations on one wallet (no nonce
-  manager); callers needing strict transaction ordering serialize above this
-  seam, matching the OWS concurrency stance.
+- No implicit nonce manager: signing calls stay unordered (matching the
+  OWS concurrency stance) and callers needing strict transaction ordering
+  wrap the whole fetch-nonce → sign → send sequence in `withLock(name,
+  task)` — the seam orders, it never assigns nonces itself.
 - No model-facing signing tool ships here by design — exposing signatures to
   the model is a deployment decision that belongs with an explicit policy
   gate.

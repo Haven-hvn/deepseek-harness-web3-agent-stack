@@ -95,4 +95,12 @@ export interface StoredAcquisition {
   progress: number
   files: AcquiredFile[]
   error?: string
+  /**
+   * Content identity for exactly-once resubmits (`torrent:<infohash>`,
+   * `url-sha:<hex>`, `ref-sha:<hex>`). Absent on pre-exactly-once records
+   * and unparseable magnets, which never dedup.
+   */
+  contentKey?: string
+  /** Alias keys resolving to the same record (e.g. the URL that discovered the torrent). */
+  aliases?: string[]
 }

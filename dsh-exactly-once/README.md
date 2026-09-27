@@ -55,7 +55,10 @@ session events.
 
 ## Known Limitations and Deferred Work
 
-- Repeat-after-ambiguous without a registered hook re-dispatches (the
-  Phase 2 commit points add `checkCommitted` hooks per write surface).
+- Repeat-after-ambiguous without a registered hook re-dispatches. The
+  stack's write surfaces register hooks (`erc8004_register`,
+  `rr_launch`/`rr_sweep`/`rr_heartbeat`, `<prefix>_submit`,
+  `synapse_pin`, `arkiv_create_entity`/`arkiv_update_entity`); XMTP
+  answers through its reply outbox instead (a channel, not a tool).
 - Cross-conversation retries of one intent need explicit keys (out of
   scope); treasury re-meters replayed successes as estimate noise.

@@ -27,12 +27,33 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import type { Deployment } from '@royalty-router/sdk'
+import type { PublicClient } from 'viem'
+// Type-only: the read-back hook contract (runtime access to the guard stays
+// optional via `ctx.reflect.get`, so this plugin mounts cleanly unguarded).
+import type { CheckContext, CheckDecision } from 'dsh-exactly-once'
 import { createClient, resolveChainOpts, resolveDeployment } from './chain.ts'
-import { createSigningWalletClient, requireWalletName } from './wallet.ts'
-import { adviseIntentTool, buildTool, heartbeatTool, launchTool, sweepTool, venueTool } from './tools.ts'
+import { createSigningWalletClient, requireWalletName, withWalletLane } from './wallet.ts'
+import {
+  adviseIntentTool,
+  assertAddress,
+  buildTool,
+  ExecuteLedger,
+  heartbeatKeyFor,
+  heartbeatTool,
+  internals,
+  launchKeyFor,
+  launchTool,
+  sweepKeyFor,
+  sweepTool,
+  venueTool,
+  verifyLaunch,
+  verifySweep,
+} from './tools.ts'
+import type { HeartbeatArgs, IntentArgs, SweepArgs } from './tools.ts'
 
 export { createClient, resolveChainOpts, resolveDeployment } from './chain.ts'
-export { createSigningAccount, createSigningWalletClient, requireWalletName } from './wallet.ts'
+export { createSigningAccount, createSigningWalletClient, requireWalletName, withWalletLane } from './wallet.ts'
 export * from './tools.ts'
 
 /** Cordis plugin name. */
@@ -100,6 +121,79 @@ const intentShape = {
   tickSpacing: { type: 'number', description: 'Pool tick spacing (default 60).' },
 } as const
 
+/** What the execute read-back hooks consult: the attempt ledger plus chain reads. */
+export interface ExecuteHookDeps {
+  ledger: ExecuteLedger
+  getClient: () => PublicClient
+  deployment: Deployment
+}
+
+/**
+ * Build the exactly-once read-back hooks for the three execute tools over
+ * one ledger: settled attempts replay, in-flight attempts report unknown
+ * (the body attaches on dispatch), and ledger misses fall through to
+ * chain read-back — `proceed` only on proven absence, `unknown` when the
+ * chain cannot answer. Exported for tests; `apply` registers these lazily.
+ */
+export function createExecuteHooks(deps: ExecuteHookDeps): {
+  checkLaunch: (input: unknown) => Promise<CheckDecision>
+  checkSweep: (input: unknown) => Promise<CheckDecision>
+  checkHeartbeat: (input: unknown) => Promise<CheckDecision>
+} {
+  const checkLaunch = async (input: unknown): Promise<CheckDecision> => {
+    let key: string
+    try {
+      key = launchKeyFor(input as IntentArgs)
+    } catch {
+      return { kind: 'unknown' } // invalid args: the send surfaces the real error
+    }
+    const hit = deps.ledger.peek(key)
+    if (hit !== undefined) return hit.kind === 'replay' ? { kind: 'replay', value: hit.value } : { kind: 'unknown' }
+    let verdict: Awaited<ReturnType<typeof verifyLaunch>>
+    try {
+      verdict = await verifyLaunch(deps.getClient(), deps.deployment, input as IntentArgs)
+    } catch {
+      return { kind: 'unknown' }
+    }
+    if (verdict.state === 'committed') return { kind: 'replay', value: verdict.value }
+    if (verdict.state === 'absent') return { kind: 'proceed' }
+    return { kind: 'unknown' }
+  }
+  const checkSweep = async (input: unknown): Promise<CheckDecision> => {
+    let key: string
+    try {
+      key = sweepKeyFor(input as SweepArgs)
+    } catch {
+      return { kind: 'unknown' }
+    }
+    const hit = deps.ledger.peek(key)
+    if (hit !== undefined) return hit.kind === 'replay' ? { kind: 'replay', value: hit.value } : { kind: 'unknown' }
+    let verdict: Awaited<ReturnType<typeof verifySweep>>
+    try {
+      verdict = await verifySweep(deps.getClient(), assertAddress((input as SweepArgs).router, 'router'))
+    } catch {
+      return { kind: 'unknown' }
+    }
+    if (verdict.state === 'committed') return { kind: 'replay', value: verdict.value }
+    if (verdict.state === 'absent') return { kind: 'proceed' }
+    return { kind: 'unknown' }
+  }
+  const checkHeartbeat = async (input: unknown): Promise<CheckDecision> => {
+    // No reliable chain read-back (lastActive is unattributable across
+    // keepers); a re-heartbeat is cheap and moves no funds.
+    let key: string
+    try {
+      key = heartbeatKeyFor(input as HeartbeatArgs)
+    } catch {
+      return { kind: 'unknown' }
+    }
+    const hit = deps.ledger.peek(key)
+    if (hit === undefined) return { kind: 'unknown' }
+    return hit.kind === 'replay' ? { kind: 'replay', value: hit.value } : { kind: 'unknown' }
+  }
+  return { checkLaunch, checkSweep, checkHeartbeat }
+}
+
 /**
  * Register the advisor + launcher tools.
  * @param ctx - Plugin context carrying the tool registry (and, for execute
@@ -118,6 +212,34 @@ export function apply(ctx: Context, config: Config): void {
     client: lazyClient(),
     deployment,
     wallet: await createSigningWalletClient(ctx, requireWalletName(config), opts),
+  })
+  // Exactly-once: one attempt ledger per mount plus lazily registered
+  // read-back hooks (mount-order-proof: each execute call hooks up when the
+  // guard is present, and works unguarded otherwise).
+  const ledger = new ExecuteLedger()
+  const hooks = createExecuteHooks({ ledger, getClient: lazyClient, deployment })
+  let hooked = false
+  const hookDisposers: Array<() => void> = []
+  function ensureHooks(): void {
+    if (hooked) return
+    const guard = ctx.reflect.get('exactlyOnce') as
+      | { registerCheck?: (name: string, fn: (check: CheckContext) => Promise<CheckDecision>) => () => void }
+      | undefined
+    if (guard === null || guard === undefined || typeof guard.registerCheck !== 'function') return
+    hookDisposers.push(
+      guard.registerCheck('rr_launch', check => hooks.checkLaunch(check.args)),
+      guard.registerCheck('rr_sweep', check => hooks.checkSweep(check.args)),
+      guard.registerCheck('rr_heartbeat', check => hooks.checkHeartbeat(check.args)),
+    )
+    hooked = true
+  }
+  ctx.effect(() => () => {
+    for (const dispose of hookDisposers.splice(0)) {
+      try {
+        dispose()
+      } catch {}
+    }
+    hooked = false
   })
 
   // ── rr_advise (offline) ─────────────────────────────────────────
@@ -170,15 +292,31 @@ export function apply(ctx: Context, config: Config): void {
     parameters: intentShape as never,
     output: { schema: { type: 'object', additionalProperties: true } as never, render: (_a, v) => renderJson(v) as never },
     execute: async (args: never): Promise<unknown> => {
-      const result = await launchTool(await executeDeps(), args as never)
-      const row = result as { token?: string; tokenAddress?: string; symbol?: string; txHash?: string; hash?: string; factory?: string }
-      ctx.emit('rr/launched', {
-        chain: String(config.chainId ?? ''),
-        token: row?.token ?? row?.tokenAddress,
-        symbol: row?.symbol,
-        tx: row?.txHash ?? row?.hash,
-        factory: row?.factory,
-      })
+      ensureHooks()
+      const intentArgs = args as unknown as IntentArgs
+      const key = launchKeyFor(intentArgs)
+      const walletName = requireWalletName(config)
+      const deps = await executeDeps()
+      const { value: result, source } = await ledger.run(key,
+        () => withWalletLane(ctx, walletName, () => launchTool(deps, intentArgs)),
+        {
+          timeoutMs: internals.executeTimeoutMs,
+          onTimeout: (ms) => new Error(
+            `dsh-royalty-router: rr_launch timed out after ${ms}ms — the launch may have committed; `
+            + 'retry and the attempt ledger resolves it before any re-send',
+          ),
+          verify: () => verifyLaunch(deps.client, deployment, intentArgs),
+        })
+      if (source !== 'ledger') {
+        const row = result as { token?: string; tokenAddress?: string; symbol?: string; txHash?: string; hash?: string; factory?: string }
+        ctx.emit('rr/launched', {
+          chain: String(config.chainId ?? ''),
+          token: row?.token ?? row?.tokenAddress,
+          symbol: row?.symbol,
+          tx: row?.txHash ?? row?.hash,
+          factory: row?.factory,
+        })
+      }
       return result
     },
     presentCall: () => ({ card: 'generic', title: 'Graduation launch', kind: 'execute' }),
@@ -195,14 +333,30 @@ export function apply(ctx: Context, config: Config): void {
     } as never,
     output: { schema: { type: 'object', additionalProperties: true } as never, render: (_a, v) => renderJson(v) as never },
     execute: async (args: never): Promise<unknown> => {
-      const result = await sweepTool(await executeDeps(), args as never)
-      const row = result as { token?: string; txHash?: string; hash?: string; amount?: number }
-      ctx.emit('rr/swept', {
-        chain: String(config.chainId ?? ''),
-        token: row?.token,
-        tx: row?.txHash ?? row?.hash,
-        amount: row?.amount,
-      })
+      ensureHooks()
+      const sweepArgs = args as unknown as SweepArgs
+      const key = sweepKeyFor(sweepArgs)
+      const walletName = requireWalletName(config)
+      const deps = await executeDeps()
+      const { value: result, source } = await ledger.run(key,
+        () => withWalletLane(ctx, walletName, () => sweepTool(deps, sweepArgs)),
+        {
+          timeoutMs: internals.executeTimeoutMs,
+          onTimeout: (ms) => new Error(
+            `dsh-royalty-router: rr_sweep timed out after ${ms}ms — the sweep may have committed; `
+            + 'retry and the attempt ledger resolves it before any re-send',
+          ),
+          verify: () => verifySweep(deps.client, assertAddress(sweepArgs.router, 'router')),
+        })
+      if (source !== 'ledger') {
+        const row = result as { token?: string; txHash?: string; hash?: string; amount?: number }
+        ctx.emit('rr/swept', {
+          chain: String(config.chainId ?? ''),
+          token: row?.token,
+          tx: row?.txHash ?? row?.hash,
+          amount: row?.amount,
+        })
+      }
       return result
     },
     presentCall: args => ({ card: 'generic', title: `Sweep ${(args as { router: string }).router}`, kind: 'execute' }),
@@ -217,8 +371,24 @@ export function apply(ctx: Context, config: Config): void {
       router: { type: 'string', required: true, description: 'Router address (0x...).' },
     } as never,
     output: { schema: { type: 'object', additionalProperties: true } as never, render: (_a, v) => renderJson(v) as never },
-    execute: async (args: never): Promise<unknown> =>
-      heartbeatTool(await executeDeps(), args as never),
+    execute: async (args: never): Promise<unknown> => {
+      ensureHooks()
+      const heartbeatArgs = args as unknown as HeartbeatArgs
+      const key = heartbeatKeyFor(heartbeatArgs)
+      const walletName = requireWalletName(config)
+      const deps = await executeDeps()
+      // No chain read-back: lastActive is unattributable across keepers.
+      const { value } = await ledger.run(key,
+        () => withWalletLane(ctx, walletName, () => heartbeatTool(deps, heartbeatArgs)),
+        {
+          timeoutMs: internals.executeTimeoutMs,
+          onTimeout: (ms) => new Error(
+            `dsh-royalty-router: rr_heartbeat timed out after ${ms}ms — the stamp may have committed; `
+            + 'retry and the attempt ledger resolves it before any re-send',
+          ),
+        })
+      return value
+    },
     presentCall: args => ({ card: 'generic', title: `Heartbeat ${(args as { router: string }).router}`, kind: 'execute' }),
   })))
 }

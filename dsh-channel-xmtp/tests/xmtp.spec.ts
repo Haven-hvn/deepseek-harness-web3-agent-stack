@@ -240,6 +240,65 @@ describe('the XMTP signer is the wallet seam', () => {
   })
 })
 
+// ── 2b. Reply outbox (exactly-once delivery) ───────────────────────────────────
+
+describe('reply outbox (exactly-once delivery)', () => {
+  it('answers a redelivered inbound once across a restart when outboxPath is set', async () => {
+    const { mkdtemp, readFile, rm } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const dir = await mkdtemp(join(tmpdir(), 'xmtp-outbox-'))
+    try {
+    const outboxPath = join(dir, 'outbox.json')
+    const { world, llm, inbounds } = await harness({ outboxPath })
+    const conversation = new FakeConversation(ALLOWED)
+    world.conversations.set('conv-1', conversation)
+
+    world.onValue!(inbound())
+    await vi.waitFor(() => { expect(conversation.sent).toEqual(['agent reply']) })
+    expect(inbounds).toHaveLength(1)
+
+    // The outbox entry is on disk.
+    const persisted = JSON.parse(await readFile(outboxPath, 'utf8')) as { version: number; entries: Array<[string, string]> }
+    expect(persisted.version).toBe(1)
+    expect(persisted.entries).toEqual([['conv-1\nmsg-1', 'sent']])
+
+    // Simulate a restart: memory is gone, the file survives.
+    const channel = channelXmtp.internalChannel.current as any
+    channel.seen.clear()
+    channel.outbox.clear()
+    await channel.loadOutbox()
+
+    world.onValue!(inbound()) // same inbound redelivered
+    await new Promise(done => setTimeout(done, 100)) // async strays would land here
+    expect(inbounds).toHaveLength(1) // skipped before emit — the agent never re-ran
+    expect(llm.requests).toHaveLength(1)
+    expect(conversation.sent).toEqual(['agent reply'])
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('stays memory-only without outboxPath: a restart re-answers (documented)', async () => {
+    const { world, llm } = await harness()
+    const conversation = new FakeConversation(ALLOWED)
+    world.conversations.set('conv-1', conversation)
+
+    world.onValue!(inbound())
+    await vi.waitFor(() => { expect(conversation.sent).toEqual(['agent reply']) })
+
+    // Simulate a restart with nowhere to reload from.
+    const channel = channelXmtp.internalChannel.current as any
+    expect(channel.outbox.size).toBe(1) // recorded in memory all the same
+    channel.seen.clear()
+    channel.outbox.clear()
+
+    world.onValue!(inbound())
+    await vi.waitFor(() => { expect(conversation.sent).toEqual(['agent reply', 'agent reply']) })
+    expect(llm.requests).toHaveLength(2)
+  })
+})
+
 // ── 2. Inbound filters ────────────────────────────────────────────────────────
 
 describe('inbound filters (Haven contract)', () => {

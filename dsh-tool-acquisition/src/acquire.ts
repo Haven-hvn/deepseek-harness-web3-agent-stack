@@ -16,10 +16,12 @@
  * @module dsh-tool-acquisition/acquire
  */
 
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
-import { isTorrent, magnetDisplayName, parseTorrent } from './bencode.ts'
+// Type-only: the exactly-once read-back verdict (no runtime dependency).
+import type { CheckDecision } from 'dsh-exactly-once'
+import { isTorrent, magnetDisplayName, magnetInfoHash, parseTorrent } from './bencode.ts'
 import { AcquisitionError } from './errors.ts'
 import type { FetchFn, FetchedFile, FetchPolicy } from './fetch.ts'
 import { fetchDirect, safeFilename } from './fetch.ts'
@@ -85,6 +87,57 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 function terminal(state: AcquireState): boolean {
   return state === 'completed' || state === 'failed' || state === 'missing'
+}
+
+/**
+ * Content identity for a torrent payload: the infohash both backends key
+ * status by. Unparseable magnets (no `btih`) yield no key and never dedup.
+ */
+export function torrentKeyFor(payload: TorrentPayload): string | undefined {
+  const infoHash = payload.infoHash ?? (payload.magnet !== undefined ? magnetInfoHash(payload.magnet) : undefined)
+  if (infoHash === undefined || infoHash === '') return undefined
+  return `torrent:${infoHash.toLowerCase()}`
+}
+
+/**
+ * Content identity for a direct URL. Hashed, not stored: fetch URLs may
+ * carry credentials or signed query strings that must never land in the
+ * handle store in cleartext. Fragments are stripped (never sent).
+ */
+export function urlKeyFor(url: string): string {
+  const hash = createHash('sha256')
+  hash.update(url.trim().split('#', 1)[0] ?? '')
+  return `url-sha:${hash.digest('hex')}`
+}
+
+/** Content identity for a Prowlarr release reference (hashed: proxy links may carry keys). */
+export function refKeyFor(link: string): string {
+  const hash = createHash('sha256')
+  hash.update(link.trim())
+  return `ref-sha:${hash.digest('hex')}`
+}
+
+/**
+ * Transport failures that prove the submit POST never reached the backend:
+ * nothing was queued, so failing over is safe. Everything else
+ * non-permanent (timeouts, resets, 5xx) is ambiguous — the torrent may be
+ * queued — and must be verified before another backend is tried.
+ */
+const PRE_QUEUE_CODES: ReadonlySet<string> = new Set([
+  'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'ENETDOWN', 'EHOSTDOWN',
+])
+
+/** Whether a submit failure's cause chain proves the request never arrived. */
+export function isDefinitePreQueue(error: AcquisitionError): boolean {
+  const seen = new Set<unknown>()
+  let current: unknown = error
+  while (current instanceof Error && !seen.has(current)) {
+    seen.add(current)
+    const code = (current as { code?: unknown }).code
+    if (typeof code === 'string' && PRE_QUEUE_CODES.has(code)) return true
+    current = (current as { cause?: unknown }).cause
+  }
+  return false
 }
 
 /** Submits downloads and polls them to completion. */
@@ -154,15 +207,20 @@ export class AcquireService {
       return await this.submitTorrent(id, { magnet: input.magnet }, title, waitMs, signal)
     }
     if (input.url !== undefined && input.url !== '') {
+      // Resubmit by content identity: the same URL resolves to its record
+      // without re-fetching.
+      const key = urlKeyFor(input.url)
+      const existing = await this.resolveExisting(await this.store.findByContentKey(key), signal)
+      if (existing !== undefined) return existing
       const outcome = await fetchDirect(input.url, workDir, { ...this.options.fetchPolicy }, {
         filenameHint: safeFilename(title),
         ...(this.fetchFn !== undefined ? { fetchFn: this.fetchFn } : {}),
         ...(signal !== undefined ? { signal } : {}),
       })
       if (outcome.kind === 'magnet') {
-        return await this.submitTorrent(id, { magnet: outcome.magnet }, title, waitMs, signal)
+        return await this.submitTorrent(id, { magnet: outcome.magnet }, title, waitMs, signal, key)
       }
-      return await this.branchFetchedFile(id, outcome.file, title, waitMs, signal)
+      return await this.branchFetchedFile(id, outcome.file, title, waitMs, signal, key)
     }
     // Prowlarr release reference. Either field may hold the proxy link
     // (indexers disagree) or a real magnet; resolve() sorts out all three.
@@ -172,9 +230,12 @@ export class AcquireService {
     if (link === '') {
       throw new AcquisitionError('prowlarr reference needs downloadUrl or magnetUrl', 'ACQUIRE_INVALID_REQUEST', { permanent: true })
     }
+    const refKey = refKeyFor(link)
+    const existing = await this.resolveExisting(await this.store.findByContentKey(refKey), signal)
+    if (existing !== undefined) return existing
     const resolved = await this.prowlarr().resolve(link, workDir, safeFilename(title), signal)
     if (resolved.kind === 'magnet') {
-      return await this.submitTorrent(id, { magnet: resolved.magnet }, title, waitMs, signal)
+      return await this.submitTorrent(id, { magnet: resolved.magnet }, title, waitMs, signal, refKey)
     }
     if (resolved.kind === 'redirect') {
       const outcome = await fetchDirect(resolved.target, workDir, { ...this.options.fetchPolicy }, {
@@ -183,11 +244,58 @@ export class AcquireService {
         ...(signal !== undefined ? { signal } : {}),
       })
       if (outcome.kind === 'magnet') {
-        return await this.submitTorrent(id, { magnet: outcome.magnet }, title, waitMs, signal)
+        return await this.submitTorrent(id, { magnet: outcome.magnet }, title, waitMs, signal, refKey)
       }
-      return await this.branchFetchedFile(id, outcome.file, title, waitMs, signal)
+      return await this.branchFetchedFile(id, outcome.file, title, waitMs, signal, refKey)
     }
-    return await this.branchFetchedFile(id, resolved.file, title, waitMs, signal)
+    return await this.branchFetchedFile(id, resolved.file, title, waitMs, signal, refKey)
+  }
+
+  /**
+   * Read-back hook for `<prefix>_submit` repeats after ambiguous outcomes:
+   * resolve by content identity (no network beyond a backend status check)
+   * and replay the record. Never `proceed`: a missing record proves
+   * nothing (the first attempt may have queued, then crashed before
+   * persisting), so the body re-resolves and the backends dedup by
+   * infohash anyway.
+   */
+  async checkSubmit(input: unknown): Promise<CheckDecision> {
+    const args = (input ?? {}) as { magnet?: unknown; url?: unknown; downloadUrl?: unknown; magnetUrl?: unknown }
+    const keys: string[] = []
+    if (typeof args.magnet === 'string' && args.magnet !== '') {
+      const key = torrentKeyFor({ magnet: args.magnet })
+      if (key !== undefined) keys.push(key)
+    }
+    if (typeof args.url === 'string' && args.url !== '') keys.push(urlKeyFor(args.url))
+    const link = typeof args.downloadUrl === 'string' && args.downloadUrl !== ''
+      ? args.downloadUrl
+      : (typeof args.magnetUrl === 'string' ? args.magnetUrl : '')
+    if (link !== '') keys.push(refKeyFor(link))
+    for (const key of keys) {
+      const record = await this.store.findByContentKey(key).catch(() => undefined)
+      if (record === undefined) continue
+      try {
+        const resolved = await this.resolveExisting(record, undefined)
+        if (resolved !== undefined) return { kind: 'replay', value: resolved }
+      } catch {
+        return { kind: 'unknown' }
+      }
+    }
+    return { kind: 'unknown' }
+  }
+
+  /**
+   * Resolve one content-identity match to a result: completed replays,
+   * live records refresh from the backend. Returns `undefined` when the
+   * caller should start fresh (no match, or the backend reports the
+   * torrent gone).
+   */
+  private async resolveExisting(record: StoredAcquisition | undefined, signal: AbortSignal | undefined): Promise<AcquireResult | undefined> {
+    if (record === undefined) return undefined
+    if (record.state === 'completed') return this.render(record)
+    const refreshed = await this.status(record.id, signal)
+    if (refreshed.state === 'missing') return undefined
+    return refreshed
   }
 
   /** Current state of a handle; finalizes (select+import) on completion. */
@@ -219,7 +327,17 @@ export class AcquireService {
       await this.store.put(updated)
       return this.render(updated)
     }
-    const updated: StoredAcquisition = { ...record, state: current.state, progress: current.progress, updatedAt: new Date().toISOString() }
+    // A live backend answer clears a stale record error (e.g. the
+    // submit-uncertain note once the torrent is confirmed queued).
+    const { error: _stale, ...rest } = record
+    void _stale
+    const updated: StoredAcquisition = {
+      ...rest,
+      state: current.state,
+      progress: current.progress,
+      updatedAt: new Date().toISOString(),
+      ...(current.error !== undefined && current.error !== '' ? { error: current.error } : {}),
+    }
     await this.store.put(updated)
     return this.render(updated)
   }
@@ -242,6 +360,7 @@ export class AcquireService {
     title: string,
     waitMs: number,
     signal: AbortSignal | undefined,
+    contentKey?: string,
   ): Promise<AcquireResult> {
     const kind = mediaKind(file.mime)
     if (kind === 'torrent') {
@@ -291,6 +410,7 @@ export class AcquireService {
       state: 'completed',
       progress: 1,
       files: [{ path: first, size: file.size, mime: file.mime }],
+      ...(contentKey !== undefined ? { contentKey } : {}),
     }
     await this.store.put(record)
     return this.render(record)
@@ -303,24 +423,78 @@ export class AcquireService {
     title: string,
     waitMs: number,
     signal: AbortSignal | undefined,
+    aliasKey?: string,
   ): Promise<AcquireResult> {
     if (this.options.torrentClients.length === 0) {
       throw new AcquisitionError('release is a torrent but no torrent client is configured', 'ACQUIRE_NO_BACKEND', { permanent: true })
     }
+    // Resubmit by content identity: the same torrent resolves to its
+    // record (refreshed from the backend) instead of queueing twice.
+    const contentKey = torrentKeyFor(payload)
+    if (contentKey !== undefined) {
+      const existing = await this.resolveExisting(await this.store.findByContentKey(contentKey), signal)
+      if (existing !== undefined) return existing
+    }
+    const label = `acquire-${id}`
     let handle: Record<string, unknown> | undefined
     let backendName: TorrentClientName | undefined
     let lastError: AcquisitionError | undefined
     for (const name of this.options.torrentClients) {
+      let backend: QBittorrentClient | TransmissionClient
       try {
-        const backend = this.makeBackend(name)
-        handle = await backend.submit(payload, `acquire-${id}`, ...(signal !== undefined ? [signal] : []))
+        backend = this.makeBackend(name)
+      } catch (error: unknown) {
+        // Disabled backends (no URL) are skipped, not fatal: "empty =
+        // backend disabled" per the config docs.
+        if (error instanceof AcquisitionError && error.code === 'ACQUIRE_NOT_CONFIGURED') {
+          lastError = error
+          continue
+        }
+        throw error
+      }
+      try {
+        handle = await backend.submit(payload, label, ...(signal !== undefined ? [signal] : []))
         backendName = name
         break
       } catch (error: unknown) {
         if (!(error instanceof AcquisitionError)) throw error
         // The payload's fault (or otherwise hopeless): no other backend can help.
         if (error.permanent) throw error
-        lastError = error
+        // The request provably never arrived: failing over is safe.
+        if (isDefinitePreQueue(error)) {
+          lastError = error
+          continue
+        }
+        // Ambiguous (timeout, reset, 5xx): the torrent may be queued, so
+        // verify on THIS backend before another one is tried — a blind
+        // failover would queue the same torrent twice.
+        const probe = await this.probeSubmit(backend, payload, label, signal).catch(() => 'unknown' as const)
+        if (probe === 'queued') {
+          handle = { info_hash: payload.infoHash ?? magnetInfoHash(payload.magnet ?? '') ?? '', tag: label }
+          backendName = name
+          break
+        }
+        if (probe === 'absent') {
+          lastError = error
+          continue
+        }
+        // The backend cannot answer either: persist an uncertain record so
+        // the retry resolves instead of double-queueing, then throw
+        // ambiguous (the guard stamps it; the model polls status).
+        const now = new Date().toISOString()
+        const uncertain: StoredAcquisition = {
+          id, backend: name, handle: { info_hash: payload.infoHash ?? magnetInfoHash(payload.magnet ?? '') ?? '', tag: label },
+          title, createdAt: now, updatedAt: now, state: 'queued', progress: 0, files: [],
+          error: `submit to ${name} was interrupted after the request was sent; the torrent may be queued — poll status (handle "${id}") instead of resubmitting elsewhere`,
+          ...(contentKey !== undefined ? { contentKey } : {}),
+          ...(aliasKey !== undefined && aliasKey !== contentKey ? { aliases: [aliasKey] } : {}),
+        }
+        await this.store.put(uncertain)
+        throw new AcquisitionError(
+          `submit to ${name} is uncertain (the torrent may be queued): ${error.message} — poll status (handle "${id}"); the record resolves once ${name} answers`,
+          'ACQUIRE_BACKEND_ERROR',
+          { cause: error },
+        )
       }
     }
     if (handle === undefined || backendName === undefined) {
@@ -331,6 +505,8 @@ export class AcquireService {
     let record: StoredAcquisition = {
       id, backend: backendName, handle, title,
       createdAt: now, updatedAt: now, state: 'queued', progress: 0, files: [],
+      ...(contentKey !== undefined ? { contentKey } : {}),
+      ...(aliasKey !== undefined && aliasKey !== contentKey ? { aliases: [aliasKey] } : {}),
     }
     await this.store.put(record)
 
@@ -364,6 +540,22 @@ export class AcquireService {
         return this.render(record)
       }
     }
+  }
+
+  /**
+   * Verify whether an ambiguous submit actually queued: ask the backend
+   * for the torrent by infohash (both backends key status by it;
+   * qBittorrent falls back to our tag when the hash is unknown).
+   */
+  private async probeSubmit(
+    backend: QBittorrentClient | TransmissionClient,
+    payload: TorrentPayload,
+    label: string,
+    signal: AbortSignal | undefined,
+  ): Promise<'queued' | 'absent'> {
+    const probe = { info_hash: payload.infoHash ?? magnetInfoHash(payload.magnet ?? '') ?? '', tag: label }
+    const current = await backend.status(probe, ...(signal !== undefined ? [signal] : []))
+    return current.state === 'missing' ? 'absent' : 'queued'
   }
 
   /** Select content files out of a completed download and import them. */

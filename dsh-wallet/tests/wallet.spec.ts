@@ -221,3 +221,61 @@ describe('seam mechanics', () => {
     }])
   })
 })
+
+describe('withLock serializes per wallet', () => {
+  it('runs same-wallet tasks strictly in call order', async () => {
+    const { ctx } = await harness({ seed: { HAVEN_WALLET_PASSPHRASE: 'pw' } })
+    const order: string[] = []
+    let release!: () => void
+    const gate = new Promise<void>(done => { release = done })
+    const first = ctx.wallet.withLock('treasury', async () => {
+      order.push('first-start')
+      await gate
+      order.push('first-end')
+      return 'first'
+    })
+    const second = ctx.wallet.withLock('treasury', async () => {
+      order.push('second')
+      return 'second'
+    })
+    await new Promise(done => setTimeout(done, 10))
+    // The second task waits even though its promise was created already.
+    expect(order).toEqual(['first-start'])
+    release()
+    await expect(first).resolves.toBe('first')
+    await expect(second).resolves.toBe('second')
+    expect(order).toEqual(['first-start', 'first-end', 'second'])
+  })
+
+  it('lets different wallets proceed independently', async () => {
+    const { ctx } = await harness({
+      seed: { HAVEN_WALLET_PASSPHRASE: 'pw' },
+      wallets: {
+        one: { chain: 'evm', wallet: 'w1', keyRef: 'HAVEN_WALLET_PASSPHRASE' },
+        two: { chain: 'evm', wallet: 'w2', keyRef: 'HAVEN_WALLET_PASSPHRASE' },
+      },
+    })
+    let release!: () => void
+    const gate = new Promise<void>(done => { release = done })
+    const blocked = ctx.wallet.withLock('one', () => gate.then(() => 'one'))
+    const free = await ctx.wallet.withLock('two', async () => 'two')
+    expect(free).toBe('two')
+    release()
+    await expect(blocked).resolves.toBe('one')
+  })
+
+  it('a rejected task never blocks its lane', async () => {
+    const { ctx } = await harness({ seed: { HAVEN_WALLET_PASSPHRASE: 'pw' } })
+    await expect(ctx.wallet.withLock('treasury', async () => { throw new Error('task boom') }))
+      .rejects.toThrow('task boom')
+    await expect(ctx.wallet.withLock('treasury', async () => 'next')).resolves.toBe('next')
+  })
+
+  it('fails loud on unknown wallets without running the task', async () => {
+    const { ctx } = await harness({ seed: { HAVEN_WALLET_PASSPHRASE: 'pw' } })
+    let ran = false
+    await expect(ctx.wallet.withLock('nope', async () => { ran = true }))
+      .rejects.toMatchObject({ name: 'WalletError', code: 'wallet-not-found' })
+    expect(ran).toBe(false)
+  })
+})

@@ -25,16 +25,27 @@
  * @module dsh-storage-synapse
  */
 
+import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { basename } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+// Type-only: the read-back hook contract (runtime access to the guard stays
+// optional via `ctx.reflect.get`, so this plugin mounts cleanly unguarded).
+import type { CheckContext, CheckDecision } from 'dsh-exactly-once'
 import type { Cid, PinStatus } from './synapse.ts'
 import type { SynapsePinnedEvent } from './types.ts'
 
 export type { Cid, PinStatus } from './synapse.ts'
 export type { SynapsePinnedEvent } from './types.ts'
+
+/**
+ * Test seam: bounds the read-back retries that ride out Filecoin
+ * eventual-consistency false negatives (production: three checks, 500ms
+ * apart).
+ */
+export const internals = { checkRetries: 3, checkRetryMs: 500 }
 
 /** Cordis plugin name. */
 export const name = 'storage-synapse'
@@ -77,6 +88,10 @@ export const Config: z<Config> = z.object({
  */
 export class SynapseRuntime {
   private filecoin: import('./synapse.ts').FilecoinBackend | null = null
+  /** Uploaded bytes by sha256: CIDs are content-deterministic, so a repeat stores once. */
+  private readonly uploads = new Map<string, Cid>()
+  /** Disposer for the lazily registered exactly-once hook (none while unguarded). */
+  private hookDisposer: (() => void) | undefined
   private readonly _rpcUrl: string
   private readonly _networkMode?: 'calibration' | 'mainnet' | undefined
   private readonly _withCDN?: boolean | undefined
@@ -193,15 +208,91 @@ export class SynapseRuntime {
   private get backend(): 'filecoin' { return 'filecoin' as const }
 
   /**
+   * Register the `synapse_pin` read-back hook once the guard is present.
+   * Lazy (called from every write path) so registration never depends on
+   * plugin mount order; a no-op while unguarded, idempotent once registered.
+   */
+  hook(): void {
+    if (this.hookDisposer !== undefined) return
+    const guard = this.ctx.reflect.get('exactlyOnce') as
+      | { registerCheck?: (name: string, fn: (check: CheckContext) => Promise<CheckDecision>) => () => void }
+      | undefined
+    if (guard === null || guard === undefined || typeof guard.registerCheck !== 'function') return
+    this.hookDisposer = guard.registerCheck('synapse_pin', check => this.checkPinTool(check.args))
+  }
+
+  /** Retire the read-back hook (plugin disposal). */
+  unhook(): void {
+    try {
+      this.hookDisposer?.()
+    } catch {}
+    this.hookDisposer = undefined
+  }
+
+  /**
+   * Read-back hook for `synapse_pin` repeats after ambiguous outcomes. A
+   * `cid` retry checks the pin directly; a `path` retry resolves by
+   * content hash through the upload ledger, then checks the pin.
+   * @param input - the retried tool arguments.
+   * @returns replay when the CID is pinned, proceed when it provably is
+   *   not, unknown when the bytes were never uploaded here or the node
+   *   cannot answer.
+   */
+  async checkPinTool(input: unknown): Promise<CheckDecision> {
+    this.hook()
+    const args = (input ?? {}) as { path?: unknown; cid?: unknown }
+    if (typeof args.cid === 'string' && args.cid !== '') {
+      return await this.checkPinned(args.cid)
+    }
+    if (typeof args.path === 'string' && args.path !== '') {
+      let data: Uint8Array
+      try {
+        data = await readFile(args.path)
+      } catch {
+        return { kind: 'unknown' }
+      }
+      const cid = this.uploads.get(createHash('sha256').update(data).digest('hex'))
+      if (cid === undefined) return { kind: 'unknown' }
+      return await this.checkPinned(cid)
+    }
+    return { kind: 'unknown' }
+  }
+
+  /** Pin verdict with bounded retries over Filecoin false negatives. */
+  private async checkPinned(cid: Cid): Promise<CheckDecision> {
+    for (let attempt = 0; attempt < internals.checkRetries; attempt += 1) {
+      if (attempt > 0 && internals.checkRetryMs > 0) {
+        await new Promise(done => setTimeout(done, internals.checkRetryMs))
+      }
+      let status: PinStatus
+      try {
+        status = await this.checkPin(cid)
+      } catch {
+        return { kind: 'unknown' } // the node cannot answer at all
+      }
+      if (status.redundancy > 0) return { kind: 'replay', value: status }
+    }
+    return { kind: 'proceed' }
+  }
+
+  /**
    * Store bytes on the node (CIDv1). Storing on the local node also pins
    * locally; `pin` makes the intent explicit and returns the recorded status.
+   * Repeat stores of identical bytes return the recorded CID without
+   * re-uploading (CIDs are content-deterministic).
    * @param data - raw bytes to store.
    * @param signal - abort signal bounding the request.
    * @returns the content identifier.
    */
   async store(data: Uint8Array, _signal?: AbortSignal, onProgress?: (event: unknown) => void): Promise<{ cid: Cid }> {
+    this.hook()
+    const sha = createHash('sha256').update(data).digest('hex')
+    const known = this.uploads.get(sha)
+    if (known !== undefined) return { cid: known }
     const be = await this.ensureBackend()
-    return be.store(data, { signal: _signal, onProgress })
+    const stored = await be.store(data, { signal: _signal, onProgress })
+    this.uploads.set(sha, stored.cid)
+    return stored
   }
 
   /**
@@ -223,6 +314,7 @@ export class SynapseRuntime {
    * @returns the pin status after the operation.
    */
   async pin(cid: Cid, _signal?: AbortSignal): Promise<PinStatus> {
+    this.hook()
     const be = await this.ensureBackend()
     const st = await be.pin(cid)
     this.ctx.emit('synapse/pinned', { cid } satisfies SynapsePinnedEvent)
@@ -277,6 +369,10 @@ export function apply(ctx: Context, config: Config): void {
     providerIds: (config as any).providerIds?.length ? (config as any).providerIds : undefined,
   })
   ctx.provide('synapse', synapse)
+
+  // The read-back hook registers lazily from the runtime's write paths
+  // (mount-order-proof); this effect only retires it on disposal.
+  ctx.effect(() => () => synapse.unhook())
 
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'synapse_pin',

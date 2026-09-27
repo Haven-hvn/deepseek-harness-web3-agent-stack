@@ -67,6 +67,25 @@ export class HandleStore {
     return store.records[id]
   }
 
+  /**
+   * Fetch the live record for one content key: a non-terminal record when
+   * one exists, else the newest completed one. Failed/missing records are
+   * retryable, so they never match — a resubmit after one starts fresh.
+   */
+  async findByContentKey(key: string): Promise<StoredAcquisition | undefined> {
+    let completed: StoredAcquisition | undefined
+    for (const record of Object.values((await this.load()).records)) {
+      if (record.contentKey !== key && !(record.aliases ?? []).includes(key)) continue
+      if (record.state === 'completed') {
+        completed = record
+        continue
+      }
+      if (record.state === 'failed' || record.state === 'missing') continue
+      return record
+    }
+    return completed
+  }
+
   /** Delete a record. */
   async remove(id: string): Promise<void> {
     await this.withLock(async () => {

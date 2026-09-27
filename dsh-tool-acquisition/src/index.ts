@@ -24,6 +24,9 @@ import z from '@deepseek-ai/schemastery'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
+// Type-only: the read-back hook contract (runtime access to the guard stays
+// optional via `ctx.reflect.get`, so this plugin mounts cleanly unguarded).
+import type { CheckContext, CheckDecision } from 'dsh-exactly-once'
 import { AcquireService } from './acquire.ts'
 import type { AcquireServiceOptions } from './acquire.ts'
 import { AcquisitionError } from './errors.ts'
@@ -385,14 +388,20 @@ function invalid(message: string): never {
   throw new AcquisitionError(message, 'ACQUIRE_INVALID_REQUEST', { permanent: true })
 }
 
+/** Optional exactly-once wiring for the submit tool (registrar closes over the host ctx). */
+export interface CreateToolsHooks {
+  ensureSubmitHook?: () => void
+}
+
 /**
  * Build the two tool definitions over one service and resolved config.
  * Exposed for tests and for hosts that register tools themselves.
  * @param service - acquisition service.
  * @param config - resolved config.
+ * @param hooks - optional exactly-once hook registrar (wired by `apply`).
  * @returns `[submitTool, statusTool]`.
  */
-export function createTools(service: AcquireService, config: ResolvedConfig): [ToolDefinition, ToolDefinition] {
+export function createTools(service: AcquireService, config: ResolvedConfig, hooks?: CreateToolsHooks): [ToolDefinition, ToolDefinition] {
   const submitName = `${config.toolPrefix}_submit`
   const statusName = `${config.toolPrefix}_status`
 
@@ -429,6 +438,7 @@ export function createTools(service: AcquireService, config: ResolvedConfig): [T
       kind: 'execute',
     }),
     async execute(args, exec) {
+      hooks?.ensureSubmitHook?.()
       const input = args as {
         magnet?: string; url?: string; downloadUrl?: string; magnetUrl?: string; title?: string; waitMs?: number
       }
@@ -492,5 +502,19 @@ export function apply(ctx: Context, config: Config): void {
     console.warn('[tool-acquisition] no torrent client configured (qbittorrentUrl/transmissionUrl); magnet and .torrent submits will fail with ACQUIRE_NO_BACKEND')
   }
   const service = createService(resolved)
-  for (const tool of createTools(service, resolved)) ctx.tools.register(tool)
+  // Exactly-once: the submit read-back hook registers lazily from the
+  // submit path (mount-order-proof); unguarded mounts simply skip it. The
+  // registration is process-lifetime, like the tools themselves.
+  const submitName = `${resolved.toolPrefix}_submit`
+  let submitHooked = false
+  const ensureSubmitHook = (): void => {
+    if (submitHooked) return
+    const guard = ctx.reflect.get('exactlyOnce') as
+      | { registerCheck?: (name: string, fn: (check: CheckContext) => Promise<CheckDecision>) => () => void }
+      | undefined
+    if (guard === null || guard === undefined || typeof guard.registerCheck !== 'function') return
+    guard.registerCheck(submitName, check => service.checkSubmit(check.args))
+    submitHooked = true
+  }
+  for (const tool of createTools(service, resolved, { ensureSubmitHook })) ctx.tools.register(tool)
 }

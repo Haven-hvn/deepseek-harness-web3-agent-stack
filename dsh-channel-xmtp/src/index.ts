@@ -26,6 +26,8 @@
  * @module dsh-channel-xmtp
  */
 
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
@@ -96,6 +98,14 @@ export interface Config {
   convos?: boolean
   /** Optional Convos invite URL to expose via xmtp/status (for QR). */
   convosInviteUrl?: string
+  /**
+   * Reply-outbox file for exactly-once delivery: `(conversationId,
+   * inboundMessageId) → sentMessageId`, persisted after every reply so a
+   * redelivered inbound (reconnect replay, restart) is answered once. When
+   * absent the outbox is memory-only and a restart may re-answer recent
+   * inbounds.
+   */
+  outboxPath?: string
 }
 
 /** Config schema. */
@@ -110,6 +120,7 @@ export const Config: z<Config> = z.object({
   reconnectDelayMs: z.number().step(1).min(0).default(DEFAULT_RECONNECT_DELAY_MS),
   convos: z.boolean().default(false),
   convosInviteUrl: z.string(),
+  outboxPath: z.string(),
 })
 
 /** Join the last assistant text appended at or after `firstSeq` (headless-runner `summarize` port). */
@@ -158,6 +169,12 @@ class XmtpChannelRuntime {
   private sweepTimer: ReturnType<typeof setInterval> | undefined
   /** Dedup by message id, insertion-ordered so pruning drops the oldest half. */
   private readonly seen = new Set<string>()
+  /**
+   * Reply outbox: `(conversationId, inboundMessageId) → sentMessageId`,
+   * insertion-ordered like `seen`. Persisted after every reply when
+   * `outboxPath` is set, so redelivery answers once across restarts.
+   */
+  private readonly outbox = new Map<string, string>()
   /** One live agent handle per conversation. */
   private readonly agents = new Map<string, Promise<AgentHandle>>()
   /** Per-conversation delivery chains: replies pair with their inbound in order. */
@@ -168,7 +185,77 @@ class XmtpChannelRuntime {
   /** Enter the connect loop; never throws (failures feed the reconnect policy). */
   async start(): Promise<void> {
     this.setStatus('connecting', 'starting')
+    await this.loadOutbox()
     await this.connect()
+  }
+
+  /** Outbox key for one inbound message. */
+  private static outboxKey(conversationId: string, inboundMessageId: string): string {
+    return `${conversationId}\n${inboundMessageId}`
+  }
+
+  /**
+   * Load the persisted outbox, if any. Best-effort: a missing or corrupt
+   * file starts empty (at-least-once delivery), never blocks connecting.
+   */
+  private async loadOutbox(): Promise<void> {
+    const path = this.config.outboxPath
+    if (path === undefined || path === '') return
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(await readFile(path, 'utf8'))
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        console.log(`[xmtp] outbox unreadable (${path}), starting empty: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      return
+    }
+    const entries = (parsed as { version?: unknown; entries?: unknown })?.entries
+    if (!Array.isArray(entries)) {
+      console.log(`[xmtp] outbox corrupt (${path}), starting empty`)
+      return
+    }
+    for (const entry of entries) {
+      if (Array.isArray(entry) && typeof entry[0] === 'string' && typeof entry[1] === 'string') {
+        this.outbox.set(entry[0], entry[1])
+      }
+    }
+    this.pruneOutbox()
+  }
+
+  /** Drop the oldest half past the cap (the `seen` rule). */
+  private pruneOutbox(): void {
+    if (this.outbox.size <= MAX_DEDUP_SIZE) return
+    for (const key of this.outbox.keys()) {
+      if (this.outbox.size <= MAX_DEDUP_SIZE / 2) break
+      this.outbox.delete(key)
+    }
+  }
+
+  /**
+   * Record one answered inbound and persist the outbox. Called after the
+   * send succeeds (send-then-record: a crash between repeats the reply,
+   * while record-then-send could drop it). Persistence is best-effort — a
+   * failed write degrades to memory-only, never fails the delivery.
+   */
+  private async recordOutbox(conversationId: string, inboundMessageId: string, sent: unknown): Promise<void> {
+    const sentId = typeof sent === 'string'
+      ? sent
+      : (sent !== null && typeof sent === 'object' && 'id' in sent && typeof (sent as { id: unknown }).id === 'string'
+        ? (sent as { id: string }).id
+        : 'sent')
+    this.outbox.set(XmtpChannelRuntime.outboxKey(conversationId, inboundMessageId), sentId)
+    this.pruneOutbox()
+    const path = this.config.outboxPath
+    if (path === undefined || path === '') return
+    try {
+      await mkdir(dirname(path), { recursive: true })
+      const tmp = join(dirname(path), `.outbox.${Date.now()}.${Math.floor(Math.random() * 1e9)}.tmp`)
+      await writeFile(tmp, JSON.stringify({ version: 1, entries: [...this.outbox.entries()] }))
+      await rename(tmp, path)
+    } catch (error: unknown) {
+      console.log(`[xmtp] outbox persist failed (${path}), memory-only: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   /** Tear everything down: stream, sweep, timers, and every owned agent. */
@@ -319,6 +406,7 @@ class XmtpChannelRuntime {
     if (message.senderInboxId === this.client?.inboxId) return
     if (this.config.activeConversationId !== undefined
       && message.conversationId !== this.config.activeConversationId) return
+    if (this.outbox.has(XmtpChannelRuntime.outboxKey(message.conversationId, message.id))) return
     if (this.seen.has(message.id)) return
     this.seen.add(message.id)
     if (this.seen.size > MAX_DEDUP_SIZE) {
@@ -414,6 +502,8 @@ class XmtpChannelRuntime {
       try { await this.client?.conversations.sync() } catch {}
       const conversation = await this.client?.conversations.getConversationById(conversationId)
       if (!conversation) return
+      let sent: unknown
+      let sentAny = false
       for (const img of images) {
         try {
           const ref = img.attachment as { id?: string } & Record<string, unknown>
@@ -423,7 +513,8 @@ class XmtpChannelRuntime {
               const stored = await attachments.readImage(ref)
               const sendAttachment = (conversation as unknown as { sendAttachment?: (a: unknown) => Promise<unknown> }).sendAttachment
               if (sendAttachment) {
-                await sendAttachment.call(conversation, { mimeType: stored.mediaType, content: stored.data, filename: (stored as { filename?: string }).filename })
+                sent = await sendAttachment.call(conversation, { mimeType: stored.mediaType, content: stored.data, filename: (stored as { filename?: string }).filename })
+                sentAny = true
                 continue
               }
             } catch {}
@@ -431,9 +522,13 @@ class XmtpChannelRuntime {
         } catch {}
       }
       if (reply !== '') {
-        await conversation.sendText(reply)
+        sent = await conversation.sendText(reply)
+        sentAny = true
       } else if (images.length === 0) {
         return
+      }
+      if (sentAny) {
+        await this.recordOutbox(conversationId, message.id, sent)
       }
     })
     this.deliveries.set(conversationId, cur.catch(() => {}))

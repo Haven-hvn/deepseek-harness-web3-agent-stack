@@ -68,6 +68,7 @@
     env: production
     dbPath: /data/xmtp/agent.db
     dbEncryptionKeyRef: XMTP_DB_KEY
+    outboxPath: /data/xmtp/outbox.json
     convos: true
 
 # ── Storage / chain ────────────────────────────────────────────────────

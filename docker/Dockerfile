@@ -66,6 +66,7 @@ COPY dsh-persona/ /opt/stack/dsh-persona/
 COPY dsh-tool-prowlarr/ /opt/stack/dsh-tool-prowlarr/
 COPY dsh-tool-acquisition/ /opt/stack/dsh-tool-acquisition/
 COPY dsh-observatory/ /opt/stack/dsh-observatory/
+COPY dsh-exactly-once/ /opt/stack/dsh-exactly-once/
 
 # haven-aol source: dsh-haven-aol depends on it via
 # file:../../haven-aol/packages/typescript, which resolves to /opt/haven-aol
@@ -104,7 +105,10 @@ RUN cd /opt/stack && pnpm install --frozen-lockfile --ignore-scripts \
 # Do not `pnpm store prune` here. With no project in cwd it drops the store
 # packages /opt/stack/node_modules still links.
 ENV DSH_HOME=/opt/dsh-skel
+# dsh-exactly-once installs first so its tools/execute wrapper registers
+# outermost: redelivered calls replay before any other wrapper runs.
 RUN dsh plugin --profile agent add \
+      /opt/stack/dsh-exactly-once \
       /opt/stack/dsh-wallet /opt/stack/dsh-wallet-ethereum \
       /opt/stack/dsh-wallet-tools /opt/stack/dsh-treasury \
       /opt/stack/dsh-channel-xmtp /opt/stack/dsh-storage-synapse \
@@ -114,7 +118,7 @@ RUN dsh plugin --profile agent add \
       /opt/stack/dsh-tool-acquisition /opt/stack/dsh-observatory \
     && dsh plugin --profile agent add @xmtp/node-sdk \
     && dsh --profile agent --dump-default-config > /dev/null \
-    && node --input-type=module -e "await import('/opt/stack/dsh-wallet/lib/index.js'); await import('/opt/stack/dsh-tool-acquisition/lib/index.js'); await import('/opt/stack/dsh-observatory/lib/index.js'); console.log('stack import gate: OK')"
+    && node --input-type=module -e "await import('/opt/stack/dsh-wallet/lib/index.js'); await import('/opt/stack/dsh-tool-acquisition/lib/index.js'); await import('/opt/stack/dsh-observatory/lib/index.js'); await import('/opt/stack/dsh-exactly-once/lib/index.js'); console.log('stack import gate: OK')"
 
 EXPOSE 8787
 VOLUME /data

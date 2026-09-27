@@ -34,6 +34,19 @@ Reads are `presentCall: {kind:'read'}` — free, never gated, never metered. Exe
 
 `inject = ['tools', 'wallet']`, so both must be mounted (same shape as `dsh-storage-synapse` — Cordis forbids touching a service the plugin does not declare). Reads never call the seam, but the plugin stays dormant where `dsh-wallet` is absent; `dsh-wallet-ethereum` is additionally required for signing, and execute tools need a `wallet:` name. The plugin holds no secrets: configuration carries names and credential references, signing happens per operation inside `dsh-wallet`. Bigint args arrive as decimal strings and are validated (`0x`-address shape, decimal-integer shape) with actionable errors.
 
+## Exactly-once (execute tools)
+
+`rr_launch` / `rr_sweep` / `rr_heartbeat` run through one attempt ledger
+per mount: concurrent runs for one intent share a single send, settled
+runs replay, and a caller that times out (3-minute bound) leaves the send
+running so the retry finds the late result instead of double-sending.
+Sends serialize per wallet (`withWalletLane`: no shared nonces), and
+repeats after ambiguous outcomes read back first — `bond.exists` plus a
+token name match for launches, `routerStatus` for sweeps (heartbeats have
+no read-back: re-stamping is cheap and moves no funds). The SDK's own
+guards stay as backstops: idempotent approvals and the pre-send
+symbol-taken check.
+
 ## What is deliberately absent (keeper loop)
 
 The keeper loop stays out: surface `routerStatus`-style reads and let Gelato/cron consume them (see `mint-glue-graduate/keeper/sweep.sh` for the condition). No new custody code was needed for the execute tools — they reuse the `dsh-storage-synapse` viem `toAccount` wallet bridge (`ctx.wallet.signTransaction`, works with both `ows` and `raw` providers).
@@ -46,4 +59,4 @@ The keeper loop stays out: surface `routerStatus`-style reads and let Gelato/cro
 
 ## Tests
 
-Offline seam proofs (`tests/router.spec.ts`, no network): model-default fill + empty advice, 3%-royalty and coarse-step warnings (vectors from `sdk/example.intent.json` shape), input validation, bigint/JSON safety, factory guard, execute arg validation, stubbed-client venue quote. Fork suites (need `FORK_RPC` + `FORK_FACTORY`): `tests/fork-e2e.spec.ts` (wiring, live bond/factory reads, dry-run, funded simulation), `tests/fork-venue.spec.ts` (live venue quotes, router status, recommended-model pass), `tests/fork-execute.spec.ts` (real launch → sweep → heartbeat on a local fork). `scripts/fork-launch.mjs` launches a token out-of-band via the SDK path for local fork testing.
+Offline seam proofs (`tests/router.spec.ts`, no network): model-default fill + empty advice, 3%-royalty and coarse-step warnings (vectors from `sdk/example.intent.json` shape), input validation, bigint/JSON safety, factory guard, execute arg validation, stubbed-client venue quote. Exactly-once proofs (`tests/exactly-once.spec.ts`, no network): attempt keys, ledger attach/replay/timeout-late-settle/retry, wallet-lane branching, stubbed read-back verdicts, hook verdicts. Fork suites (need `FORK_RPC` + `FORK_FACTORY`): `tests/fork-e2e.spec.ts` (wiring, live bond/factory reads, dry-run, funded simulation), `tests/fork-venue.spec.ts` (live venue quotes, router status, recommended-model pass), `tests/fork-execute.spec.ts` (real launch → sweep → heartbeat on a local fork). `scripts/fork-launch.mjs` launches a token out-of-band via the SDK path for local fork testing.

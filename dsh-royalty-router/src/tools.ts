@@ -17,24 +17,29 @@
  * @module dsh-royalty-router/tools
  */
 
+import { createHash } from "node:crypto";
 import type { PublicClient, WalletClient } from "viem";
 import {
   adviseIntent,
   bandBps,
+  bondAbi,
   buildLaunch,
   crossoverSize,
   heartbeat,
   launch,
   poolIdOf,
   poolKeyFor,
+  predictTokenAddress,
   quoteVenues,
   readVenueState,
   recommendedIntent,
+  routerStatus,
   sweep,
   ZERO,
   type Deployment,
   type LaunchIntent,
 } from "@royalty-router/sdk";
+import { erc20Abi } from "viem";
 
 export interface ChainDeps {
   client: PublicClient;
@@ -308,4 +313,255 @@ export async function heartbeatTool(deps: ExecuteDeps, args: HeartbeatArgs): Pro
   const router = assertAddress(args.router, "router");
   const receipt = await heartbeat(deps.client, deps.wallet, router);
   return jsonSafe({ transactionHash: receipt.transactionHash, status: receipt.status });
+}
+
+// ── Exactly-once: attempt ledger + commit-point read-back ────────────────
+// The SDK's send path (launch/sweep/heartbeat) waits for receipts with no
+// bound and exposes the tx hash only on success, so a timeout leaves no
+// hash to look up. The ledger closes that hole without touching the SDK:
+// runs attach to in-flight sends, late settles are recorded for the retry
+// (the raced send is never cancelled — its wait keeps polling), and chain
+// read-back (bond.exists + token name for launches, routerStatus for
+// sweeps) covers restarts. The wallet lane (withWalletLane) serializes the
+// approve → simulate → send sequences per wallet so concurrent executes
+// never share a nonce.
+
+/** Test seam: bounds one execute's receipt wait (production: three minutes). */
+export const internals = { executeTimeoutMs: 180_000 };
+
+/** Chain read-back verdict: committed, provably absent, or unreadable. */
+export type VerifyResult<T> =
+  | { state: "committed"; value: T }
+  | { state: "absent" }
+  | { state: "unreadable" };
+
+/** Where one `run` result came from: this call sent, the ledger replayed, or chain read-back verified. */
+export interface RunResult<T> {
+  value: T;
+  source: "sent" | "ledger" | "verified";
+}
+
+/** Options for {@link ExecuteLedger.run}. */
+export interface RunOptions<T> {
+  /** Bound for this caller's wait (the send itself is never cancelled). */
+  timeoutMs: number;
+  /** Ambiguous-timeout error (thrown to the caller; the attempt stays live). */
+  onTimeout: (ms: number) => Error;
+  /** Chain read-back consulted before sending (restart cover). */
+  verify?: () => Promise<VerifyResult<T>>;
+}
+
+interface Attempt {
+  status: "starting" | "running" | "settled" | "failed";
+  value?: unknown;
+  promise: Promise<unknown>;
+}
+
+/** Stable attempt key for one launch intent (invalid args throw, as in the send path). */
+export function launchKeyFor(args: IntentArgs): string {
+  const intent = buildIntent(args);
+  return `launch:${createHash("sha256").update(JSON.stringify(jsonSafe(intent))).digest("hex")}`;
+}
+
+/** Stable attempt key for one sweep (router, floor). */
+export function sweepKeyFor(args: SweepArgs): string {
+  const router = assertAddress(args.router, "router");
+  const minOut = args.minOut === undefined ? 0n : big(args.minOut, "minOut");
+  return `sweep:${router.toLowerCase()}:${minOut.toString()}`;
+}
+
+/** Stable attempt key for one heartbeat (router). */
+export function heartbeatKeyFor(args: HeartbeatArgs): string {
+  return `heartbeat:${assertAddress(args.router, "router").toLowerCase()}`;
+}
+
+/** Race one send against this caller's deadline (the send itself is never cancelled). */
+function raceTimeout<T>(work: Promise<T>, ms: number, onTimeout: (ms: number) => Error): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return Promise.race([
+      work,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => reject(onTimeout(ms)), ms);
+      }),
+    ]);
+  } finally {
+    // The timer belongs to the race, not the work: release it when the
+    // work settles (clearing an already-fired timer is a no-op).
+    if (timer !== undefined) {
+      const release = timer;
+      void work.then(() => clearTimeout(release), () => clearTimeout(release));
+    }
+  }
+}
+
+/**
+ * One attempt ledger per plugin mount: concurrent runs for one key share a
+ * single send, settled runs replay, and a timed-out caller leaves the send
+ * running so the retry finds the late result instead of double-sending.
+ */
+export class ExecuteLedger {
+  private readonly attempts = new Map<string, Attempt>();
+
+  /**
+   * Run one keyed send exactly once.
+   * @param key - the attempt key (launch/sweep/heartbeat key fn).
+   * @param send - the send itself (already wallet-lane-wrapped by the caller).
+   * @param opts - timeout plus optional chain read-back.
+   * @returns the value and where it came from.
+   */
+  run<T>(key: string, send: () => Promise<T>, opts: RunOptions<T>): Promise<RunResult<T>> {
+    const prior = this.attempts.get(key) as Attempt | undefined;
+    if (prior !== undefined && prior.status === "settled") {
+      return Promise.resolve({ value: prior.value as T, source: "ledger" as const });
+    }
+    if (prior !== undefined && prior.status !== "failed") {
+      return (prior.promise as Promise<T>).then(value => ({ value, source: "ledger" as const }));
+    }
+    // Claim the key synchronously: concurrent runs attach to the gate
+    // instead of verifying/sending twice.
+    let resolveGate!: (value: T) => void;
+    let rejectGate!: (error: unknown) => void;
+    const gate = new Promise<T>((resolve, reject) => {
+      resolveGate = resolve;
+      rejectGate = reject;
+    });
+    // Followers attach via derived promises; sink the base rejection.
+    void gate.catch(() => undefined);
+    this.attempts.set(key, { status: "starting", promise: gate as Promise<unknown> });
+    return this.execute(key, resolveGate, rejectGate, send, opts);
+  }
+
+  /** Read-back peek for exactly-once hooks: replay, unknown, or undefined (verify, then send). */
+  peek(key: string): { kind: "replay"; value: unknown } | { kind: "unknown" } | undefined {
+    const prior = this.attempts.get(key);
+    if (prior === undefined || prior.status === "failed") return undefined;
+    if (prior.status === "settled") return { kind: "replay", value: prior.value };
+    return { kind: "unknown" };
+  }
+
+  private async execute<T>(
+    key: string,
+    resolveGate: (value: T) => void,
+    rejectGate: (error: unknown) => void,
+    send: () => Promise<T>,
+    opts: RunOptions<T>,
+  ): Promise<RunResult<T>> {
+    if (opts.verify !== undefined) {
+      let verdict: VerifyResult<T>;
+      try {
+        verdict = await opts.verify();
+      } catch {
+        verdict = { state: "unreadable" };
+      }
+      if (verdict.state === "committed") {
+        this.attempts.set(key, { status: "settled", value: verdict.value, promise: Promise.resolve(verdict.value) });
+        resolveGate(verdict.value);
+        return { value: verdict.value, source: "verified" };
+      }
+      // Absent or unreadable: fall through to the send (an unreadable
+      // chain fails loud inside the send's own reads).
+    }
+    let task: Promise<T>;
+    try {
+      task = send();
+    } catch (error: unknown) {
+      // Thrown before anything was sent (invalid args): retryable, no record.
+      this.attempts.set(key, { status: "failed", promise: Promise.reject(error) });
+      this.attempts.get(key)?.promise.catch(() => undefined);
+      rejectGate(error);
+      throw error;
+    }
+    this.attempts.set(key, { status: "running", promise: task as Promise<unknown> });
+    // Late settle: the raced send is never cancelled, so record whatever
+    // it eventually decides for the retry. Sink the derived rejection —
+    // the base task's rejection still reaches the racer and followers.
+    void task.then(
+      (value) => {
+        this.attempts.set(key, { status: "settled", value, promise: Promise.resolve(value) });
+        resolveGate(value);
+      },
+      (error: unknown) => {
+        if (this.attempts.get(key)?.status === "running") {
+          this.attempts.set(key, { status: "failed", promise: Promise.reject(error) });
+          this.attempts.get(key)?.promise.catch(() => undefined);
+        }
+        rejectGate(error);
+      },
+    ).catch(() => undefined);
+    const value = await raceTimeout(task, opts.timeoutMs, opts.onTimeout);
+    return { value, source: "sent" };
+  }
+}
+
+/**
+ * Commit-point read-back for `rr_launch`: the mint.club token address is a
+ * deterministic clone over (bond, symbol), so `bond.exists` plus a token
+ * name match proves OUR launch mined. A symbol held by someone else's
+ * token reads as absent — the send path's own symbol check then fails
+ * loud before broadcasting, so a mistaken re-send is impossible.
+ */
+export async function verifyLaunch(
+  client: PublicClient,
+  deployment: Deployment,
+  args: IntentArgs,
+): Promise<VerifyResult<unknown>> {
+  let intent: LaunchIntent;
+  try {
+    intent = buildIntent(args);
+  } catch {
+    return { state: "unreadable" }; // invalid args: let the send surface the real error
+  }
+  const token = predictTokenAddress(deployment, intent.symbol);
+  let taken: unknown;
+  try {
+    taken = await client.readContract({ address: deployment.bond, abi: bondAbi, functionName: "exists", args: [token] });
+  } catch {
+    return { state: "unreadable" };
+  }
+  if (taken !== true) return { state: "absent" };
+  let name: unknown;
+  try {
+    name = await client.readContract({ address: token, abi: erc20Abi, functionName: "name" });
+  } catch {
+    name = undefined;
+  }
+  if (name !== intent.name) return { state: "absent" };
+  // The original result (launch hash, router) is unrecoverable — only the
+  // commitment itself is provable — so the replay value says exactly that.
+  return {
+    state: "committed",
+    value: {
+      hash: `unknown:verified-on-chain:${token}`,
+      token,
+      router: `unknown:verified-on-chain (token ${token} holds symbol ${intent.symbol})`,
+      poolId: poolIdOf(poolKeyFor(
+        deployment,
+        token,
+        intent.secondary ?? ZERO,
+        intent.fee ?? 3000,
+        intent.tickSpacing ?? 60,
+      )),
+    },
+  };
+}
+
+/**
+ * Commit-point read-back for `rr_sweep`: a router that is no longer ready
+ * (pending cleared below MIN_CLAIM) has been swept — by us or a fellow
+ * keeper; either way the keeper action holds and re-sweeping would revert
+ * or no-op.
+ */
+export async function verifySweep(client: PublicClient, router: `0x${string}`): Promise<VerifyResult<unknown>> {
+  let status: { ready: boolean };
+  try {
+    status = await routerStatus(client, router);
+  } catch {
+    return { state: "unreadable" };
+  }
+  if (status.ready) return { state: "absent" };
+  return {
+    state: "committed",
+    value: { hash: `unknown:verified-by-router-state:${router}`, status: "success" },
+  };
 }

@@ -76,6 +76,24 @@ export async function createSigningWalletClient(
   return createWalletClient({ account, chain: base, transport: http(opts.rpcUrl) });
 }
 
+/**
+ * Run one task in a named wallet's exclusive lane: approve → simulate →
+ * send sequences wrapped here never interleave with another sender on the
+ * same wallet (no shared-nonce races). Direct where the seam predates
+ * `withLock`.
+ */
+export async function withWalletLane<T>(
+  ctx: unknown,
+  walletName: string,
+  task: () => Promise<T>,
+): Promise<T> {
+  const seam: any = (ctx as any).wallet
+  if (seam !== null && seam !== undefined && typeof seam.withLock === "function") {
+    return await seam.withLock(walletName, task);
+  }
+  return await task();
+}
+
 /** Resolve which configured wallet signs, or fail with an actionable error. */
 export function requireWalletName(config: { wallet?: string }): string {
   if (config.wallet === undefined || config.wallet.trim() === "") {
