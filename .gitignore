@@ -3,8 +3,7 @@ node_modules/
 .pnpm-store/
 .pnpm-debug.log*
 
-# lockfile — uncomment next line if you want to commit the lockfile
-pnpm-lock.yaml
+# lockfile is committed so the fat image build is reproducible
 # yarn.lock
 # package-lock.json
 

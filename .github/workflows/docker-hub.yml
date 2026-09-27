@@ -1,0 +1,36 @@
+name: docker-hub
+
+on:
+  workflow_dispatch:
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: login
+        env:
+          DOCKERHUB: ${{ secrets.DOCKERHUB }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DOCKERHUB" ]; then
+            echo "DOCKERHUB secret is empty" >&2
+            exit 1
+          fi
+          if printf '%s' "$DOCKERHUB" | grep -q ':'; then
+            user=${DOCKERHUB%%:*}
+            pass=${DOCKERHUB#*:}
+          else
+            user=havencto
+            pass=$DOCKERHUB
+          fi
+          echo "::add-mask::$pass"
+          echo "$pass" | docker login -u "$user" --password-stdin
+          echo "user=$user" >> "$GITHUB_ENV"
+      - name: build and push
+        run: |
+          set -euo pipefail
+          image="$user/dsh-haven-web3-agent:latest"
+          docker build -f docker/Dockerfile -t "$image" .
+          docker push "$image"
+          echo "pushed $image"
