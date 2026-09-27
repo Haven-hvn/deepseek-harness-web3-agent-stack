@@ -1,0 +1,10 @@
+# Collector runs inside the agent. The dashboard process only reads the files.
+- id: observatory
+  config:
+    dir: /data/observatory
+    pollMs: 15000
+    qbittorrentUrl: http://127.0.0.1:8080
+    transmissionUrl: http://127.0.0.1:9091
+    prowlarrUrl: http://127.0.0.1:9696
+    supervisorSock: /data/supervisor.sock
+    acquireStore: /data/downloads/acquire/acquisitions.json

@@ -65,6 +65,7 @@ COPY dsh-haven-aol/ /opt/stack/dsh-haven-aol/
 COPY dsh-persona/ /opt/stack/dsh-persona/
 COPY dsh-tool-prowlarr/ /opt/stack/dsh-tool-prowlarr/
 COPY dsh-tool-acquisition/ /opt/stack/dsh-tool-acquisition/
+COPY dsh-observatory/ /opt/stack/dsh-observatory/
 
 # haven-aol source: dsh-haven-aol depends on it via
 # file:../../haven-aol/packages/typescript, which resolves to /opt/haven-aol
@@ -110,11 +111,12 @@ RUN dsh plugin --profile agent add \
       /opt/stack/dsh-arkiv /opt/stack/dsh-erc8004 \
       /opt/stack/dsh-royalty-router /opt/stack/dsh-haven-aol \
       /opt/stack/dsh-persona /opt/stack/dsh-tool-prowlarr \
-      /opt/stack/dsh-tool-acquisition \
+      /opt/stack/dsh-tool-acquisition /opt/stack/dsh-observatory \
     && dsh plugin --profile agent add @xmtp/node-sdk \
     && dsh --profile agent --dump-default-config > /dev/null \
     && node --input-type=module -e "await import('/opt/stack/dsh-wallet/lib/index.js'); await import('/opt/stack/dsh-tool-acquisition/lib/index.js'); console.log('stack import gate: OK')"
 
+EXPOSE 8787
 VOLUME /data
 ENTRYPOINT ["/opt/agent/entrypoint.sh"]
 

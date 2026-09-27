@@ -1,6 +1,6 @@
 # Read-only agent dashboard (fat container)
 
-Status: plan only. No runtime code in this directory.
+Status: implemented in `dsh-observatory` and `[program:dashboard]`. This file is the map, not the runtime.
 
 The product is the snapshot. The page is a table viewer for that JSON. No chart library, no design system, no warehouse, no DuckDB, no ETL job. Backend code records the right facts. A few dozen lines of HTML dump them.
 
@@ -122,6 +122,91 @@ No login in v1. Public means the redacted snapshot, not a second projection.
 
 - Package on the workspace, Dockerfile `COPY` list, and `dsh plugin add`. First boot does not re-patch an existing volume after `/data/.instantiated`.
 - `[program:dashboard]` priority 50 in `docker/supervisord.conf`. `EXPOSE 8787`. README: publish 8787 only.
+
+## Data map
+
+Money is integer µUSD. Addresses, token contracts, and tx hashes are full and linked to a block explorer. No truncated address. No prompt, tool argument, tool output, XMTP body, magnet, torrent name, path, or hash.
+
+A row is either **live** (read now, not stored) or **ledger** (append to `events.jsonl`). The reader never calls qBit, Transmission, RPC, or the wallet. The collector does.
+
+### Status
+
+| Point | Store | Source | On the panel |
+|---|---|---|---|
+| program, state, uptime | live | supervisord socket `/data/supervisor.sock` | one row per program |
+| qBit up | live | localhost health the agent already calls | up/down |
+| Transmission up | live | Transmission RPC | up/down |
+| Prowlarr up | live | collector localhost check; reader still has no Prowlarr client | up/down |
+| agent up | live | supervisord `agent` state | up/down |
+| XMTP status | live | latest `xmtp/status` kept in the live file only | connected/not, reason. No message |
+
+### Downloads
+
+| Point | Store | Source | On the panel |
+|---|---|---|---|
+| count by state | live | qBit WebUI + Transmission RPC | table |
+| speed, progress, bytes left | live | same | table. No name, path, magnet, hash |
+| acquire state, progress | live | `acquisition-handles.json`, path and name dropped | table |
+
+Not appended. A refresh overwrites the live file.
+
+### Treasury
+
+| Point | Store | Source | On the panel |
+|---|---|---|---|
+| state, totalValueUsd, dailyBurnUsd, runwayDays, budget | live | `TreasuryReport` via `treasury/state-changed`, else last report the collector saw | pill. Not a chart |
+| state transitions | ledger | copy `treasury/state-changed` (`previous`, `current`, ts) | not a panel. Feeds the pill's "since" |
+
+### Balances
+
+| Point | Store | Source | On the panel |
+|---|---|---|---|
+| chain, token, amount, usd, address | ledger | new `wallet/balances`, emitted when `get_balances` or `updateBalances` changes a figure. Not on a timer | line chart + table. Explorer link on the address |
+| native first | ledger | container `tokens: []` today | ERC-20 only when configured |
+
+### Burn
+
+| Point | Store | Source | On the panel |
+|---|---|---|---|
+| category, amount µUSD, token, ts | ledger | copy `treasury/expense`. Categories already exist: inference, tools, infrastructure, storage, messaging, reserve | table + line chart. `24h/7d/30d` |
+| description | drop | expense may contain one | never on the snapshot |
+
+### Tokens
+
+| Point | Store | Source | On the panel |
+|---|---|---|---|
+| tokens, usd, model | ledger | token-meter `measure(session).totalTokens` written beside the inference expense. No prompt | table + line chart |
+
+### Revenue
+
+| Point | Store | Source | On the panel |
+|---|---|---|---|
+| stream, amount µUSD, token or cid, tx | ledger | `rr/swept` → stream `royalty`. A sale row only when a caller knows a buyer paid (`aol/sale` or `catalog/upsert`). Do not invent holders | table + line chart. Explorer link on tx and token |
+| factory unset | — | `docker/profile.patch.yml` | empty panel is valid |
+
+### Launches
+
+| Point | Store | Source | On the panel |
+|---|---|---|---|
+| chain, token, symbol, tx, factory, seed µUSD | ledger | new `rr/launched`. Tool return only today | table. Explorer links |
+| ROI | computed | sum of ledger rows that already share that token: revenue − acquire − pin − inference − fees. Untagged spend stays on Burn | one number per launch. Not a stored series |
+| wallet/signed | not copied | address + operation only, and it is not a launch | omit |
+
+### Catalog
+
+| Point | Store | Source | On the panel |
+|---|---|---|---|
+| cid, pin provider, expiresAt, redundancy | live | `synapse/pinned` plus `PinStatus` from `checkPin` when the page asks | table. Pin progress is live |
+| gate kind, token, chain, threshold, price | live | `GateSummary` from `aol_gate_info`: `none \| aol \| nft \| memecoin \| datadao`. DataDAO is this field, not a protocol | table. Explorer link on the token |
+| acquire / pin / inference µUSD | ledger | only if the tool passed a cid. Collector does not match by guess | columns, summed from ledger |
+| sales | ledger | Revenue panel. Not a second series | link, not a copy |
+| arkiv payload | drop | `arkiv/created` has payload bytes | key, owner, contentType, tx only, if shown at all |
+| agent identity | live | `erc8004/registered`: agentId, tokenUri, tx, owner | one identity row, separate from file tokens. Explorer link |
+| decrypted bytes | drop | `aol/decrypted` is cid + bytes | cid only, and only if a catalog row already exists |
+
+### Not on the page
+
+Traces, prompts, tool arguments, tool output, XMTP bodies, torrent names, magnets, paths, hashes, keys, `.credentials.yaml`, qBit WebUI credentials.
 
 ## Out of scope
 

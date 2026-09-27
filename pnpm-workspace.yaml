@@ -13,3 +13,4 @@ packages:
   - dsh-royalty-router
   - dsh-tool-prowlarr
   - dsh-tool-acquisition
+  - dsh-observatory

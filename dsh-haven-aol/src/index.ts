@@ -154,7 +154,17 @@ export function apply(ctx: Context, config: Config): void {
       gateMetadataJson: { type: 'string', required: true, description: 'Gate metadata JSON (from upload sidecar / Arkiv entity / .encmeta).' },
     },
     output: { schema: { type: 'object', additionalProperties: true } as never, render: (_a, v) => renderJson(v) as never },
-    execute: async (args: { gateMetadataJson: string }): Promise<unknown> => aol.gateInfo(args.gateMetadataJson),
+    execute: async (args: { gateMetadataJson: string }): Promise<unknown> => {
+      const summary = aol.gateInfo(args.gateMetadataJson)
+      ctx.emit('catalog/upsert', {
+        cid: summary.cid,
+        gate: 'aol',
+        token: summary.tokenAddress,
+        chain: summary.chain,
+        threshold: summary.threshold,
+      })
+      return summary
+    },
     presentCall: () => ({ card: 'generic', title: 'Haven-AOL gate info', kind: 'read' }),
   })))
 
