@@ -11,3 +11,4 @@ packages:
   - dsh-haven-pipeline
   - dsh-haven-aol
   - dsh-royalty-router
+  - dsh-tool-prowlarr

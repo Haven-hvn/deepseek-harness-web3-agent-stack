@@ -33,6 +33,7 @@ dsh plugin --profile <name> add /path/to/dsh-haven/<package>
 | [`dsh-storage-synapse`](./dsh-storage-synapse) | `SynapseStorageAdapter` + `StorageBackend` pinning | `ctx.synapse` + `synapse_pin` / `synapse_pin_status` agent tools; every node request wallet-signed per operation |
 | [`dsh-wallet-tools`](./dsh-wallet-tools) | wallet address/balance exposure (replaces hard-coded persona) | `wallet_info` tool via `ctx.tools` + `ctx.wallet.address()` live (no hard-coded `0x...`) |
 | [`dsh-persona`](./dsh-persona) | Haven persona / system instructions | `agent/request` composition; generic instruction to call `wallet_info` when address/balance/funding asked |
+| [`dsh-tool-prowlarr`](./dsh-tool-prowlarr) | Prowlarr indexer search bridge (use-case agnostic) | `prowlarr_indexers` / `prowlarr_search` read-only tools via `ctx.tools`; no wallet seam |
 
 ## Composition
 
