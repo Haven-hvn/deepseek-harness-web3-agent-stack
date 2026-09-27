@@ -17,11 +17,15 @@
  *   ephemeral transport keypair per call, so it caches the RECOVERED
  *   vetKey instead (same bucket semantics, one less local op per hit).
  *
+ * Custody: memory-first, with an optional durable store. The keys are
+ * tiny (32-byte AES, 48-byte vetKeys) and append-only, so a configured
+ * `keyStorePath` (see `./keyStore.ts`) keeps them across restarts in a
+ * versioned JSON file; unset keeps the CLI's memory-only behavior.
+ * Either way there is deliberately no revocation within an epoch: a
+ * member who legitimately held a bucket key could have saved the
+ * unwrapped file keys anyway.
+ *
  * Invariants (same as the CLI):
- * - Process (here: runtime-instance) lifetime only. No disk, no TTL.
- *   Restart clears. There is deliberately no revocation within an
- *   epoch: a member who legitimately held a bucket key could have
- *   saved the unwrapped file keys anyway.
  * - Threshold-zero collapses epoch to 0 in the cache key, so the whole
  *   free corpus lands in one slot (callers pass the collapsed epoch;
  *   `makeEpochCacheKey` throws on `threshold == 0, epoch != 0` rather
@@ -128,10 +132,28 @@ export class EpochAesKeyCache {
     this.entries.clear()
     // In-flight fills still resolve into the (now empty) cache: correct,
     // they computed a live key. Only settled entries drop.
+    // Memory-only by design: clear() never touches the key store file.
   }
 
   get size(): number {
     return this.entries.size
+  }
+
+  /**
+   * Snapshot for the key store: `[slot, bucket, value]` triples with
+   * copied key bytes. Slots recompute from the bucket on load.
+   */
+  snapshot(): Array<{ slot: string; bucket: EpochBucket; value: EpochAesKey }> {
+    const out: Array<{ slot: string; bucket: EpochBucket; value: EpochAesKey }> = []
+    for (const [slot, value] of this.entries) {
+      const [chain, tokenAddress, threshold, epoch] = JSON.parse(slot) as [string, string, string, number]
+      out.push({
+        slot,
+        bucket: { chain, tokenAddress, threshold: BigInt(threshold), epoch },
+        value: { rawKey: new Uint8Array(value.rawKey), wrappedB64: value.wrappedB64 },
+      })
+    }
+    return out
   }
 }
 
@@ -191,5 +213,10 @@ export class VetKeyCache {
 
   get size(): number {
     return this.entries.size
+  }
+
+  /** Snapshot for the key store: `[slot, vetKey]` pairs. */
+  snapshot(): Array<{ slot: string; vetKey: VetKey }> {
+    return [...this.entries].map(([slot, vetKey]) => ({ slot, vetKey }))
   }
 }

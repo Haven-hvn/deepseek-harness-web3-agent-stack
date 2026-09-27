@@ -70,12 +70,14 @@ import {
   HavenAolError,
   type Chain,
 } from 'haven-aol'
+import type { VetKey } from '@icp-sdk/vetkeys'
 import { AolSigningError } from './types.ts'
 import {
   EpochAesKeyCache,
   VetKeyCache,
   vetKeySlot,
 } from './keyCache.ts'
+import { loadKeyStore, saveKeyStore } from './keyStore.ts'
 import {
   buildGateMetadataV1,
   gateMetadataV1ToJson,
@@ -340,6 +342,12 @@ export interface AolRuntimeOpts {
   eip712VerifyingContract?: string
   /** Raw-digest signer. Unset → every gated call throws AolSigningError (fail-loud). */
   signGate?: SignGate
+  /**
+   * Durable key file (versioned JSON, 0600, atomic writes). Set →
+   * epoch/vetKeys load once on first use and every fill persists
+   * (merge-on-save across runtimes); unset → memory-only.
+   */
+  keyStorePath?: string
 }
 
 export interface GateCallCommon {
@@ -398,8 +406,8 @@ export class AolRuntime {
   private readonly dpkCache = new Map<1 | 3 | 4, Uint8Array>()
   /**
    * v3 seal-side epoch keys: one AES key + wrapped blob per
-   * (chain, token, threshold, epoch) bucket. Runtime memory only —
-   * never disk, cleared on restart (see ./keyCache.ts).
+   * (chain, token, threshold, epoch) bucket. Memory-first; a
+   * configured keyStorePath also keeps them across restarts.
    */
   readonly epochKeys = new EpochAesKeyCache()
   /**
@@ -407,9 +415,71 @@ export class AolRuntime {
    * round-trip per bucket, then local unwraps. Same custody as above.
    */
   readonly vetKeys = new VetKeyCache()
+  /** Single-flight key-store load (first seal/decrypt only). */
+  private keyStoreLoad: Promise<void> | undefined
+  /** Chained key-store saves (each save snapshots current maps). */
+  private saveChain: Promise<void> = Promise.resolve()
+  /** Cache sizes at the last save: memory hits skip the rewrite. */
+  private savedSizes = { epochs: 0, vetKeys: 0 }
 
   constructor(private readonly opts: AolRuntimeOpts) {
     if (!opts.canisterId || !opts.icpHost) throw new Error('dsh-haven-aol: canisterId+icpHost required')
+  }
+
+  /**
+   * Load the key store once (no-op without keyStorePath or when
+   * already loaded). Best-effort — failures start empty, never throw.
+   */
+  private ensureKeyStore(): Promise<void> {
+    const path = this.opts.keyStorePath
+    if (path === undefined || path === '') return Promise.resolve()
+    if (this.keyStoreLoad === undefined) {
+      this.keyStoreLoad = (async () => {
+        await loadKeyStore(path, this.epochKeys, this.vetKeys)
+        this.savedSizes = { epochs: this.epochKeys.size, vetKeys: this.vetKeys.size }
+      })()
+    }
+    return this.keyStoreLoad
+  }
+
+  /**
+   * Persist both caches when they grew since the last save, and wait
+   * for the write — callers return only once the fill is durable.
+   * Chained so concurrent fills serialize; best-effort, never throws.
+   * No-op without keyStorePath; memory hits skip with no IO at all.
+   */
+  private async persistKeys(): Promise<void> {
+    const path = this.opts.keyStorePath
+    if (path === undefined || path === '') return
+    if (this.epochKeys.size === this.savedSizes.epochs && this.vetKeys.size === this.savedSizes.vetKeys) return
+    this.saveChain = this.saveChain.then(async () => {
+      await saveKeyStore(path, this.epochKeys, this.vetKeys)
+      this.savedSizes = { epochs: this.epochKeys.size, vetKeys: this.vetKeys.size }
+    })
+    await this.saveChain
+  }
+
+  /**
+   * Flush both caches to the key store now (waits for the write).
+   * Covers direct cache installs, which bypass the seal/decrypt save
+   * hooks. No-op without keyStorePath; failures log, never throw.
+   */
+  async flushKeys(): Promise<void> {
+    const path = this.opts.keyStorePath
+    if (path === undefined || path === '') return
+    await this.ensureKeyStore()
+    await this.persistKeys()
+  }
+
+  /**
+   * vetKey fetch that loads the store first and persists fills (the
+   * single choke point for all three decrypt paths).
+   */
+  private async cachedVetKey(slot: string, fetcher: () => Promise<VetKey>): Promise<VetKey> {
+    await this.ensureKeyStore()
+    const hit = await this.vetKeys.getOrFetch(slot, fetcher)
+    await this.persistKeys()
+    return hit
   }
 
   /** Current 30-day epoch (advisory — canister is authoritative, rejects future epochs). */
@@ -496,7 +566,7 @@ export class AolRuntime {
     const metadata = parseGateMetadata(params.gateMetadataJson)
     const derivationInput = await computeDerivationInput(
       metadata.chain, metadata.tokenAddress, metadata.threshold, metadata.cid)
-    const vetKey = await this.vetKeys.getOrFetch(vetKeySlot(derivationInput), async () => {
+    const vetKey = await this.cachedVetKey(vetKeySlot(derivationInput), async () => {
       const agent = await this.agent()
       const { secretKey, publicKey } = createTransportKeyPair()
       const nonce = params.nonce ?? freshNonce()
@@ -531,7 +601,7 @@ export class AolRuntime {
     if (!metadata) throw new Error('dsh-haven-aol: not v3 gate metadata')
     const derivationInput = await computeDerivationInputV3(
       metadata.chain, metadata.tokenAddress, BigInt(metadata.threshold), metadata.epoch)
-    const vetKey = await this.vetKeys.getOrFetch(vetKeySlot(derivationInput), async () => {
+    const vetKey = await this.cachedVetKey(vetKeySlot(derivationInput), async () => {
       const agent = await this.agent()
       const { secretKey, publicKey } = createTransportKeyPair()
       const nonce = params.nonce ?? freshNonce()
@@ -567,7 +637,7 @@ export class AolRuntime {
     }
     const derivationInput = await computeDerivationInputV4(
       metadata.chain, metadata.tokenAddress, BigInt(metadata.threshold), metadata.epoch, metadata.marketCapTarget)
-    const vetKey = await this.vetKeys.getOrFetch(vetKeySlot(derivationInput), async () => {
+    const vetKey = await this.cachedVetKey(vetKeySlot(derivationInput), async () => {
       const agent = await this.agent()
       const { secretKey, publicKey } = createTransportKeyPair()
       const nonce = params.nonce ?? freshNonce()
@@ -606,6 +676,7 @@ export class AolRuntime {
    * still unique — repeats never reproduce a release.
    */
   async seal(params: SealParams): Promise<SealResult> {
+    await this.ensureKeyStore()
     if (params.version !== 1 && params.version !== 3 && params.version !== 4) {
       throw new Error(`dsh-haven-aol: unsupported seal version ${String(params.version)} (want 1, 3, or 4)`)
     }
@@ -643,6 +714,7 @@ export class AolRuntime {
           return { rawKey: raw, wrappedB64: this.wrapOrThrow(3, dpk, derivationInput, raw) }
         },
       )
+      await this.persistKeys()
       aesKey = hit.rawKey
       wrapped = hit.wrappedB64
     } else {

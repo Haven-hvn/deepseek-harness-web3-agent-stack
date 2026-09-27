@@ -57,6 +57,7 @@ Without a wired `signDigest` (default OWS path), the `signGate` seam stays **uns
     canisterId: gny6k-fqaaa-aaaab-ag3ra-cai
     icpHost: https://icp-api.io
     fetchRootKey: false   # local replica only — never mainnet
+    keyStorePath: /data/haven-aol/keys.json  # optional; unset = memory-only
 ```
 
 `inject = ['wallet', 'tools']`. `ctx.synapse` is best-effort via `ctx.get()` — `aol_decrypt {cid}` needs `dsh-storage-synapse` mounted, otherwise pass `path`.
@@ -73,4 +74,4 @@ Sealing (`aol_seal`) is harness-native: v3/v4 metadata builders and derivation i
 
 - **Seal side** (`EpochAesKeyCache`): one AES key + wrapped blob per `(chain, token, threshold, epoch)` bucket. Every file sealed in the epoch carries the same `encryptedAesKey`; `keySha256` is the bucket commitment. v1 (per-file) and v4 (per-rung — sharing across rungs would let one unlock open later files) still mint per seal. IVs are fresh per seal in all versions, so every seal's bytes stay unique.
 - **Decrypt side** (`VetKeyCache`): one signed canister round-trip per bucket, then local unwraps for every file in it. Lookups key off the derivation input from the gate metadata epoch — never the wall clock.
-- **Custody**: both caches live in runtime memory only — no disk, no TTL, cleared on restart. There is deliberately no revocation within an epoch (a member who held a bucket key could have saved the unwrapped file keys anyway). Gate denials are never cached.
+- **Custody**: both caches are memory-first with an optional durable store. The keys are tiny (32-byte AES, 48-byte vetKeys) and append-only, so a configured `keyStorePath` (e.g. `/data/haven-aol/keys.json`) keeps them across restarts in versioned JSON (0600, atomic tmp+rename, merge-on-save across runtimes — the xmtp outbox convention); unset keeps memory-only. Either way there is deliberately no revocation within an epoch (a member who held a bucket key could have saved the unwrapped file keys anyway). Gate denials are never cached.

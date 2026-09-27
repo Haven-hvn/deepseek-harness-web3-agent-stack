@@ -58,7 +58,9 @@ threshold, epoch or rungs, written down before this stage
 starts. Then seal with `aol_seal`: plaintext path in, sealed
 bytes plus `gateMetadataJson` out. v3 seals share one key per
 community epoch (every file in the epoch carries the same
-wrapped blob); v1/v4 mint per seal — and every seal's bytes
+wrapped blob, kept across restarts in the key store — a
+fresh boot reuses the epoch key rather than forking a new
+blob); v1/v4 mint per seal — and every seal's bytes
 are unique regardless, so sealing twice never reproduces a
 release. Seal once per release, deliberately. Verify the
 binding immediately

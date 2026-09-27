@@ -17,10 +17,10 @@
  *   Python sealer's `_get_or_cache_derived_public_key`.
  *
  * Custody: v1/v4 AES keys and all IBE plaintexts stay inside the sealing
- * call; v3 epoch keys live in runtime memory (see `./keyCache.ts` — never
- * disk, cleared on restart). The only key-derived output is the SHA-256
- * commitment (`keySha256`), which proves which key sealed a file without
- * revealing it.
+ * call; v3 epoch keys live in the epoch cache, which a configured
+ * keyStorePath keeps across restarts (see `./keyStore.ts`). The only
+ * key-derived output is the SHA-256 commitment (`keySha256`), which
+ * proves which key sealed a file without revealing it.
  *
  * @module dsh-haven-aol/seal
  */

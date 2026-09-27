@@ -12,8 +12,9 @@
  * Custody: the EIP-712 gate signature is the only signing operation and it
  * goes through the signGate seam (default fail-loud AolSigningError —
  * ctx.wallet.signMessage is EIP-191, the canister needs a raw EIP-712 digest
- * signature; see README spike). VetKD/AES/transport keys stay inside the
- * executing tool call and never appear in outputs or events.
+ * signature; see README spike). Keys never appear in outputs or events;
+ * epoch/vetKeys persist to keyStorePath when configured, else stay in
+ * memory (see ./keyStore.ts).
  *
  * Deferred, deliberately absent: attestHolding (no wrapper in any SDK yet),
  * encrypt-side (IBE-encrypt against @icp-sdk/vetkeys unverified).
@@ -37,6 +38,7 @@ export { AolRuntime, HavenAolError, freshNonce, type Chain, type SignGate } from
 export type { SealParams, SealResult } from './aol.ts'
 export { EpochAesKeyCache, VetKeyCache, makeEpochCacheKey, vetKeySlot } from './keyCache.ts'
 export type { EpochAesKey, EpochBucket } from './keyCache.ts'
+export { KEY_STORE_VERSION, loadKeyStore, saveKeyStore } from './keyStore.ts'
 export type { AolDecryptedEvent, AolSealedEvent, AolSigningError } from './types.ts'
 
 /** Cordis plugin name. */
@@ -62,6 +64,11 @@ export interface Config {
   readonly eip712ChainId?: number
   /** Default EIP-712 verifying contract (per-call override wins). */
   readonly eip712VerifyingContract?: string
+  /**
+   * Durable key file for epoch/vetKeys (e.g. `/data/haven-aol/keys.json`).
+   * Unset keeps the memory-only behavior (keys cleared on restart).
+   */
+  readonly keyStorePath?: string
 }
 
 export const Config: z<Config> = z.object({
@@ -71,6 +78,7 @@ export const Config: z<Config> = z.object({
   fetchRootKey: z.boolean().default(false),
   eip712ChainId: z.number(),
   eip712VerifyingContract: z.string(),
+  keyStorePath: z.string(),
 })
 
 interface WalletSeam {
@@ -121,6 +129,7 @@ export function apply(ctx: Context, config: Config): void {
     fetchRootKey: config.fetchRootKey ?? false,
     ...(config.eip712ChainId !== undefined ? { eip712ChainId: BigInt(config.eip712ChainId) } : {}),
     ...(config.eip712VerifyingContract !== undefined ? { eip712VerifyingContract: config.eip712VerifyingContract } : {}),
+    ...(config.keyStorePath !== undefined ? { keyStorePath: config.keyStorePath } : {}),
     ...(testSignGate ? { signGate: testSignGate } : {}),
     // signGate stays unset otherwise: gate signing is fail-loud until a
     // vault signDigest (or the TEST-ONLY key above) is available.
@@ -131,6 +140,7 @@ export function apply(ctx: Context, config: Config): void {
     fetchRootKey: config.fetchRootKey ?? false,
     ...(config.eip712ChainId !== undefined ? { eip712ChainId: BigInt(config.eip712ChainId) } : {}),
     ...(config.eip712VerifyingContract !== undefined ? { eip712VerifyingContract: config.eip712VerifyingContract } : {}),
+    ...(config.keyStorePath !== undefined ? { keyStorePath: config.keyStorePath } : {}),
   }
   /** Per-call runtime: vault signDigest first, TEST-ONLY key fallback, else fail-loud. */
   function runtimeForCall(wallet: WalletSeam): AolRuntime {

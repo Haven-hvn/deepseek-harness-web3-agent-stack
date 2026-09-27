@@ -9,6 +9,11 @@
 # Deferred: attestHolding (no SDK wrapper anywhere yet), encrypt-side
 # (IBE-encrypt against @icp-sdk/vetkeys unverified) — see README.
 #
+# Deployments that want epoch/vetKeys to survive restarts set
+# `keyStorePath` (e.g. /data/haven-aol/keys.json) in their own layer —
+# paths are deployment concerns, so this bundle leaves it unset
+# (memory-only). See README "Key reuse".
+#
 # install: dsh plugin --profile <name> add /path/to/dsh-haven-aol
 - insert:
     - id: haven-aol
