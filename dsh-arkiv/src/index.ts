@@ -92,7 +92,7 @@ export class ArkivRuntime {
   }
 }
 
-const CREATE_RESULT_SCHEMA = {
+export const CREATE_RESULT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   properties: {
@@ -100,6 +100,12 @@ const CREATE_RESULT_SCHEMA = {
     owner: { type: 'string', required: true },
     txHash: { type: 'string', required: true },
   },
+} as const;
+
+/** Array-rooted: entity query returns a JSON list (the registry validates tool output against this schema). */
+export const QUERY_RESULT_SCHEMA = {
+  type: 'array',
+  items: { type: 'object', additionalProperties: true },
 } as const;
 
 export function apply(ctx: Context, config: Config): void {
@@ -117,10 +123,14 @@ export function apply(ctx: Context, config: Config): void {
       expiresIn: { type: 'number', description: 'Seconds until expiry (default 4 weeks)' } as any,
     },
     output: { schema: CREATE_RESULT_SCHEMA, render: (_args, value) => [{ type: 'text', text: `${(value as any).key}: created tx ${(value as any).txHash}` }] },
-    async execute(args: { path?: string; payload?: string; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }, exec): Promise<ArkivEntityRecord> {
+    async execute(args: { path?: string; payload?: string; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }, exec): Promise<{ key: string; owner: string; txHash: string }> {
       if ((args.path === undefined) === (args.payload === undefined)) throw new Error('provide exactly one of path or payload');
       const payload = args.path !== undefined ? await readFile(args.path) : Buffer.from(args.payload as string, 'utf8');
-      return arkiv.createEntity({ payload, contentType: args.contentType, attributes: args.attributes, expiresIn: args.expiresIn });
+      const record = await arkiv.createEntity({ payload, contentType: args.contentType, attributes: args.attributes, expiresIn: args.expiresIn });
+      // Project to the declared output shape: the full record carries payload
+      // bytes that are neither JSON nor model-meaningful, and the registry
+      // rejects undeclared keys under additionalProperties:false.
+      return { key: record.key as string, owner: record.owner as string, txHash: record.txHash as string };
     },
     presentCall: args => ({ card: 'generic', title: `Create Arkiv entity ${args.path ? basename(args.path) : 'payload'}`, kind: 'execute' }),
   })));
@@ -151,7 +161,7 @@ export function apply(ctx: Context, config: Config): void {
       where: { type: 'object', description: 'Attribute filter, e.g. {category:"doc"}' } as any,
       limit: { type: 'number', description: 'Max results' } as any,
     },
-    output: { schema: { type: 'object', additionalProperties: true } as any, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }] },
+    output: { schema: QUERY_RESULT_SCHEMA, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }] },
     async execute(args: { where?: Record<string, unknown>; limit?: number }, exec): Promise<ArkivEntityRecord[]> {
       return arkiv.queryEntities({ where: args.where, limit: args.limit });
     },

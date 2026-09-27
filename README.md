@@ -98,7 +98,7 @@ how the DeepSeek harness composes.
 
 Harness limitations that force this shape:
 
-1. **Singleton tool runtime.** `@deepseek-ai/dsh-tools` exposes one scheduler (`ctx.tools[TOOL_RUNTIME_SCHEDULER].prepare`). If two instances are deduped incorrectly the `Symbol` mismatches and every `tool/call` fails with `Cannot read properties of undefined (reading 'prepare')`. Bundles therefore depend on `dsh-tools` as a **peer** (`==0.1.0-rc.7`) and `link:` installs must dedupe to one copy.
+1. **Singleton tool runtime.** `@deepseek-ai/dsh-tools` exposes one scheduler (`ctx.tools[TOOL_RUNTIME_SCHEDULER].prepare`). If two instances are deduped incorrectly the `Symbol` mismatches and every `tool/call` fails with `Cannot read properties of undefined (reading 'prepare')`. Bundles therefore depend on `dsh-tools` as a **peer** (`0.1.7-rc.2`) and `link:` installs must dedupe to one copy.
 
 2. **Wallet custody is per-operation.** Configuration carries only `keyRef`/`wallet` names; `ctx.credentials.resolve` runs inside `signMessage`/`address` and is dropped. Consumers (XMTP identity in `dsh-channel-xmtp`, per-request `x-synapse-*` headers in `dsh-storage-synapse`, `wallet_info` in `dsh-wallet-tools`) see only addresses/signatures. Hard-coding an address in persona (`When asked for address, answer with 0x...`) breaks rotation and wallet-agnostic installs — the correct seam is a tool that resolves `ctx.wallet.address(config.wallet)` live.
 

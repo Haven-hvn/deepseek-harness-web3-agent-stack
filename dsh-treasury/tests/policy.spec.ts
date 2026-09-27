@@ -253,7 +253,7 @@ describe('agent/request gate (through the agent loop)', () => {
 
   /** Drive one user turn to quiescence and return the turn-end reason. */
   async function runTurn(ctx: Context, sessionName: string) {
-    const agent = ctx.agentLoop.create(SessionId(sessionName), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId(sessionName), { provider: 'mock', model: 'mock' })
     agent.followup(createUserMessage({
       content: [{ type: 'text', text: 'go' }],
       source: { kind: 'user' },

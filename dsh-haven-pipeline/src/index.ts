@@ -96,7 +96,9 @@ export function apply(ctx: Context, config: Config): void {
       query: { type: 'string', required: true, description: 'Arkiv query string.' },
       limit: { type: 'number', description: 'Max results (default 10).' },
     },
-    output: { schema: { type: 'object', additionalProperties: true } as never, render: (_a, v) => renderJson(v) as never },
+    // Array-rooted: entity query returns a JSON list, and the registry
+    // validates tool output against this schema (non-object roots allowed).
+    output: { schema: { type: 'array', items: { type: 'object', additionalProperties: true } } as never, render: (_a, v) => renderJson(v) as never },
     execute: async (args: { query: string; limit?: number }, exec): Promise<unknown> => {
       const argv = withConfig(
         ['entity', 'query', args.query, '--json', '--limit', String(args.limit ?? 10)],

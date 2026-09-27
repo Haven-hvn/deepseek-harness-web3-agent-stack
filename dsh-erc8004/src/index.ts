@@ -36,7 +36,7 @@ export interface Config {
   image?: string | undefined
 }
 
-export const Config = z.object({
+export const Config: z<Config> = z.object({
   wallet: z.string().required(),
   baseRpcUrl: z.string().default('https://sepolia.base.org'),
   identityRegistry: z.string().default('0x8004A818BFB912233c491871b3d84c89A494BD9e'),

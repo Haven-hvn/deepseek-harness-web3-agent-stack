@@ -181,11 +181,28 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   // ── inference: gate + meter at the request boundary ────────────────────────
-  ctx.on('agent/request', async ({ agent }, next) => {
-    // Price the pending request off the durable session tail: request
-    // pressure (tokens the next call will carry) × the configured rate.
+  // agent/request fires pre-admission, after the inbox was claimed: the
+  // pending batch is visible ONLY on agent/pre-step. Stash its priced
+  // pressure per agent; agent/request consumes the matching slot. A slot
+  // whose turn/step does not match is ignored (stale: pre-step rejected).
+  const pendingStep = new WeakMap<object, { turn: number; step: number; tokens: number }>()
+  ctx.on('agent/pre-step', async ({ agent, messages, turn, step }, next) => {
+    let tokens = 0
+    for (const message of messages) tokens += ctx.tokenMeter.estimateMessage(message)
+    pendingStep.set(agent, { turn, step, tokens })
+    return next()
+  })
+
+  ctx.on('agent/request', async ({ agent, turn, step }, next) => {
+    // Price the pending request: the admitted session tail plus the claimed
+    // batch stashed at pre-step. measure() alone would miss input admitted
+    // after config resolution (notably the first turn's user message).
     const measurement = ctx.tokenMeter.measure(agent.session)
-    const estimatedCostUsd = Math.ceil((measurement.totalTokens * resolved.usdPerMillionTokens) / 1_000_000)
+    const slot = pendingStep.get(agent)
+    const stashed = slot !== undefined && slot.turn === turn && slot.step === step ? slot.tokens : 0
+    pendingStep.delete(agent)
+    const pendingTokens = measurement.totalTokens + stashed
+    const estimatedCostUsd = Math.ceil((pendingTokens * resolved.usdPerMillionTokens) / 1_000_000)
     if (resolved.enabled && funded()) {
       const decision = ctx.treasury.authorize('inference', estimatedCostUsd)
       if (!decision.approved) {
@@ -201,7 +218,7 @@ export function apply(ctx: Context, config: Config): void {
       await ctx.treasury.recordExpense({
         category: 'inference',
         amount: estimatedCostUsd,
-        description: `model request (~${measurement.totalTokens} tokens)`,
+        description: `model request (~${pendingTokens} tokens)`,
       })
     }
     return callConfig
