@@ -12,6 +12,7 @@ Source of truth for everything except secrets (which live only on the box).
 | `/root/.dsh/.credentials.yaml` (0600) | `AGENT_EVM_KEY`, `XMTP_DB_KEY` |
 | `/etc/herald/agent.env` (0600) | `MODEL_BASE_URL`, `MODEL_ID`, `MODEL_API_KEY`, `PROWLARR_API_KEY` |
 | `/var/lib/herald/` | state: `xmtp/`, `downloads/`, `convos/`, `observatory/`, `prowlarr/`, `transmission/`, `qbithome/`, `keys/` (public address + inbox id) |
+| `/var/lib/herald/memory.md` (0600) | Herald's private journal — single markdown file, opt-in only, never injected (see §7 of `process.md`) |
 | `/opt/herald/` | `convos-qr.sh`, `setup-indexers.mjs`, `round.sh`, `round-prompt.md` |
 | `/etc/systemd/system/herald-*` | units — copies of `systemd/` |
 

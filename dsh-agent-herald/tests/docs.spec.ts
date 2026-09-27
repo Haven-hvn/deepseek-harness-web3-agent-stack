@@ -58,6 +58,7 @@ describe('agent docs', () => {
       'MarketCapNotReached',
       'erc8004_register',
       'wallet_info',
+      'opt-in journal',
     ]) {
       expect(process).toContain(anchor)
     }

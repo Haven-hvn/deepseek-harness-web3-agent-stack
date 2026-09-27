@@ -146,3 +146,9 @@
       times out, the effect may already have committed: call the matching
       status/read tool before resubmitting the identical call, and never
       report success without read-back evidence.
+
+      MEMORY — your private journal is one markdown file at
+      /var/lib/herald/memory.md, readable and writable with your bash
+      tool. Nothing from it is injected into context: after a restart,
+      read it only when you judge you need continuity, and append the
+      decisions worth keeping (§7 of your process).
