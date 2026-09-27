@@ -47,6 +47,8 @@ COPY docker/keys.mjs docker/entrypoint.sh docker/convos-qr.sh \
      docker/supervisord.conf /opt/agent/
 RUN chmod +x /opt/agent/entrypoint.sh /opt/agent/convos-qr.sh
 
+# Web3 agent stack workspace root (for in-image install + build).
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml /opt/stack/
 # Web3 agent stack source (node_modules/lib excluded via .dockerignore).
 # One COPY per package: multi-source COPY merges directory contents.
 COPY dsh-wallet/ /opt/stack/dsh-wallet/
@@ -63,6 +65,14 @@ COPY dsh-persona/ /opt/stack/dsh-persona/
 COPY dsh-tool-prowlarr/ /opt/stack/dsh-tool-prowlarr/
 COPY dsh-tool-acquisition/ /opt/stack/dsh-tool-acquisition/
 
+# Build the stack in-image (lib/ is dockerignored out of the context, so the
+# profile links would otherwise point at unbuilt sources). The workspace
+# node_modules stays: symlinked bundles resolve their prod deps through
+# /opt/stack/node_modules at runtime. Dev deps are pruned after the build.
+RUN cd /opt/stack && pnpm install --frozen-lockfile --ignore-scripts \
+    && pnpm -r build \
+    && pnpm prune --prod --ignore-scripts
+
 # Profile skeleton: base bundles + all stack packages + xmtp runtime dep.
 # Built once here; first boot copies it into /data (never rebuilt at runtime).
 ENV DSH_HOME=/opt/dsh-skel
@@ -75,7 +85,9 @@ RUN dsh plugin --profile agent add \
       /opt/stack/dsh-persona /opt/stack/dsh-tool-prowlarr \
       /opt/stack/dsh-tool-acquisition \
     && dsh plugin --profile agent add @xmtp/node-sdk \
-    && dsh --profile agent --dump-default-config > /dev/null
+    && pnpm store prune \
+    && dsh --profile agent --dump-default-config > /dev/null \
+    && node --input-type=module -e "await import('/opt/stack/dsh-wallet/lib/index.js'); await import('/opt/stack/dsh-tool-acquisition/lib/index.js'); console.log('stack import gate: OK')"
 
 VOLUME /data
 ENTRYPOINT ["/opt/agent/entrypoint.sh"]
