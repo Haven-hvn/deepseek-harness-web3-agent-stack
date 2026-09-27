@@ -45,6 +45,7 @@ export const DEFAULT_WRITES: readonly string[] = [
   'synapse_pin',
   '*_submit',
   'arkiv_create_entity',
+  'arkiv_create_entities',
   'arkiv_update_entity',
   'erc8004_register',
   'rr_launch',

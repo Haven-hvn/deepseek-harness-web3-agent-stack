@@ -75,7 +75,18 @@ Evidence: the CID.
 
 The CLI distinguished create from update by lookup; do the
 same: `arkiv_query` first, then `arkiv_create_entity` for a
-new release or `arkiv_update_entity` for a revision. Payload
+new release or `arkiv_update_entity` for a revision — or one
+`arkiv_create_entities` batch when the release is several
+records (a drip series plus its parts lands in a single
+transaction, never half-published). Batch only what is ready
+in this session: urgency decides whether to wait for
+stragglers, not whether to batch. A record that is ready now
+with more still in flight ships immediately when it is
+urgent ("drop it now", time-bound, a rung about to hit) and
+waits for the session's natural batch point when it is
+routine. Never hold a release past the conversation for a
+fuller batch — no timer exists to flush it, and a held v3
+record's epoch goes stale while it waits. Payload
 carries `fcid`/`piece` (the stage-4 CID, exactly one),
 `gate` (the stage-3 metadata JSON), and the stage-2 notes;
 attributes carry `grp`, `title`, the gate corpus

@@ -5,7 +5,7 @@
  */
 
 import type { Hex } from 'viem';
-import type { CreateEntityReturnType } from '@arkiv-network/sdk';
+import type { CreateEntityReturnType, ExecuteBatchReturnType } from '@arkiv-network/sdk';
 
 export interface ArkivBackendOpts {
   privateKeyRef: string;
@@ -42,6 +42,33 @@ export async function createEntityWithClient(
     expires,
   });
   return { key: entityKey, txHash };
+}
+
+/** Minimal wallet-client surface for batch creates (`createdEntities` is in batch order). */
+export interface ArkivBatchClient {
+  executeBatch: (data: any) => Promise<ExecuteBatchReturnType>;
+}
+
+/** N creates through an explicit client, keys mapped positionally (the backend delegates to this). */
+export async function createEntitiesWithClient(
+  client: ArkivBatchClient,
+  records: Array<{ payload: Uint8Array; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }>,
+): Promise<Array<{ key: Hex; txHash: Hex }>> {
+  const { ExpirationTime } = await import('@arkiv-network/sdk');
+  const { txHash, createdEntities } = await client.executeBatch({
+    creates: records.map(record => ({
+      payload: record.payload,
+      contentType: record.contentType,
+      attributes: record.attributes ?? {},
+      expires: record.expiresIn ? ExpirationTime.fromSeconds(record.expiresIn) : ExpirationTime.fromDays(28),
+    })),
+  });
+  // The SDK asserts receipt counts itself; this backstop keeps a short
+  // result from silently mis-mapping keys to records.
+  if (createdEntities.length !== records.length) {
+    throw new Error(`dsh-arkiv: batch created ${createdEntities.length} entities for ${records.length} records (order unmapped; read them back)`);
+  }
+  return createdEntities.map(key => ({ key, txHash }));
 }
 
 /** Minimal chain shape the resolver needs (viem chain objects satisfy this). */
@@ -98,6 +125,16 @@ export class ArkivBackend {
   async createEntity(params: { payload: Uint8Array; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }): Promise<{ key: Hex; txHash: Hex }> {
     const client = await this.getWalletClient();
     return createEntityWithClient(client as ArkivCreateClient, params);
+  }
+
+  /**
+   * N creates in ONE `execute` transaction (atomic all-or-nothing), like
+   * the CLI's `batch_sync_contexts` multi path. Every record validates
+   * before this runs, so a chain revert is gas/chain state — never shape.
+   */
+  async createEntities(records: Array<{ payload: Uint8Array; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }>): Promise<Array<{ key: Hex; txHash: Hex }>> {
+    const client = await this.getWalletClient();
+    return createEntitiesWithClient(client as ArkivBatchClient, records);
   }
 
   async updateEntity(params: { key: Hex; payload: Uint8Array; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }): Promise<{ txHash: Hex }> {

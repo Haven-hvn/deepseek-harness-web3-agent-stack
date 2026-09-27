@@ -35,9 +35,12 @@ reason written in the conversation.
    (`haven.video.full`, or the generic-file / drip group),
    `title`, the gate corpus (`gate_type` = the gate version —
    1, 3, or 4, numeric, no `gate_version` key — plus
-   `gate_token`/`gate_chain`/`gate_threshold`, and `gate_epoch`
-   for v3), `sha256_ct`, and `mime`. Query it back with
-   `arkiv_query` before announcing.
+   for v3), `sha256_ct`, and `mime`. Multi-record releases (a
+   drip series plus its parts) go in one `arkiv_create_entities`
+   call — one transaction, all-or-nothing. Urgency decides
+   whether ready records wait for stragglers (stage 5):
+   routine releases batch, urgent ones ship. Query it back
+   with `arkiv_query` before announcing.
 7. **Fund.** Make sure the release earns (§3): the community token
    exists with you as fee recipient, royalties are set, and the
    first sweep path is clear.

@@ -214,10 +214,10 @@ describe('lazy hook registration', () => {
     const { rt } = runtime(guard);
     expect((rt as any).hookDisposers).toBeUndefined(); // nothing before the first write
     await rt.createEntity({ payload: BYTES, contentType: 'application/json', attributes: { ...CLEAR_ATTRS } });
-    expect(guard.registerCheck).toHaveBeenCalledTimes(2);
-    expect([...registered.keys()].sort()).toEqual(['arkiv_create_entity', 'arkiv_update_entity']);
+    expect(guard.registerCheck).toHaveBeenCalledTimes(3);
+    expect([...registered.keys()].sort()).toEqual(['arkiv_create_entities', 'arkiv_create_entity', 'arkiv_update_entity']);
     await rt.updateEntity({ key: '0x1' as `0x${string}`, payload: BYTES, contentType: 'application/json', attributes: { ...CLEAR_ATTRS } });
-    expect(guard.registerCheck).toHaveBeenCalledTimes(2); // idempotent
+    expect(guard.registerCheck).toHaveBeenCalledTimes(3); // idempotent
     rt.unhook();
     expect(registered.size).toBe(0);
   });

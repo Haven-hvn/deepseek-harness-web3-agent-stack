@@ -81,6 +81,13 @@ function createKeyFor(params: { payload: Uint8Array; contentType: string; attrib
   return `create:${hash.digest('hex')}`;
 }
 
+/** Content identity for one batch: the ordered per-record create keys (order matters — keys map positionally). */
+function batchKeyFor(records: Array<{ payload: Uint8Array; contentType: string; attributes: Record<string, unknown> }>): string {
+  const hash = createHash('sha256');
+  hash.update(records.map(record => createKeyFor(record)).join('\n'));
+  return `batch:${hash.digest('hex')}`;
+}
+
 /** Content identity for one update: the entity key plus the new content. */
 function updateKeyFor(params: { key: `0x${string}`; payload: Uint8Array; contentType: string; attributes?: Record<string, unknown> }): string {
   const hash = createHash('sha256');
@@ -123,6 +130,8 @@ export class ArkivRuntime {
   private readonly creates = new Map<string, Promise<ArkivEntityRecord>>();
   /** Update attempts by (key, content): same settled-replay / failed-retry rule. */
   private readonly updates = new Map<string, Promise<{ txHash: `0x${string}` }>>();
+  /** Batch attempts by ordered content: one execute() per batch, same replay rule. */
+  private readonly batches = new Map<string, Promise<Array<{ key: `0x${string}`; txHash: `0x${string}` }>>>();
   /** Disposers for the lazily registered exactly-once hooks (none while unguarded). */
   private hookDisposers: Array<() => void> | undefined;
   private readonly _privateKeyRef: string;
@@ -167,6 +176,7 @@ export class ArkivRuntime {
     this.hookDisposers = [
       guard.registerCheck('arkiv_create_entity', check => this.checkCreate(check.args)),
       guard.registerCheck('arkiv_update_entity', check => this.checkUpdate(check.args)),
+      guard.registerCheck('arkiv_create_entities', check => this.checkBatch(check.args)),
     ];
   }
 
@@ -237,19 +247,14 @@ export class ArkivRuntime {
     // hit cannot recover the creation txHash, so the replay value says so.
     // (The write validated above, so normalized attributes always exist.)
     try {
-      const entities = await this.queryEntities({ where: write.attributes, limit: 25 });
-      const want = createHash('sha256').update(payload).digest('hex');
-      for (const entity of entities) {
-        const bytes = queryPayloadBytes(entity);
-        if (bytes === undefined) continue;
-        if (createHash('sha256').update(bytes).digest('hex') !== want) continue;
-        if (entity.contentType !== undefined && entity.contentType !== args.contentType) continue;
+      const found = await this.findCommitted({ payload: write.payload, contentType: args.contentType, attributes: write.attributes });
+      if (found !== undefined) {
         return {
           kind: 'replay',
           value: {
-            key: entity.key,
-            owner: entity.owner,
-            txHash: `unknown:verified-by-query:${entity.key}`,
+            key: found.key,
+            owner: found.owner,
+            txHash: `unknown:verified-by-query:${found.key}`,
           },
         };
       }
@@ -257,6 +262,23 @@ export class ArkivRuntime {
       // The chain cannot answer: fall through to unknown.
     }
     return { kind: 'unknown' };
+  }
+
+  /**
+   * One record's restart cover: the attributes-targeted query plus a
+   * payload-hash match. Shared by the single and batch read-back hooks.
+   */
+  private async findCommitted(record: { payload: Uint8Array; contentType: string; attributes: Record<string, unknown> }): Promise<{ key: `0x${string}`; owner: `0x${string}` } | undefined> {
+    const entities = await this.queryEntities({ where: record.attributes, limit: 25 });
+    const want = createHash('sha256').update(record.payload).digest('hex');
+    for (const entity of entities) {
+      const bytes = queryPayloadBytes(entity);
+      if (bytes === undefined) continue;
+      if (createHash('sha256').update(bytes).digest('hex') !== want) continue;
+      if (entity.contentType !== undefined && entity.contentType !== record.contentType) continue;
+      return { key: entity.key, owner: entity.owner };
+    }
+    return undefined;
   }
 
   /**
@@ -308,6 +330,67 @@ export class ArkivRuntime {
     }
   }
 
+  /**
+   * Read-back hook for `arkiv_create_entities` repeats: settled batches
+   * replay; the restart cover replays only when EVERY record is found
+   * (one execute() is atomic, so a partial hit contradicts commit and
+   * reports unknown for the model to investigate, never a replay).
+   */
+  async checkBatch(input: unknown): Promise<CheckDecision> {
+    this.hook();
+    const args = (input ?? {}) as { entities?: unknown };
+    if (!Array.isArray(args.entities) || args.entities.length === 0) return { kind: 'unknown' };
+    const writes: Array<{ payload: Uint8Array; contentType: string; attributes: Record<string, unknown> }> = [];
+    for (const entry of args.entities) {
+      const record = (entry ?? {}) as { path?: unknown; payload?: unknown; contentType?: unknown; attributes?: unknown; expiresIn?: unknown };
+      let payload: Uint8Array;
+      try {
+        if (typeof record.path === 'string' && record.path !== '') {
+          payload = await readFile(record.path);
+        } else if (typeof record.payload === 'string') {
+          payload = Buffer.from(record.payload, 'utf8');
+        } else {
+          return { kind: 'unknown' };
+        }
+      } catch {
+        return { kind: 'unknown' };
+      }
+      if (typeof record.contentType !== 'string' || record.contentType === '') return { kind: 'unknown' };
+      const attributes = (typeof record.attributes === 'object' && record.attributes !== null
+        ? record.attributes as Record<string, unknown>
+        : undefined);
+      try {
+        writes.push(validateHavenWrite({
+          payload,
+          contentType: record.contentType,
+          ...(attributes !== undefined ? { attributes } : {}),
+          ...(typeof record.expiresIn === 'number' ? { expiresIn: record.expiresIn } : {}),
+        }));
+      } catch {
+        return { kind: 'unknown' };
+      }
+    }
+    const prior = this.batches.get(batchKeyFor(writes));
+    if (prior !== undefined) {
+      try {
+        return { kind: 'replay', value: await prior };
+      } catch {
+        return { kind: 'unknown' };
+      }
+    }
+    try {
+      const found: Array<{ key: `0x${string}`; txHash: string }> = [];
+      for (const write of writes) {
+        const hit = await this.findCommitted({ payload: write.payload, contentType: write.contentType, attributes: write.attributes });
+        if (hit === undefined) return { kind: 'unknown' };
+        found.push({ key: hit.key, txHash: `unknown:verified-by-query:${hit.key}` });
+      }
+      return { kind: 'replay', value: found };
+    } catch {
+      return { kind: 'unknown' };
+    }
+  }
+
   async createEntity(params: { payload: Uint8Array; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }): Promise<ArkivEntityRecord> {
     this.hook();
     // Fail-closed Haven validation FIRST: invalid records throw before the
@@ -331,8 +414,61 @@ export class ArkivRuntime {
     const be = await this.ensureBackend();
     const { key, txHash } = await be.createEntity(params);
     const record: ArkivEntityRecord = { key, owner: '0x' as any, payload: params.payload, contentType: params.contentType, attributes: params.attributes, txHash };
-    this.ctx.emit('arkiv/created', record);
+    this.emitCreated(record);
     return record;
+  }
+
+  /**
+   * One per-record creation event, shared by the single and batch paths.
+   * (`arkiv/created` is a custom event with no global Events-map entry,
+   * hence the overload complaint — same as before this method existed.)
+   */
+  private emitCreated(record: ArkivEntityRecord): void {
+    this.ctx.emit('arkiv/created', record);
+  }
+
+  /**
+   * N creates in one chain transaction (atomic all-or-nothing). Every
+   * record validates BEFORE anything is sent, so one bad record rejects
+   * the whole batch. Singletons delegate to the single path (dedup
+   * parity, like the CLI's `len == 1` short-circuit).
+   */
+  async createEntities(records: Array<{ payload: Uint8Array; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }>): Promise<Array<{ key: `0x${string}`; txHash: `0x${string}` }>> {
+    this.hook();
+    if (records.length === 0) throw new Error('dsh-arkiv: batch needs at least one entity');
+    if (records.length === 1) {
+      const only = records[0] as { payload: Uint8Array; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number };
+      const record = await this.createEntity(only);
+      return [{ key: record.key, txHash: record.txHash as `0x${string}` }];
+    }
+    const writes = records.map(record => validateHavenWrite(record));
+    const key = batchKeyFor(writes);
+    const prior = this.batches.get(key);
+    if (prior !== undefined) return prior;
+    const task = this.doBatch(writes);
+    this.batches.set(key, task);
+    task.catch(() => {
+      if (this.batches.get(key) === task) this.batches.delete(key);
+    });
+    return task;
+  }
+
+  private async doBatch(writes: Array<{ payload: Uint8Array; contentType: string; attributes: Record<string, unknown>; expiresIn: number }>): Promise<Array<{ key: `0x${string}`; txHash: `0x${string}` }>> {
+    const be = await this.ensureBackend();
+    const results = await be.createEntities(writes);
+    // One event per minted record (same shape as the single path, in order).
+    for (const [index, write] of writes.entries()) {
+      const hit = results[index] as { key: `0x${string}`; txHash: `0x${string}` };
+      this.emitCreated({
+        key: hit.key,
+        owner: '0x' as any,
+        payload: write.payload,
+        contentType: write.contentType,
+        attributes: write.attributes,
+        txHash: hit.txHash,
+      });
+    }
+    return results;
   }
 
   async updateEntity(params: { key: `0x${string}`; payload: Uint8Array; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }): Promise<{ txHash: `0x${string}` }> {
@@ -378,6 +514,19 @@ export const CREATE_RESULT_SCHEMA = {
 export const QUERY_RESULT_SCHEMA = {
   type: 'array',
   items: { type: 'object', additionalProperties: true },
+} as const;
+
+/** Batch creates return one {key, txHash} per record, in order (one shared txHash). */
+export const BATCH_RESULT_SCHEMA = {
+  type: 'array',
+  items: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      key: { type: 'string', required: true },
+      txHash: { type: 'string', required: true },
+    },
+  },
 } as const;
 
 export function apply(ctx: Context, config: Config): void {
@@ -428,6 +577,53 @@ export function apply(ctx: Context, config: Config): void {
       return arkiv.updateEntity({ key: args.key as `0x${string}`, payload: p, contentType: args.contentType, attributes: args.attributes, expiresIn: args.expiresIn });
     },
     presentCall: args => ({ card: 'generic', title: `Update Arkiv ${args.key}`, kind: 'execute' }),
+  })));
+
+  ctx.effect(() => ctx.tools.register(defineTool({
+    name: 'arkiv_create_entities',
+    description: 'Create N Haven Arkiv entities in ONE chain transaction (atomic all-or-nothing — for multi-record releases like a drip series plus its parts). Every record validates exactly like arkiv_create_entity before anything is sent; one bad record rejects the whole batch. Singletons behave as one create.',
+    parameters: {
+      entities: {
+        type: 'array',
+        required: true,
+        description: 'Records in mint order: each {path|payload, contentType:"application/json", attributes, expiresIn?} like arkiv_create_entity.',
+        items: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'Local file holding the JSON payload. Exactly one of path or payload per record.' },
+            payload: { type: 'string', description: 'JSON payload string (utf8) if no file.' },
+            contentType: { type: 'string', description: 'Must be application/json', required: true },
+            attributes: { type: 'object', description: 'Haven attributes for this record', required: true },
+            expiresIn: { type: 'number', description: 'Seconds until expiry (default per group)' },
+          },
+        },
+      } as any,
+    },
+    output: {
+      schema: BATCH_RESULT_SCHEMA,
+      render: (_args, value) => [{
+        type: 'text',
+        text: (value as Array<{ key: string; txHash: string }>).map(hit => `${hit.key}: created tx ${hit.txHash}`).join('\n'),
+      }],
+    },
+    async execute(args: { entities: Array<{ path?: string; payload?: string; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }> }): Promise<Array<{ key: string; txHash: string }>> {
+      if (!Array.isArray(args.entities) || args.entities.length === 0) throw new Error('provide at least one entity');
+      const records: Array<{ payload: Uint8Array; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }> = [];
+      for (const [index, entry] of args.entities.entries()) {
+        if ((entry.path === undefined) === (entry.payload === undefined)) {
+          throw new Error(`entity ${index}: provide exactly one of path or payload`);
+        }
+        records.push({
+          payload: entry.path !== undefined ? await readFile(entry.path) : Buffer.from(entry.payload as string, 'utf8'),
+          contentType: entry.contentType,
+          ...(entry.attributes !== undefined ? { attributes: entry.attributes } : {}),
+          ...(entry.expiresIn !== undefined ? { expiresIn: entry.expiresIn } : {}),
+        });
+      }
+      const results = await arkiv.createEntities(records);
+      return results as Array<{ key: string; txHash: string }>;
+    },
+    presentCall: (args: { entities: unknown }) => ({ card: 'generic', title: `Create ${Array.isArray(args.entities) ? args.entities.length : 0} Arkiv entities (batch)`, kind: 'execute' }),
   })));
 
   ctx.effect(() => ctx.tools.register(defineTool({
