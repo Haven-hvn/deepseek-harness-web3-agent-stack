@@ -40,6 +40,7 @@ afterEach(() => {
   internals.requestV3 = undefined
   internals.requestV4 = undefined
   internals.marketCap = undefined
+  internals.dpk = undefined
 })
 
 async function harness() {
@@ -216,5 +217,189 @@ describe('gated decrypt', () => {
 describe('fail-loud default', () => {
   it('unwired runtime exposes AolSigningError type', () => {
     expect(new AolSigningError('x').name).toBe('AolSigningError')
+  })
+})
+
+describe('seal (harness-native encrypt side)', () => {
+  /**
+   * Test-only DPKs via LOCAL vetkeys derivation (master → canister →
+   * context). Production seals use the canister-fetched verification
+   * key — never this — but the points are structurally valid G2 keys,
+   * so the full IBE path runs offline.
+   */
+  async function dpkFixture(version: 1 | 3 | 4): Promise<Uint8Array> {
+    const { MasterPublicKey } = await import('@icp-sdk/vetkeys')
+    const { Principal } = await import('@icp-sdk/core/principal')
+    const master = MasterPublicKey.productionKey()
+    const canister = Principal.fromText('gny6k-fqaaa-aaaab-ag3ra-cai').toUint8Array()
+    return master.deriveCanisterKey(canister).deriveSubKey(new TextEncoder().encode(`accessol_v${version}`)).publicKeyBytes()
+  }
+
+  function stubDpk() {
+    internals.dpk = (version: 1 | 3 | 4) => dpkFixture(version)
+  }
+
+  async function sealRuntime() {
+    const { AolRuntime } = await import('../src/aol.ts')
+    return new AolRuntime({ canisterId: 'gny6k-fqaaa-aaaab-ag3ra-cai', icpHost: 'https://icp-api.io', fetchRootKey: false })
+  }
+
+  it('seals v1/v3/v4 end to end: sealed bytes + parseable gate metadata', async () => {
+    stubDpk()
+    const { execute } = await harness()
+    const rt = await sealRuntime()
+    const plaintext = new TextEncoder().encode('seal-me-please')
+    for (const version of [1, 3, 4] as const) {
+      const sealed = await rt.seal({
+        version,
+        cid: 'sha256:abc',
+        chain: 'BaseMainnet',
+        tokenAddress: TOKEN,
+        threshold: 100n,
+        ...(version === 4
+          ? { marketCapTarget: 10n, oracleAddress: BOND_ADDRESSES.BaseMainnet as string }
+          : {}),
+        plaintext,
+      })
+      expect(sealed.version).toBe(version)
+      expect(sealed.sealedBytes.length).toBe(plaintext.length + 28) // 12-byte IV + 16-byte GCM tag
+      expect(sealed.keySha256).toMatch(/^[0-9a-f]{64}$/)
+      // The metadata parses through the SDK-verbatim readers.
+      const info = await execute('aol_gate_info', { gateMetadataJson: sealed.gateMetadataJson })
+      expect(info.isError).toBe(false)
+      const summary = JSON.parse((info.content as Array<{ text: string }>)[0]?.text ?? '{}')
+      expect(summary).toMatchObject({ version, chain: 'BaseMainnet', tokenAddress: TOKEN, threshold: '100' })
+      if (version === 4) {
+        expect(summary).toMatchObject({ marketCapTarget: 10, bondPinned: true })
+      }
+    }
+  })
+
+  it('every seal uses fresh randomness (no two seals share a key)', async () => {
+    stubDpk()
+    const rt = await sealRuntime()
+    const plaintext = new TextEncoder().encode('same-bytes')
+    const params = {
+      version: 3 as const, cid: 'sha256:abc', chain: 'BaseMainnet' as const,
+      tokenAddress: TOKEN, threshold: 100n, plaintext,
+    }
+    const [a, b] = await Promise.all([rt.seal(params), rt.seal(params)])
+    expect(a.keySha256).not.toBe(b.keySha256)
+    expect(Buffer.from(a.sealedBytes).equals(Buffer.from(b.sealedBytes))).toBe(false)
+  })
+
+  it('threshold-zero v3 seals at the eternal epoch', async () => {
+    stubDpk()
+    const rt = await sealRuntime()
+    const sealed = await rt.seal({
+      version: 3, cid: 'sha256:abc', chain: 'BaseMainnet', tokenAddress: TOKEN,
+      threshold: 0n, epoch: currentEpoch(), plaintext: new TextEncoder().encode('free'),
+    })
+    expect(JSON.parse(sealed.gateMetadataJson).epoch).toBe(0)
+  })
+
+  it('fails closed: bad version, chain, token, threshold, v4 oracle/target', async () => {
+    stubDpk()
+    const rt = await sealRuntime()
+    const plaintext = new TextEncoder().encode('x')
+    await expect(rt.seal({
+      version: 2 as never, cid: 'c', chain: 'BaseMainnet', tokenAddress: TOKEN, threshold: 1n, plaintext,
+    })).rejects.toThrow('unsupported seal version')
+    await expect(rt.seal({
+      version: 1, cid: 'c', chain: 'Nope' as never, tokenAddress: TOKEN, threshold: 1n, plaintext,
+    })).rejects.toThrow()
+    await expect(rt.seal({
+      version: 1, cid: 'c', chain: 'BaseMainnet', tokenAddress: '0xnope', threshold: 1n, plaintext,
+    })).rejects.toThrow()
+    await expect(rt.seal({
+      version: 4, cid: 'c', chain: 'BaseMainnet', tokenAddress: TOKEN, threshold: 1n,
+      oracleAddress: BOND_ADDRESSES.BaseMainnet as string, plaintext,
+    })).rejects.toThrow('marketCapTarget')
+    await expect(rt.seal({
+      version: 4, cid: 'c', chain: 'BaseMainnet', tokenAddress: TOKEN, threshold: 1n,
+      marketCapTarget: 5n, oracleAddress: VERIFIER, plaintext,
+    })).rejects.toThrow('Bond')
+  })
+
+  it('fails loud when the verification key is unavailable or garbage', async () => {
+    const rt = await sealRuntime()
+    const plaintext = new TextEncoder().encode('x')
+    const params = {
+      version: 1 as const, cid: 'c', chain: 'BaseMainnet' as const,
+      tokenAddress: TOKEN, threshold: 1n, plaintext,
+    }
+    internals.dpk = async () => { throw new Error('canister down') }
+    await expect(rt.seal(params)).rejects.toThrow('canister down')
+    internals.dpk = async () => new Uint8Array([1, 2, 3])
+    await expect(rt.seal(params)).rejects.toThrow('IBE wrap failed')
+  })
+
+  it('aol_seal tool wires files end to end (default sha256 cid)', async () => {
+    stubDpk()
+    const { createHash } = await import('node:crypto')
+    const { readFile } = await import('node:fs/promises')
+    const { execute } = await harness()
+    const dir = await mkdtemp(join(tmpdir(), 'aol-seal-'))
+    try {
+      const input = join(dir, 'plain.bin')
+      const bytes = new TextEncoder().encode('seal-me-please')
+      await writeFile(input, bytes)
+      const res = await execute('aol_seal', {
+        path: input,
+        outputPath: join(dir, 'sealed.bin'),
+        version: 3,
+        chain: 'BaseMainnet',
+        tokenAddress: TOKEN,
+        threshold: '100',
+      })
+      expect(res.isError).toBe(false)
+      expect(JSON.stringify(res.content)).toContain(`sealed ${bytes.length + 28} bytes`)
+      expect((await readFile(join(dir, 'sealed.bin'))).length).toBe(bytes.length + 28)
+      // The tool path rejects bad input before touching the runtime.
+      const bad = await execute('aol_seal', {
+        path: input, outputPath: join(dir, 's2.bin'), version: 9,
+        chain: 'BaseMainnet', tokenAddress: TOKEN, threshold: '100',
+      })
+      expect(bad.isError).toBe(true)
+      expect(createHash('sha256').update(bytes).digest('hex')).toMatch(/^[0-9a-f]{64}$/)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('AES-GCM mirrors the SDK decrypt byte-for-byte (round-trip)', async () => {
+    const { encryptFileAesGcm } = await import('../src/seal.ts')
+    const { decryptFile } = await import('haven-aol')
+    const plaintext = new TextEncoder().encode('round-trip bytes')
+    const key = new Uint8Array(32).fill(7)
+    const { sealed } = await encryptFileAesGcm(plaintext, key)
+    expect(sealed.length).toBe(plaintext.length + 28)
+    await expect(decryptFile(sealed, key)).resolves.toEqual(plaintext)
+    await expect(encryptFileAesGcm(plaintext, new Uint8Array(16))).rejects.toThrow('32 bytes')
+  })
+
+  it('IBE wrap output deserializes at the vetkeys-advertised size', async () => {
+    const { ibeEncryptAesKey } = await import('../src/seal.ts')
+    const { IbeCiphertext } = await import('@icp-sdk/vetkeys')
+    const wrapped = ibeEncryptAesKey(await dpkFixture(1), new Uint8Array(32).fill(3), new Uint8Array(32).fill(5))
+    const bytes = new Uint8Array(Buffer.from(wrapped, 'base64'))
+    expect(bytes.length).toBe(IbeCiphertext.ciphertextSize(32))
+    expect(() => IbeCiphertext.deserialize(bytes)).not.toThrow()
+  })
+
+  it('v1 builder round-trips through the SDK parser', async () => {
+    const { buildGateMetadataV1, gateMetadataV1ToJson } = await import('../src/seal.ts')
+    const { execute } = await harness()
+    const json = gateMetadataV1ToJson(buildGateMetadataV1({
+      cid: 'bafyv1', chain: 'BaseMainnet', tokenAddress: TOKEN, threshold: 7n,
+      encryptedAesKey: Buffer.from('wrap').toString('base64'),
+    }))
+    const res = await execute('aol_gate_info', { gateMetadataJson: json })
+    expect(res.isError).toBe(false)
+    expect(JSON.parse((res.content as Array<{ text: string }>)[0]?.text ?? '{}'))
+      .toMatchObject({ version: 1, cid: 'bafyv1', threshold: '7' })
+    expect(() => buildGateMetadataV1({
+      cid: '', chain: 'BaseMainnet', tokenAddress: TOKEN, threshold: 1n, encryptedAesKey: 'eA==',
+    })).toThrow('cid must be')
   })
 })

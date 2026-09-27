@@ -18,6 +18,20 @@ export interface AolDecryptedEvent {
   readonly bytes: number
 }
 
+/** Audit: a file was sealed under a new gate and written to disk. */
+export interface AolSealedEvent {
+  /** Gate protocol version the file was sealed under. */
+  readonly version: 1 | 3 | 4
+  /** Gate CID the seal binds to (`sha256:<hex>` when unknown pre-upload). */
+  readonly cid: string
+  /** Where the sealed bytes were written. */
+  readonly outputPath: string
+  /** Sealed byte length. */
+  readonly bytes: number
+  /** SHA-256 of the AES content key (commitment, not the key). */
+  readonly keySha256: string
+}
+
 /**
  * Fail-loud gate-signing error.
  *

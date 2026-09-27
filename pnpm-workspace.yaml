@@ -8,10 +8,10 @@ packages:
   - dsh-persona
   - dsh-arkiv
   - dsh-erc8004
-  - dsh-haven-pipeline
   - dsh-haven-aol
   - dsh-royalty-router
   - dsh-tool-prowlarr
   - dsh-tool-acquisition
   - dsh-observatory
   - dsh-exactly-once
+  - dsh-agent-herald

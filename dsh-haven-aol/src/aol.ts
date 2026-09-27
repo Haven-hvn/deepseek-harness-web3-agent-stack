@@ -14,6 +14,14 @@
  *   `src/backend/backend.did` (GateRequestV3, GateRequestV4) including the
  *   full GateError variant (InvalidEpoch, MarketCapNotReached, InvalidOracle).
  *   Upstream these to the SDK when convenient; until then they live here.
+ *   The seal path vendors one more query the SDK lacks,
+ *   `getVetKDPublicKeyV3` (backend.did: `() -> (blob) query`), for the
+ *   same reason.
+ * - Seal-side (encrypt) primitives live in `./seal.ts`: the v1 metadata
+ *   builder is ported from Python `core.py` (the TS SDK never grew one);
+ *   v3/v4 builders, derivation inputs, and AES/IBE wire formats stay
+ *   SDK-verbatim. The IBE wrap always uses the canister-fetched
+ *   verification key, never a locally derived guess.
  * - The single signature in every flow (EIP-712 gate request) goes through
  *   the signGate seam. Default is fail-loud (AolSigningError): ctx.wallet
  *   signs EIP-191 and the canister needs a raw EIP-712 digest signature.
@@ -21,7 +29,7 @@
  * @module dsh-haven-aol/aol
  */
 
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import {
   Actor,
   HttpAgent,
@@ -44,6 +52,10 @@ import {
   computeDerivationInput,
   computeDerivationInputV3,
   computeDerivationInputV4,
+  buildGateMetadataV3,
+  gateMetadataV3ToJson,
+  buildGateMetadataV4,
+  gateMetadataV4ToJson,
   buildGateRequestTypedData,
   buildGateRequestV3TypedData,
   buildGateRequestV4TypedData,
@@ -53,10 +65,19 @@ import {
   ibeDecryptAesKey,
   decryptFile,
   requestDecryptionKey,
+  fetchVerificationKey,
+  fetchVerificationKeyV4,
   HavenAolError,
   type Chain,
 } from 'haven-aol'
 import { AolSigningError } from './types.ts'
+import {
+  buildGateMetadataV1,
+  gateMetadataV1ToJson,
+  encryptFileAesGcm,
+  freshAesKey,
+  ibeEncryptAesKey,
+} from './seal.ts'
 
 export { HavenAolError }
 export type { Chain }
@@ -70,7 +91,8 @@ export const internals: {
   requestV3: RequestV3Fn | undefined
   requestV4: RequestV4Fn | undefined
   marketCap: MarketCapFn | undefined
-} = { requestV1: undefined, requestV3: undefined, requestV4: undefined, marketCap: undefined }
+  dpk: ((version: 1 | 3 | 4) => Promise<Uint8Array>) | undefined
+} = { requestV1: undefined, requestV3: undefined, requestV4: undefined, marketCap: undefined, dpk: undefined }
 
 // ── Vendored v3/v4 IDL (backend.did GateRequestV3/GateRequestV4 + full GateError) ──
 // Mirrors the SDK's canister.ts factory style. Candid field order matches the
@@ -139,6 +161,8 @@ interface AolV3V4Actor {
   requestDecryptionKeyV3: ActorMethod<[Record<string, unknown>], { ok: { encrypted_key: Uint8Array | number[]; verification_key: Uint8Array | number[] } } | { err: unknown }>
   requestDecryptionKeyV4: ActorMethod<[Record<string, unknown>], { ok: { encrypted_key: Uint8Array | number[]; verification_key: Uint8Array | number[] } } | { err: unknown }>
   getMarketCap: ActorMethod<[Record<string, null>, string, string], { ok: bigint } | { err: string }>
+  /** Vendored: the SDK exposes v1/v4 DPK queries but no v3 one. backend.did: `() -> (blob) query`. */
+  getVetKDPublicKeyV3: ActorMethod<[], Uint8Array | number[]>
 }
 
 const idlFactoryV3V4 = () =>
@@ -146,6 +170,7 @@ const idlFactoryV3V4 = () =>
     requestDecryptionKeyV3: IDL.Func([GateRequestV3Type], [GateResultVariant], []),
     requestDecryptionKeyV4: IDL.Func([GateRequestV4Type], [GateResultVariant], []),
     getMarketCap: IDL.Func([ChainVariant, IDL.Text, IDL.Text], [MarketCapResultVariant], []),
+    getVetKDPublicKeyV3: IDL.Func([], [IDL.Vec(IDL.Nat8)], ['query']),
   })
 
 const actorCache = new WeakMap<HttpAgent, Map<string, ActorSubclass<AolV3V4Actor>>>()
@@ -275,6 +300,12 @@ async function liveMarketCap(
   return { err: String((raw as { err: string }).err) }
 }
 
+/** Vendored v3 verification-key query (free query, like the SDK's v1/v4 ones). */
+async function liveDpkV3(agent: HttpAgent, canisterId: string): Promise<Uint8Array> {
+  const actor = getActor(agent, canisterId)
+  return new Uint8Array(await actor.getVetKDPublicKeyV3())
+}
+
 // ── Digest + nonce helpers ──────────────────────────────────────────
 
 /** EIP-712 digest for an SDK-built typed-data payload (ethers, like eth_account). */
@@ -326,7 +357,37 @@ export interface GateSummary {
   bondPinned?: boolean
 }
 
+/** Seal inputs: one file plus its gate policy. */
+export interface SealParams {
+  version: 1 | 3 | 4
+  /** Gate CID. Unknown pre-upload → `sha256:<hex-of-plaintext>` (haven-cli convention). */
+  cid: string
+  chain: Chain
+  tokenAddress: string
+  /** Minimum balance in smallest token units. */
+  threshold: bigint
+  /** v3/v4 epoch (default: current; forced 0 when threshold is 0). */
+  epoch?: number
+  /** v4 unlock rung in whole reserve units (required for v4). */
+  marketCapTarget?: bigint
+  /** v4 oracle (required for v4; must be the chain Bond contract). */
+  oracleAddress?: string
+  plaintext: Uint8Array
+}
+
+/** Seal outputs: sealed bytes plus gate metadata. The AES key never leaves the call. */
+export interface SealResult {
+  sealedBytes: Uint8Array
+  gateMetadataJson: string
+  version: 1 | 3 | 4
+  /** SHA-256 of the AES content key: proves which key sealed a file without revealing it. */
+  keySha256: string
+}
+
 export class AolRuntime {
+  /** Verification keys by version (canister constants per key_id+context; cached per runtime). */
+  private readonly dpkCache = new Map<1 | 3 | 4, Uint8Array>()
+
   constructor(private readonly opts: AolRuntimeOpts) {
     if (!opts.canisterId || !opts.icpHost) throw new Error('dsh-haven-aol: canisterId+icpHost required')
   }
@@ -498,5 +559,89 @@ export class AolRuntime {
     const vetKey = recoverVetKey(result.ok.encryptedKey, secretKey, result.ok.verificationKey, derivationInput)
     const aesKey = ibeDecryptAesKey(metadata.encryptedAesKey, vetKey)
     return decryptFile(params.encryptedFileBytes, aesKey)
+  }
+
+  /**
+   * Seal bytes under a new gate: fresh AES-256-GCM content key,
+   * IBE-wrapped under the canister's verification key, plus gate
+   * metadata JSON. No wallet, no signature — sealing is local plus one
+   * free DPK query. The AES key never leaves this call.
+   */
+  async seal(params: SealParams): Promise<SealResult> {
+    if (params.version !== 1 && params.version !== 3 && params.version !== 4) {
+      throw new Error(`dsh-haven-aol: unsupported seal version ${String(params.version)} (want 1, 3, or 4)`)
+    }
+    if (params.threshold < 0n) {
+      throw new Error('dsh-haven-aol: threshold must be a non-negative integer')
+    }
+    // Threshold-zero collapse (canister rule): free content seals at the
+    // eternal epoch, matching what the decrypt side derives.
+    const epoch = params.threshold === 0n ? 0 : (params.epoch ?? currentEpoch())
+    if (params.version === 4) {
+      if (params.marketCapTarget === undefined) {
+        throw new Error('dsh-haven-aol: v4 seals require marketCapTarget (whole reserve units)')
+      }
+      if (params.oracleAddress === undefined || !isBondAddress(params.chain, params.oracleAddress)) {
+        throw new Error(
+          `dsh-haven-aol: oracleAddress ${params.oracleAddress ?? '(missing)'} is not the ${params.chain} Bond contract — `
+          + 'the canister fails closed (#InvalidOracle). Refusing to seal an unopenable file.',
+        )
+      }
+    }
+    const derivationInput = params.version === 1
+      ? await computeDerivationInput(params.chain, params.tokenAddress, params.threshold, params.cid)
+      : params.version === 3
+        ? await computeDerivationInputV3(params.chain, params.tokenAddress, params.threshold, epoch)
+        : await computeDerivationInputV4(
+          params.chain, params.tokenAddress, params.threshold, epoch, params.marketCapTarget as bigint)
+    const dpk = await this.verificationKey(params.version)
+    const aesKey = freshAesKey()
+    let wrapped: string
+    try {
+      wrapped = ibeEncryptAesKey(dpk, derivationInput, aesKey)
+    } catch (error: unknown) {
+      throw new Error(
+        `dsh-haven-aol: IBE wrap failed under the v${params.version} verification key `
+        + '(refusing to seal an unopenable file)',
+        { cause: error },
+      )
+    }
+    const { sealed: sealedBytes } = await encryptFileAesGcm(params.plaintext, aesKey)
+    const gateMetadataJson = params.version === 1
+      ? gateMetadataV1ToJson(buildGateMetadataV1({
+        cid: params.cid, chain: params.chain, tokenAddress: params.tokenAddress,
+        threshold: params.threshold, encryptedAesKey: wrapped,
+      }))
+      : params.version === 3
+        ? gateMetadataV3ToJson(buildGateMetadataV3({
+          cid: params.cid, chain: params.chain, tokenAddress: params.tokenAddress,
+          threshold: params.threshold, epoch, encryptedAesKey: wrapped,
+        }))
+        : gateMetadataV4ToJson(buildGateMetadataV4({
+          cid: params.cid, chain: params.chain, tokenAddress: params.tokenAddress,
+          threshold: params.threshold, epoch, marketCapTarget: params.marketCapTarget as bigint,
+          oracleAddress: params.oracleAddress as string, encryptedAesKey: wrapped,
+        }))
+    return {
+      sealedBytes,
+      gateMetadataJson,
+      version: params.version,
+      keySha256: createHash('sha256').update(aesKey).digest('hex'),
+    }
+  }
+
+  /** Version verification key: stub, cache, or live canister query. */
+  private async verificationKey(version: 1 | 3 | 4): Promise<Uint8Array> {
+    if (internals.dpk !== undefined) return internals.dpk(version)
+    const cached = this.dpkCache.get(version)
+    if (cached !== undefined) return cached
+    const agent = await this.agent()
+    const key = version === 1
+      ? await fetchVerificationKey(agent, this.opts.canisterId)
+      : version === 3
+        ? await liveDpkV3(agent, this.opts.canisterId)
+        : await fetchVerificationKeyV4(agent, this.opts.canisterId)
+    this.dpkCache.set(version, key)
+    return key
   }
 }

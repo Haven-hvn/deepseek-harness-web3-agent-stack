@@ -1,6 +1,6 @@
 # dsh-haven-aol
 
-Haven-AOL token-gated decryption for DeepSeek Harness: `ctx.aol` plus four model-facing tools over the `haven-aol` TypeScript SDK and the ICP backend canister (mainnet `gny6k-fqaaa-aaaab-ag3ra-cai`).
+Haven-AOL token-gated seal/decrypt for DeepSeek Harness: `ctx.aol` plus five model-facing tools over the `haven-aol` TypeScript SDK and the ICP backend canister (mainnet `gny6k-fqaaa-aaaab-ag3ra-cai`).
 
 > TEMP: `haven-aol` is not on npm despite its README claim, so `package.json`
 > uses `file:../../haven-aol/packages/typescript` (requires `npm install` +
@@ -15,6 +15,7 @@ Haven-AOL token-gated decryption for DeepSeek Harness: `ctx.aol` plus four model
 | `aol_epoch` | read | — | Current 30-day epoch + rollover (advisory). |
 | `aol_market_cap` | read | v4 | Live cap in whole reserve units (300s canister burst cache). Fails closed client-side on non-Bond oracles. |
 | `aol_decrypt` | execute | v1/v3/v4 | Full gated decrypt; dispatches on metadata version. Keys never leave the call. |
+| `aol_seal` | execute | v1/v3/v4 | Harness-native encrypt: fresh AES-GCM key + IBE wrap under the canister-fetched DPK. No wallet, no signature. |
 
 Gate denials (`InsufficientBalance`, `MarketCapNotReached {required, actual}` in whole reserve units, `InvalidSignature`, `InvalidEpoch`, `InvalidOracle`) surface as tool errors the model can report verbatim.
 
@@ -63,4 +64,5 @@ Without a wired `signDigest` (default OWS path), the `signGate` seam stays **uns
 ## Deferred (deliberately absent)
 
 - `attestHolding` — no wrapper exists in any SDK yet (TS, Python, or here).
-- Encrypt-side — the TS SDK is decrypt-side only; IBE-encrypt against `@icp-sdk/vetkeys` is unverified. Uploads stay in haven-cli until then.
+
+Sealing (`aol_seal`) is harness-native: v3/v4 metadata builders and derivation inputs stay SDK-verbatim, the v1 builder is ported from Python `core.py`, AES-GCM mirrors the SDK wire byte-for-byte, and the IBE wrap runs against `@icp-sdk/vetkeys` under the **canister-fetched** verification key. `haven-cli` is never invoked — seal here, upload the sealed bytes plus `gateMetadataJson` via the storage tools.

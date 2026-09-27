@@ -21,6 +21,7 @@
  * @module dsh-haven-aol
  */
 
+import { createHash } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { basename } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -30,10 +31,11 @@ import type {} from 'dsh-wallet'
 import { AolRuntime, type Chain } from './aol.ts'
 import type { SignGate } from './aol.ts'
 import { signGateFromTestKey } from './test_signer.ts'
-import type { AolDecryptedEvent } from './types.ts'
+import type { AolDecryptedEvent, AolSealedEvent } from './types.ts'
 
 export { AolRuntime, HavenAolError, freshNonce, type Chain, type SignGate } from './aol.ts'
-export type { AolDecryptedEvent, AolSigningError } from './types.ts'
+export type { SealParams, SealResult } from './aol.ts'
+export type { AolDecryptedEvent, AolSealedEvent, AolSigningError } from './types.ts'
 
 /** Cordis plugin name. */
 export const name = 'haven-aol'
@@ -263,6 +265,103 @@ export function apply(ctx: Context, config: Config): void {
     presentCall: args => ({
       card: 'generic',
       title: `Haven-AOL decrypt ${args.path !== undefined ? basename(args.path) : args.cid ?? ''}`,
+      kind: 'execute',
+    }),
+  })))
+
+  // ── aol_seal (execute, local + one free DPK query) ───────────────────
+  // No wallet, no signature: sealing mints a fresh AES key locally and
+  // IBE-wraps it under the canister's verification key. Not exactly-once
+  // guarded on purpose: every seal uses fresh randomness, so a repeat
+  // seals a *different* valid pair rather than replaying — downstream
+  // (pin, catalog) always consumes the latest result.
+  ctx.effect(() => ctx.tools.register(defineTool({
+    name: 'aol_seal',
+    description:
+      'Seal a file under a new Haven-AOL token gate (v1 per-file, v3 epoch corpus, v4 market-cap drip): mints a fresh AES-256-GCM content key, IBE-wraps it under the canister verification key, and builds gate metadata JSON. Writes sealed bytes to outputPath and returns path + byte count + gateMetadataJson + key commitment — the AES key never leaves the call. Fails closed on non-Bond v4 oracles.',
+    parameters: {
+      path: { type: 'string', required: true, description: 'Local file to seal.' },
+      outputPath: { type: 'string', required: true, description: 'Where to write the sealed bytes.' },
+      version: { type: 'number', required: true, description: 'Gate version: 1 (per-file), 3 (epoch corpus), or 4 (market-cap drip).' },
+      chain: { type: 'string', required: true, description: 'SDK chain name (EthMainnet, BaseMainnet, ArbitrumOne, OptimismMainnet, EthSepolia).' },
+      tokenAddress: { type: 'string', required: true, description: 'Gate token contract address (0x...).' },
+      threshold: { type: 'string', required: true, description: 'Minimum balance in smallest token units (raw integer string). 0 seals free-tier at the eternal epoch (v3/v4).' },
+      cid: { type: 'string', description: 'Gate CID the seal binds to. Default: sha256:<hex-of-plaintext> (haven-cli convention, for pre-upload seals).' },
+      epoch: { type: 'number', description: 'v3/v4 epoch (default: current from aol_epoch; forced 0 when threshold is 0).' },
+      marketCapTarget: { type: 'string', description: 'v4 unlock rung in whole reserve units (required for v4).' },
+      oracleAddress: { type: 'string', description: 'v4 oracle (required for v4; must be the chain Bond contract).' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          outputPath: { type: 'string', required: true },
+          bytes: { type: 'number', required: true },
+          version: { type: 'number', required: true },
+          gateMetadataJson: { type: 'string', required: true },
+          keySha256: { type: 'string', required: true },
+        },
+      } as never,
+      render: (_a, v) => [{ type: 'text', text: `sealed ${(v as { bytes: number }).bytes} bytes → ${(v as { outputPath: string }).outputPath}` }] as never,
+    },
+    isConcurrencySafe: () => true,
+    execute: async (args: {
+      path: string; outputPath: string; version: number; chain: string; tokenAddress: string
+      threshold: string; cid?: string; epoch?: number; marketCapTarget?: string; oracleAddress?: string
+    }): Promise<{ outputPath: string; bytes: number; version: 1 | 3 | 4; gateMetadataJson: string; keySha256: string }> => {
+      if (args.version !== 1 && args.version !== 3 && args.version !== 4) {
+        throw new Error(`dsh-haven-aol: unsupported seal version ${String(args.version)} (want 1, 3, or 4)`)
+      }
+      let threshold: bigint
+      try {
+        threshold = BigInt((args.threshold ?? '').trim())
+      } catch {
+        throw new Error('dsh-haven-aol: threshold must be a raw-integer string (smallest token units)')
+      }
+      if (args.epoch !== undefined && (!Number.isInteger(args.epoch) || args.epoch < 0)) {
+        throw new Error('dsh-haven-aol: epoch must be a non-negative integer')
+      }
+      let marketCapTarget: bigint | undefined
+      if (args.marketCapTarget !== undefined) {
+        try {
+          marketCapTarget = BigInt(args.marketCapTarget.trim())
+        } catch {
+          throw new Error('dsh-haven-aol: marketCapTarget must be a raw-integer string (whole reserve units)')
+        }
+        if (marketCapTarget < 0n) throw new Error('dsh-haven-aol: marketCapTarget must be a non-negative integer')
+      }
+      const plaintext = await readFile(args.path)
+      const cid = args.cid !== undefined && args.cid !== ''
+        ? args.cid
+        : `sha256:${createHash('sha256').update(plaintext).digest('hex')}`
+      const sealed = await aol.seal({
+        version: args.version,
+        cid,
+        chain: args.chain as Chain,
+        tokenAddress: args.tokenAddress,
+        threshold,
+        ...(args.epoch !== undefined ? { epoch: args.epoch } : {}),
+        ...(marketCapTarget !== undefined ? { marketCapTarget } : {}),
+        ...(args.oracleAddress !== undefined ? { oracleAddress: args.oracleAddress } : {}),
+        plaintext,
+      })
+      await writeFile(args.outputPath, sealed.sealedBytes)
+      const event: AolSealedEvent = {
+        version: sealed.version, cid, outputPath: args.outputPath, bytes: sealed.sealedBytes.length,
+        keySha256: sealed.keySha256,
+      }
+      ctx.emit('aol/sealed', event as never)
+      return {
+        outputPath: args.outputPath,
+        bytes: sealed.sealedBytes.length,
+        version: sealed.version,
+        gateMetadataJson: sealed.gateMetadataJson,
+        keySha256: sealed.keySha256,
+      }
+    },
+    presentCall: args => ({
+      card: 'generic',
+      title: `Haven-AOL seal ${basename(args.path ?? '')} (v${args.version ?? '?'})`,
       kind: 'execute',
     }),
   })))

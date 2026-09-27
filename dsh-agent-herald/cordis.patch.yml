@@ -1,0 +1,9 @@
+# dsh-agent-herald bundle: the Herald sovereign release agent.
+# Identity, not machinery: apply() reads soul.md, process.md,
+# workflow.md, and reference/aol-protocol.md and registers each as a
+# system-prompt section (orders -500/-400/-350/-300: identity first,
+# then deployment instructions, then first-party guidance). No config —
+# the docs are the config.
+- insert:
+    - id: agent-herald
+      name: 'dsh-agent-herald'
