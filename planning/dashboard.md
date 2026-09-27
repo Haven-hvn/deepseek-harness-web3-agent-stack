@@ -90,9 +90,29 @@ No DataDAO type exists. Do not invent a chain stack for the dashboard. A file ro
 | file ↔ token | absent | `catalog/upsert` with cid, gate kind, token |
 | DataDAO | absent | a gate kind on that row, not a new protocol |
 
+## Panels
+
+The page is these panels and nothing else. Each panel is one array already on the snapshot. No derived visuals beyond a sum or a ratio the row already has (`runwayDays`, ROI).
+
+| Panel | Rows | Why it is here |
+|---|---|---|
+| Status | health | Is the agent, qBit, Transmission, Prowlarr up, and since when |
+| Downloads | acquire aggregate | Counts, states, speeds. Not names. This is the qBit panel |
+| Treasury | latest `TreasuryReport` | State, runway, total µUSD, budget vs burn by category |
+| Balances | `wallet/balances` | Per chain, per token, address, amount, µUSD |
+| Burn | `cost` log | Usage over time by category. This is the Cost Explorer panel |
+| Tokens | inference cost rows | Token count and µUSD, not prompts |
+| Revenue | `revenue` log | Royalty, gate, other, over time |
+| Launches | `rr/launched` joined only by shared token id | Cost, revenue, ROI per token the agent created |
+| Catalog | file + gate rows | cid, gate kind, token, price, sales, revenue. DataDAO is a gate kind on this panel |
+
+Window controls are `24h` / `7d` / `30d` filters on `ts`. That is the only interaction.
+
 ## Reader
 
-`GET /snapshot` returns the JSON. `GET /health` returns the health section. The HTML page is one file: a heading per section and a `<table>` or `<pre>` per array. Time series is the log rendered as rows (ts, kind, amount), not a chart. Filters are query params on the JSON (`?kind=cost&token=0x…`), implemented in the reader with `Array.filter`, not a query engine.
+`GET /snapshot` returns the JSON. `GET /health` returns the health section. The page imports one existing component set (a CDN table and a line chart is enough) and points each panel at a snapshot array. No custom CSS beyond that import, no design system, no hand-built charts.
+
+Filters are query params (`?kind=cost&since=7d&token=0x…`) applied with `Array.filter` in the reader. Not a query engine.
 
 No login in v1. Public means the redacted snapshot, not a second projection.
 
