@@ -1,7 +1,7 @@
 # Agent Handoff: all-in-one dsh web3 agent container (docker/)
 
 ## Goal
-Single fat Docker image (`localhost/dsh-agent:latest`) that boots a full dsh
+Single fat Docker image (`localhost/dsh-web3-agent:latest`) that boots a full dsh
 agent: hot internal EVM+ICP wallets, testnet defaults, user-provided
 `MODEL_BASE_URL`/`MODEL_ID`, Prowlarr + qBittorrent + Transmission + yt-dlp +
 ffmpeg inside, Convos/XMTP QR output. Build context = this repo,
@@ -35,7 +35,7 @@ background builds DIE with the spawning session — assume it died and re-run:
 
 ```bash
 cd /root/deepseek-harness-web3-agent-stack
-podman build --network=host -f docker/Dockerfile -t dsh-agent:latest . 2>&1 | tail -3
+podman build --network=host -f docker/Dockerfile -t dsh-web3-agent:latest . 2>&1 | tail -3
 ```
 
 `--network=host` is REQUIRED (bridge has no DNS/egress on this box).
@@ -46,7 +46,7 @@ podman volume create agent-test-data
 podman run -d --name agent-test --network=host -v agent-test-data:/data \
   -e ACCEPT_HOT_WALLET_RISK=yes \
   -e MODEL_BASE_URL=https://example.invalid/v1 -e MODEL_ID=test-model \
-  -e MODEL_API_KEY=dummy-key localhost/dsh-agent:latest
+  -e MODEL_API_KEY=dummy-key localhost/dsh-web3-agent:latest
 sleep 60
 podman exec agent-test cat /data/logs/agent.err.log   # want: NO "failed to import"
 podman exec agent-test ls -la /data/xmtp/             # want: agent.db present
