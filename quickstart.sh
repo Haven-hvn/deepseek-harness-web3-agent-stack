@@ -153,6 +153,7 @@ echo "== Building latest stack =="
 cd "$STACK/dsh-channel-xmtp" && npx tsdown 2>&1 | grep -E "Build complete|ERROR" | tail -n 5
 cd "$STACK/dsh-wallet-tools" && npx tsdown 2>&1 | grep -E "Build complete|ERROR" | tail -n 5
 cd "$STACK/dsh-tool-prowlarr" && npx tsdown 2>&1 | grep -E "Build complete|ERROR" | tail -n 5
+cd "$STACK/dsh-tool-acquisition" && npx tsdown 2>&1 | grep -E "Build complete|ERROR" | tail -n 5
 cd "$STACK" && npx vitest run 2>&1 | grep -E "Test Files|Tests"
 
 echo ""

@@ -1,7 +1,7 @@
 {
   "name": "dsh-haven-workspace",
   "private": true,
-  "description": "Development workspace for the dsh-haven plugin family: dsh-wallet, dsh-wallet-ethereum, dsh-treasury, dsh-channel-xmtp, dsh-storage-synapse, dsh-tool-prowlarr. Each package is an independently installable dsh bundle; this root exists only for shared dev tooling.",
+  "description": "Development workspace for the dsh-haven plugin family: dsh-wallet, dsh-wallet-ethereum, dsh-treasury, dsh-channel-xmtp, dsh-storage-synapse, dsh-tool-prowlarr, dsh-tool-acquisition. Each package is an independently installable dsh bundle; this root exists only for shared dev tooling.",
   "type": "module",
   "scripts": {
     "build": "pnpm -r run build",

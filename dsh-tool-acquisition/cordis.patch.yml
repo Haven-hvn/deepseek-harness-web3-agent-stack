@@ -1,0 +1,14 @@
+# The dsh-tool-acquisition bundle patch: download/acquisition tools.
+#
+#   dsh plugin --profile <name> add /path/to/dsh-tool-acquisition
+#
+# Inserts only its own row. Requires the tool registry (`tools`), present in
+# every agent-running profile. Secrets fall back to env vars; keep them out
+# of this file: $PROWLARR_API_KEY, $QBITTORRENT_PASSWORD, $TRANSMISSION_PASSWORD.
+- insert:
+    - id: tool-acquisition
+      name: 'dsh-tool-acquisition'
+      config:
+        prowlarrUrl: http://localhost:9696
+        qbittorrentUrl: http://localhost:8080
+        downloadDir: ./downloads-acquisition
