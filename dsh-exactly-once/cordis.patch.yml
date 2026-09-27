@@ -1,0 +1,25 @@
+# dsh-exactly-once bundle: transparent exactly-once guard over write tools.
+# Model-invisible: no new tools, no new parameters. The tools/execute wrapper
+# (timeout-policy shape) dedups redelivered calls by (agent, callId), replays
+# settled results from the session ledger (tool/call + tool/result events),
+# and checks repeats-after-ambiguous outcomes against per-tool read-back
+# hooks registered through the ctx.exactlyOnce seam.
+#
+# `writes` names the guarded tools (`*` wildcards; `*_submit` covers the
+# configurable acquire prefix). Reads stay transparent: unlisted tools pass
+# straight through with zero tracking.
+- insert:
+    - id: exactly-once
+      name: 'dsh-exactly-once'
+      config:
+        writes:
+          - synapse_pin
+          - '*_submit'
+          - arkiv_create_entity
+          - arkiv_update_entity
+          - erc8004_register
+          - rr_launch
+          - rr_sweep
+          - rr_heartbeat
+          - aol_decrypt
+        exempt: []

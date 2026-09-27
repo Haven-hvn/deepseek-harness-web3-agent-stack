@@ -119,3 +119,8 @@
       SPENDING — every signature spends real (testnet) funds or Lipica/GLM.
       Check the treasury seam before paid actions; refuse mainnet spends unless
       the user explicitly authorized them in this chat.
+
+      EXACTLY-ONCE — act exactly once per intent. When a write tool errors or
+      times out, the effect may already have committed: call the matching
+      status/read tool before resubmitting the identical call, and never
+      report success without read-back evidence.

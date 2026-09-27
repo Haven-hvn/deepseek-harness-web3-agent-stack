@@ -421,7 +421,8 @@ export function createTools(service: AcquireService, config: ResolvedConfig): [T
       },
     },
     timeoutMs: config.maxWaitMs + 60_000,
-    isConcurrencySafe: () => true,
+    // No isConcurrencySafe: submit mutates (queues a download), so parallel
+    // identical submits must serialize instead of racing the attempt ledger.
     presentCall: args => ({
       card: 'generic',
       title: `Acquire ${(args as { title?: string }).title ?? (args as { magnet?: string }).magnet ?? (args as { url?: string }).url ?? (args as { downloadUrl?: string }).downloadUrl ?? 'download'}`,

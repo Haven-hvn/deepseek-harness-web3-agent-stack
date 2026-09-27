@@ -14,3 +14,4 @@ packages:
   - dsh-tool-prowlarr
   - dsh-tool-acquisition
   - dsh-observatory
+  - dsh-exactly-once
