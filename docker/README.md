@@ -8,14 +8,14 @@ every boot starts the supervisor tree and prints a Convos invite QR.
 ## Run
 
 ```sh
-podman build -f docker/Dockerfile -t dsh-web3-agent:latest .
+podman build -f docker/Dockerfile -t dsh-haven-web3-agent:latest .
 podman run -d --name agent \
   -v agent-data:/data \
   -e ACCEPT_HOT_WALLET_RISK=yes \
   -e MODEL_BASE_URL=https://your-openai-compatible-endpoint/v1 \
   -e MODEL_ID=your-model-id \
   -e MODEL_API_KEY=your-key \
-  dsh-web3-agent:latest
+  dsh-haven-web3-agent:latest
 podman logs -f agent   # instantiation summary, then services, then the QR
 ```
 
