@@ -1,0 +1,121 @@
+# Container user layer: testnet defaults, local services, user-provided model.
+# Applied over the image-built skeleton (dsh-base + web3 stack). Secrets are
+# NEVER baked here: keys resolve from $DSH_HOME/.credentials.yaml (generated
+# at first boot) or process env (MODEL_* / PROWLARR_API_KEY at runtime).
+#
+# Testnet posture: every chain default below is a testnet. The two deliberate
+# exceptions are XMTP `env: production` (messaging, not money — the Convos
+# app lives there) and the Haven-AOL canister (ICP has no public testnet;
+# reads are free, gates need explicit user action).
+
+# ── Model (user-provided endpoint) ─────────────────────────────────────
+- id: agent-default-model
+  config:
+    provider: spark
+    model: !!js process.env.MODEL_ID
+
+- id: llm-pi-ai
+  config:
+    providers:
+      spark:
+        apiKeyEnv: MODEL_API_KEY
+        baseURL: !!js process.env.MODEL_BASE_URL
+        api: !!js process.env.MODEL_API_PROTOCOL || 'openai-completions'
+        models:
+          - id: !!js process.env.MODEL_ID
+
+# ── Wallets: hot, internal, agent-managed (raw keyRef, no OWS vault) ────
+- id: wallet
+  config:
+    wallets:
+      agent:
+        chain: evm
+        wallet: agent
+        keyRef: AGENT_EVM_KEY
+
+- id: wallet-ethereum
+  config:
+    provider: raw
+
+- id: wallet-tools
+  config:
+    wallet: agent
+    chains:
+      - chain: sepolia
+        chainId: 11155111
+        rpcUrls: ['https://ethereum-sepolia-rpc.publicnode.com']
+        nativeToken: ETH
+        nativeDecimals: 18
+        label: 'Sepolia testnet'
+      - chain: base-sepolia
+        chainId: 84532
+        rpcUrls: ['https://sepolia.base.org']
+        nativeToken: ETH
+        nativeDecimals: 18
+        label: 'Base Sepolia testnet'
+      - chain: filecoin-calibration
+        chainId: 314159
+        rpcUrls: ['https://api.calibration.node.glif.io/rpc/v1']
+        nativeToken: tFIL
+        nativeDecimals: 18
+        label: 'Filecoin calibration'
+    tokens: []
+
+# ── Messaging ──────────────────────────────────────────────────────────
+- id: channel-xmtp
+  config:
+    wallet: agent
+    env: production
+    dbPath: /data/xmtp/agent.db
+    dbEncryptionKeyRef: XMTP_DB_KEY
+    convos: true
+
+# ── Storage / chain ────────────────────────────────────────────────────
+- id: storage-arkiv
+  config:
+    rpcUrl: https://rpc.tiramisu.db-chain.testnet.arkiv.network
+
+- id: royalty-router
+  config:
+    chainId: 84532
+    rpcUrl: https://sepolia.base.org
+
+# ── Acquisition (in-container services) ────────────────────────────────
+- id: tool-prowlarr
+  config:
+    baseUrl: http://127.0.0.1:9696
+    apiKey: !!js process.env.PROWLARR_API_KEY
+
+- id: tool-acquisition
+  config:
+    qbittorrentUrl: http://127.0.0.1:8080
+    transmissionUrl: http://127.0.0.1:9091
+    downloadDir: /data/downloads/acquire
+
+# ── Persona (container reality: hot keys, testnets, local services) ────
+- id: system-prompt
+  config:
+    persona: |
+      You are the containerized Haven web3 agent. Your wallets are HOT and live
+      inside this container (/data/keys): one EVM key (`agent` wallet) and one
+      ICP ed25519 identity (principal on file, reserved for future canister
+      calls). The user was warned at instantiation and deposits only what they
+      can lose. Never print private keys or seeds — addresses and principals only.
+
+      CHAIN POSTURE — testnets by default. Balances: Sepolia, Base Sepolia,
+      Filecoin calibration. Arkiv: Tiramisu testnet. Royalty launches have no
+      testnet factory configured: quote/advise freely, but never reconfigure a
+      mainnet factory or chain without the user explicitly asking in this chat.
+      XMTP runs on production (messaging, not money).
+
+      MEDIA PIPELINE — search with prowlarr_search, fetch with acquire_submit
+      (poll acquire_status), or shell out: `yt-dlp` and `ffmpeg` are installed,
+      plus Prowlarr (:9696), qBittorrent (:8080), Transmission (:9091) on
+      container localhost. Pin finished files with synapse_pin, then record
+      them with arkiv_create_entity. You own every handoff decision: which hit
+      to fetch, which link to try next, what counts as content, what to pin,
+      how to shape the entity.
+
+      SPENDING — every signature spends real (testnet) funds or Lipica/GLM.
+      Check the treasury seam before paid actions; refuse mainnet spends unless
+      the user explicitly authorized them in this chat.

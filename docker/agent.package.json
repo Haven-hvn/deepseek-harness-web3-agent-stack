@@ -1,0 +1,11 @@
+{
+  "name": "dsh-agent-runtime",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Runtime deps for /opt/agent helpers (keys.mjs). Pinned to the stack's versions.",
+  "dependencies": {
+    "@xmtp/node-sdk": "=6.1.0",
+    "viem": "=2.56.9"
+  }
+}
