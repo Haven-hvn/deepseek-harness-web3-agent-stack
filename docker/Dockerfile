@@ -11,7 +11,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # OS binaries: torrent clients, media, QR, supervision. libicu72 for the
 # self-contained Prowlarr build on slim.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl xz-utils \
+      ca-certificates curl git xz-utils \
       libicu72 \
       qbittorrent-nox transmission-daemon \
       ffmpeg qrencode supervisor \
@@ -48,7 +48,7 @@ COPY docker/keys.mjs docker/entrypoint.sh docker/convos-qr.sh \
 RUN chmod +x /opt/agent/entrypoint.sh /opt/agent/convos-qr.sh
 
 # Web3 agent stack workspace root (for in-image install + build).
-COPY package.json pnpm-workspace.yaml pnpm-lock.yaml /opt/stack/
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json /opt/stack/
 # Web3 agent stack source (node_modules/lib excluded via .dockerignore).
 # One COPY per package: multi-source COPY merges directory contents.
 COPY dsh-wallet/ /opt/stack/dsh-wallet/
@@ -64,6 +64,30 @@ COPY dsh-haven-aol/ /opt/stack/dsh-haven-aol/
 COPY dsh-persona/ /opt/stack/dsh-persona/
 COPY dsh-tool-prowlarr/ /opt/stack/dsh-tool-prowlarr/
 COPY dsh-tool-acquisition/ /opt/stack/dsh-tool-acquisition/
+
+# haven-aol source: dsh-haven-aol depends on it via
+# file:../../haven-aol/packages/typescript, which resolves to /opt/haven-aol
+# from /opt/stack. Pinned to the commit the stack was developed against.
+ARG HAVEN_AOL_REF=29327ae849f2fd10205828b089fedfbff5849837
+RUN git init -q /opt/haven-aol && cd /opt/haven-aol \
+    && git remote add origin https://github.com/Haven-hvn/haven-aol.git \
+    && git fetch -q --depth 1 origin ${HAVEN_AOL_REF} && git checkout -q FETCH_HEAD \
+    && rm -rf .git \
+    && cd packages/typescript && npm ci --no-audit --no-fund --ignore-scripts \
+    && npm run build && npm prune --omit=dev \
+    && npm cache clean --force
+
+# Royalty-router SDK: dsh-royalty-router depends on it via
+# file:../../mint-glue-graduate/sdk, which resolves to /opt/mint-glue-graduate
+# from /opt/stack. Pinned like haven-aol above.
+ARG ROYALTY_REF=5f8b8b79f22e4d10508059c56874ee409d26b581
+RUN git init -q /opt/mint-glue-graduate && cd /opt/mint-glue-graduate \
+    && git remote add origin https://github.com/Haven-hvn/mint-glue-graduate.git \
+    && git fetch -q --depth 1 origin ${ROYALTY_REF} && git checkout -q FETCH_HEAD \
+    && rm -rf .git \
+    && cd sdk && npm ci --no-audit --no-fund --ignore-scripts \
+    && npm run build && npm prune --omit=dev \
+    && npm cache clean --force
 
 # Build the stack in-image (lib/ is dockerignored out of the context, so the
 # profile links would otherwise point at unbuilt sources). The workspace
