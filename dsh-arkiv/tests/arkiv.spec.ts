@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
-import { CREATE_RESULT_SCHEMA, QUERY_RESULT_SCHEMA } from '../src/index.ts'
+import { CREATE_RESULT_SCHEMA, QUERY_RESULT_SCHEMA, toJsonSafeRecord } from '../src/index.ts'
 
 describe('arkiv output contracts', () => {
   it('arkiv_query accepts an entity list (array-rooted)', () => {
@@ -25,6 +25,31 @@ describe('arkiv output contracts', () => {
     expect(
       validateJsonSchemaValue(CREATE_RESULT_SCHEMA, { key: '0x1', owner: '0x2', txHash: '0x3' }, 'value'),
     ).toEqual([])
+  })
+
+  it('arkiv_query projects SDK records to lossless JSON (bigint/bytes boundary)', () => {
+    // Live failure: raw hits carry bigint expiresAt + Uint8Array payload,
+    // which the registry rejects as "not lossless JSON". The projection
+    // keeps type-exact attributes, stringifies big expiries, and turns the
+    // payload into a content pointer.
+    const projected = toJsonSafeRecord({
+      key: '0x1',
+      owner: '0x2',
+      payload: new TextEncoder().encode('{}'),
+      contentType: 'application/json',
+      attributes: { grp: 'haven.video.full', gate_type: 4n, gate_chain: 314159 },
+      expiresAt: 1791072000n,
+    })
+    expect(validateJsonSchemaValue(QUERY_RESULT_SCHEMA, [projected], 'value')).toEqual([])
+    expect(JSON.parse(JSON.stringify([projected]))).toEqual([projected])
+    expect(projected).toMatchObject({
+      key: '0x1',
+      attributes: { grp: 'haven.video.full', gate_type: 4, gate_chain: 314159 },
+      expiresAt: 1791072000,
+      payloadBytes: 2,
+    })
+    expect(typeof (projected as Record<string, unknown>).payloadSha256).toBe('string')
+    expect('payload' in projected).toBe(false)
   })
 
   it('arkiv_create_entity rejects undeclared keys (why execute projects the record)', () => {

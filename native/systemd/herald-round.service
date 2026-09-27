@@ -1,0 +1,7 @@
+[Unit]
+Description=Herald autonomous round trigger (one-shot)
+After=herald-agent.service herald-convos-qr.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/herald/round.sh

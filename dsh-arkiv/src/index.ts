@@ -43,10 +43,7 @@ export {
 export type { HavenGroupClass, HavenNormalizedWrite } from './haven.ts';
 
 export const name = 'storage-arkiv';
-export const inject = {
-  required: ['wallet', 'tools'],
-  optional: ['credentials'],
-} as const;
+export const inject = ['wallet', 'tools'] as const;
 
 export interface Config {
   wallet: string;
@@ -149,9 +146,14 @@ export class ArkivRuntime {
     const ref = this._privateKeyRef;
     const creds: any = (this.ctx as any).credentials;
     let v: string | undefined;
-    if (creds?.get) { try { v = creds.get(ref) as string | undefined; } catch {} }
+    if (creds?.resolve) {
+      try {
+        const resolved = await creds.resolve(ref);
+        v = typeof resolved === 'string' ? resolved : resolved?.value;
+      } catch {}
+    }
     if (!v) v = process.env[ref];
-    if (!v) throw new Error(`dsh-arkiv: credential ${ref} not found (set ${ref} env or OWS vault)`);
+    if (!v) throw new Error(`dsh-arkiv: credential ${ref} not found (set ${ref} in the credential store or env)`);
     return v;
   }
 
@@ -516,6 +518,44 @@ export const QUERY_RESULT_SCHEMA = {
   items: { type: 'object', additionalProperties: true },
 } as const;
 
+/** bigint → number when exact, else a decimal string (lossless-JSON rule). */
+function safeNumber(value: bigint): number | string {
+  return value <= BigInt(Number.MAX_SAFE_INTEGER) && value >= -BigInt(Number.MAX_SAFE_INTEGER)
+    ? Number(value)
+    : value.toString(10)
+}
+
+/** Deep bigint/bytes → JSON conversion for SDK-shaped values. */
+function toJsonSafe(value: unknown): unknown {
+  if (typeof value === 'bigint') return safeNumber(value)
+  if (value instanceof Uint8Array) return `0x${Buffer.from(value).toString('hex')}`
+  if (Array.isArray(value)) return value.map(toJsonSafe)
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, toJsonSafe(v)]))
+  }
+  return value
+}
+
+/**
+ * Lossless-JSON projection for one entity query hit (tool-output boundary
+ * only — the runtime keeps raw bytes/bigints for its read-back hooks).
+ * Payload bytes become a content pointer (sha256 + size), never raw bytes.
+ */
+export function toJsonSafeRecord(record: ArkivEntityRecord): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  if (record.key !== undefined) out.key = record.key
+  if (record.owner !== undefined) out.owner = record.owner
+  if (record.contentType !== undefined) out.contentType = record.contentType
+  if (record.txHash !== undefined) out.txHash = record.txHash
+  if (record.expiresAt !== undefined) out.expiresAt = typeof record.expiresAt === 'bigint' ? safeNumber(record.expiresAt) : record.expiresAt
+  if (record.attributes !== undefined) out.attributes = toJsonSafe(record.attributes)
+  if (record.payload !== undefined) {
+    out.payloadSha256 = createHash('sha256').update(record.payload).digest('hex')
+    out.payloadBytes = record.payload.length
+  }
+  return out
+}
+
 /** Batch creates return one {key, txHash} per record, in order (one shared txHash). */
 export const BATCH_RESULT_SCHEMA = {
   type: 'array',
@@ -544,7 +584,7 @@ export function apply(ctx: Context, config: Config): void {
       path: { type: 'string', description: 'Local file holding the JSON payload. Exactly one of path or payload.' },
       payload: { type: 'string', description: 'JSON payload string (utf8) if no file. Exactly one of path or payload.' },
       contentType: { type: 'string', description: 'Must be application/json (Haven entities are JSON records)', required: true } as any,
-      attributes: { type: 'object', description: 'Haven attributes Record<string, unknown> (grp/title/gate corpus/sha256_ct/mime/dur_s or drip coordinates)', required: true } as any,
+      attributes: { type: 'object', additionalProperties: true, description: 'Haven attributes Record<string, unknown> (grp/title/gate corpus/sha256_ct/mime/dur_s or drip coordinates)', required: true } as any,
       expiresIn: { type: 'number', description: 'Seconds until expiry (default per group: 4w full/generic, 52w series, 12w parts)' } as any,
     },
     output: { schema: CREATE_RESULT_SCHEMA, render: (_args, value) => [{ type: 'text', text: `${(value as any).key}: created tx ${(value as any).txHash}` }] },
@@ -568,7 +608,7 @@ export function apply(ctx: Context, config: Config): void {
       path: { type: 'string', description: 'Local file holding the new JSON payload' } as any,
       payload: { type: 'string', description: 'New JSON payload string if no file' } as any,
       contentType: { type: 'string', required: true, description: 'Must be application/json' } as any,
-      attributes: { type: 'object', description: 'Complete Haven attributes for the rewritten record', required: true } as any,
+      attributes: { type: 'object', additionalProperties: true, description: 'Complete Haven attributes for the rewritten record', required: true } as any,
       expiresIn: { type: 'number', description: 'Extend expiry seconds (default per group)' } as any,
     },
     output: { schema: { type: 'object', additionalProperties: true } as any, render: (_args, v) => [{ type: 'text', text: JSON.stringify(v) }] },
@@ -589,11 +629,12 @@ export function apply(ctx: Context, config: Config): void {
         description: 'Records in mint order: each {path|payload, contentType:"application/json", attributes, expiresIn?} like arkiv_create_entity.',
         items: {
           type: 'object',
+          additionalProperties: false,
           properties: {
             path: { type: 'string', description: 'Local file holding the JSON payload. Exactly one of path or payload per record.' },
             payload: { type: 'string', description: 'JSON payload string (utf8) if no file.' },
             contentType: { type: 'string', description: 'Must be application/json', required: true },
-            attributes: { type: 'object', description: 'Haven attributes for this record', required: true },
+            attributes: { type: 'object', additionalProperties: true, description: 'Haven attributes for this record', required: true },
             expiresIn: { type: 'number', description: 'Seconds until expiry (default per group)' },
           },
         },
@@ -630,12 +671,13 @@ export function apply(ctx: Context, config: Config): void {
     name: 'arkiv_query',
     description: 'Query Haven Arkiv entities by attributes (all filters ANDed). Comparisons are type-exact: numbers stay numbers (gate_type 4, not "4"), hex is lowercased, series_ref matches the series entity key.',
     parameters: {
-      where: { type: 'object', description: 'Attribute filter, e.g. {grp:"haven.video.full", gate_type:3} or {sha256_ct:"<64 hex>"}' } as any,
+      where: { type: 'object', additionalProperties: true, description: 'Attribute filter, e.g. {grp:"haven.video.full", gate_type:3} or {sha256_ct:"<64 hex>"}' } as any,
       limit: { type: 'number', description: 'Max results' } as any,
     },
     output: { schema: QUERY_RESULT_SCHEMA, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }] },
-    async execute(args: { where?: Record<string, unknown>; limit?: number }, exec): Promise<ArkivEntityRecord[]> {
-      return arkiv.queryEntities({ where: args.where, limit: args.limit });
+    async execute(args: { where?: Record<string, unknown>; limit?: number }, exec): Promise<Record<string, unknown>[]> {
+      const hits = await arkiv.queryEntities({ where: args.where, limit: args.limit });
+      return hits.map(toJsonSafeRecord);
     },
     presentCall: args => ({ card: 'generic', title: `Query Arkiv ${JSON.stringify(args.where ?? {})}`, kind: 'read' }),
   })));

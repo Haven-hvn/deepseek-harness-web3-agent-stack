@@ -1,0 +1,14 @@
+[Unit]
+Description=Herald Transmission client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/transmission-daemon -f --config-dir /var/lib/herald/transmission
+Environment=HOME=/var/lib/herald/qbithome
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=Herald dashboard (dsh-observatory)
+After=herald-agent.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node /root/deepseek-harness-web3-agent-stack/dsh-observatory/lib/serve.js
+Environment=OBSERVATORY_DIR=/var/lib/herald/observatory DASHBOARD_HOST=0.0.0.0 DASHBOARD_PORT=8787
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,147 @@
+# Herald native user layer: testnet defaults, host services, Upstage model.
+# Applied over the herald profile bundles (dsh-base + web3 stack). Secrets
+# are NEVER baked here: keys resolve from $DSH_HOME/.credentials.yaml
+# (AGENT_EVM_KEY, XMTP_DB_KEY) or process env (/etc/herald/agent.env:
+# MODEL_* / PROWLARR_API_KEY).
+#
+# Testnet posture: every chain default below is a testnet. The two deliberate
+# exceptions are XMTP `env: production` (messaging, not money — the Convos
+# app lives there) and the Haven-AOL canister (ICP has no public testnet;
+# reads are free, gates need explicit user action).
+
+# ── Model (Upstage endpoint) ─────────────────────────────────────────
+- id: agent-default-model
+  config:
+    provider: spark
+    model: !!js process.env.MODEL_ID
+
+- id: llm-pi-ai
+  config:
+    providers:
+      spark:
+        apiKeyEnv: MODEL_API_KEY
+        baseURL: !!js process.env.MODEL_BASE_URL
+        api: !!js process.env.MODEL_API_PROTOCOL || 'openai-completions'
+        retryPolicy:
+          mode: normal
+          maxRetries: 8
+          backoff:
+            initialDelayMs: 2000
+            maxDelayMs: 60000
+        models:
+          - id: !!js process.env.MODEL_ID
+            compat:
+              supportsStore: false
+              supportsReasoningEffort: false
+
+# ── Wallets: hot, agent-managed (raw keyRef, no OWS vault) ───────────
+- id: wallet
+  config:
+    wallets:
+      agent:
+        chain: evm
+        wallet: agent
+        keyRef: AGENT_EVM_KEY
+
+- id: wallet-ethereum
+  config:
+    provider: raw
+
+- id: wallet-tools
+  config:
+    wallet: agent
+    chains:
+      - chain: sepolia
+        chainId: 11155111
+        rpcUrls: ['https://ethereum-sepolia-rpc.publicnode.com']
+        nativeToken: ETH
+        nativeDecimals: 18
+        label: 'Sepolia testnet'
+      - chain: base-sepolia
+        chainId: 84532
+        rpcUrls: ['https://sepolia.base.org']
+        nativeToken: ETH
+        nativeDecimals: 18
+        label: 'Base Sepolia testnet'
+      - chain: filecoin-calibration
+        chainId: 314159
+        rpcUrls: ['https://api.calibration.node.glif.io/rpc/v1']
+        nativeToken: tFIL
+        nativeDecimals: 18
+        label: 'Filecoin calibration'
+    tokens: []
+
+# ── Messaging ────────────────────────────────────────────────────────
+- id: channel-xmtp
+  config:
+    wallet: agent
+    env: production
+    dbPath: /var/lib/herald/xmtp/agent.db
+    dbEncryptionKeyRef: XMTP_DB_KEY
+    outboxPath: /var/lib/herald/xmtp/outbox.json
+    convos: true
+
+# ── Storage / chain ──────────────────────────────────────────────────
+- id: storage-arkiv
+  config:
+    wallet: agent
+    privateKeyRef: AGENT_EVM_KEY
+    rpcUrl: https://rpc.tiramisu.db-chain.testnet.arkiv.network
+
+- id: royalty-router
+  config:
+    chainId: 8453
+    rpcUrl: https://mainnet.base.org
+
+# ── Observatory (native paths; no supervisor socket) ─────────────────
+- id: observatory
+  config:
+    dir: /var/lib/herald/observatory
+    supervisorSock: /var/lib/herald/supervisor.sock
+    acquireStore: /var/lib/herald/downloads/acquire/acquisitions.json
+
+# ── Acquisition (host services) ──────────────────────────────────────
+- id: tool-prowlarr
+  config:
+    baseUrl: http://127.0.0.1:9696
+    apiKey: !!js process.env.PROWLARR_API_KEY
+
+- id: tool-acquisition
+  config:
+    qbittorrentUrl: http://127.0.0.1:8080
+    transmissionUrl: http://127.0.0.1:9091
+    downloadDir: /var/lib/herald/downloads/acquire
+
+# ── Persona (native reality: hot key, testnets, host services) ───────
+- id: system-prompt
+  config:
+    persona: |
+      You run natively on the host as a systemd service (herald-agent). Your
+      EVM wallet (`agent`) is HOT: its key lives in the credential store and
+      is managed by you, not the user. Anyone with box access can spend
+      everything — deposits are the user's accepted risk. Never print private
+      keys or seeds — addresses only.
+
+      CHAIN POSTURE — testnets by default. Balances: Sepolia, Base Sepolia,
+      Filecoin calibration (FEVM testnet). Arkiv: Tiramisu testnet. Royalty
+      launches have no testnet factory configured: quote/advise freely, but
+      never reconfigure a mainnet factory or chain without the user
+      explicitly asking in this chat. XMTP runs on production (messaging,
+      not money).
+
+      MEDIA PIPELINE — search with prowlarr_search, fetch with acquire_submit
+      (poll acquire_status), or shell out: `yt-dlp` and `ffmpeg` are
+      installed, plus Prowlarr (:9696), qBittorrent (:8080), Transmission
+      (:9091) on host localhost. Pin finished files with synapse_pin, then
+      record them with arkiv_create_entity. You own every handoff decision:
+      which hit to fetch, which link to try next, what counts as content,
+      what to pin, how to shape the entity.
+
+      SPENDING — every signature spends real (testnet) funds. Check the
+      treasury seam before paid actions; refuse mainnet spends unless the
+      user explicitly authorized them in this chat.
+
+      EXACTLY-ONCE — act exactly once per intent. When a write tool errors or
+      times out, the effect may already have committed: call the matching
+      status/read tool before resubmitting the identical call, and never
+      report success without read-back evidence.

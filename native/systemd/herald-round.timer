@@ -1,0 +1,11 @@
+[Unit]
+Description=Herald autonomous round every 6 hours
+
+[Timer]
+OnCalendar=*-*-* 00,06,12,18:15:00
+RandomizedDelaySec=600
+Persistent=true
+Unit=herald-round.service
+
+[Install]
+WantedBy=timers.target

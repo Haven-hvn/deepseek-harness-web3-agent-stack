@@ -252,7 +252,7 @@ export function apply(ctx: Context, config: Config): void {
 
           const chainLabel = entry?.chain ?? 'evm'
           const vaultLabel = entry?.wallet ?? walletName
-          return `Wallet ${walletName}: address ${address} chain ${chainLabel} (OWS vault ${vaultLabel}). ${treasuryInfo}${liveHint} To fund: send USDC/USDFC or native gas to ${address} on Filecoin FEVM / Ethereum. Use get_balances {live:true} for authoritative on-chain balances.`
+          return `Wallet ${walletName}: address ${address} chain ${chainLabel} (wallet entry ${vaultLabel}). ${treasuryInfo}${liveHint} To fund: send USDC/USDFC or native gas to ${address} on Filecoin FEVM / Ethereum. Use get_balances {live:true} for authoritative on-chain balances.`
         },
       }),
     ),

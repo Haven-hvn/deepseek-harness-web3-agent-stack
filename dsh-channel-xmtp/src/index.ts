@@ -541,17 +541,22 @@ class XmtpChannelRuntime {
     const existing = this.agents.get(conversationId)
     if (existing !== undefined) return existing
     const selection = this.ctx.agentDefaultModel.currentSelection()
-    const created = this.ctx.agents.create({
-      sessionId: SessionId(`${this.config.channelName ?? 'xmtp'}-${conversationId}`),
-      meta: { cwd: process.cwd() },
-      agentOptions: { provider: selection.provider, model: selection.model },
-      setup: (agentCtx: Context) => {
-        const selected: ModelSelectionRef = { current: selection, assembled: undefined }
-        installModelSelection(agentCtx, selected)
-      },
-    })
+    const sessionId = SessionId(`${this.config.channelName ?? 'xmtp'}-${conversationId}`)
+    const agentOptions = { provider: selection.provider, model: selection.model }
+    const setup = (agentCtx: Context) => {
+      const selected: ModelSelectionRef = { current: selection, assembled: undefined }
+      installModelSelection(agentCtx, selected)
+    }
+    // Sessions persist across restarts while this map does not: recreating an
+    // agent for a known conversation resumes the persisted session instead of
+    // failing on the duplicate id (api-session-controller precedent).
+    const created = this.ctx.agents.create({ sessionId, meta: { cwd: process.cwd() }, agentOptions, setup })
+      .catch((error: unknown) => {
+        if (!/already exists/.test(String((error as { message?: unknown })?.message ?? error))) throw error
+        return this.ctx.agents.resume({ resumeSessionId: sessionId, agentOptions, setup })
+      })
     this.agents.set(conversationId, created)
-    created.catch(() => this.agents.delete(conversationId))
+    created.catch(() => { if (this.agents.get(conversationId) === created) this.agents.delete(conversationId) })
     return created
   }
 }

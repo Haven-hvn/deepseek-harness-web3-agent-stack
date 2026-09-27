@@ -1,0 +1,16 @@
+[Unit]
+Description=Herald agent (dsh profile herald)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/dsh --profile herald
+WorkingDirectory=/var/lib/herald
+EnvironmentFile=/etc/herald/agent.env
+Environment=DSH_HOME=/root/.dsh DSH_PERMISSION_MODE=danger-full-access HOME=/root DSH_TELEMETRY_DISABLED=1
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

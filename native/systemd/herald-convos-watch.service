@@ -1,0 +1,13 @@
+[Unit]
+Description=Herald Convos join-request watcher
+After=herald-convos-qr.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/convos conversations process-join-requests --env production --watch
+Environment=CONVOS_HOME=/var/lib/herald/convos
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

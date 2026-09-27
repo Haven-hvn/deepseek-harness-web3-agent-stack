@@ -1,0 +1,14 @@
+[Unit]
+Description=Herald qBittorrent client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/qbittorrent-nox --webui-port=8080
+Environment=HOME=/var/lib/herald/qbithome
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

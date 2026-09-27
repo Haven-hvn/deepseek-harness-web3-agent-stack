@@ -1,0 +1,13 @@
+[Unit]
+Description=Herald Prowlarr indexer setup (one-shot)
+After=herald-prowlarr.service
+Wants=herald-prowlarr.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/node /opt/herald/setup-indexers.mjs
+EnvironmentFile=/etc/herald/agent.env
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

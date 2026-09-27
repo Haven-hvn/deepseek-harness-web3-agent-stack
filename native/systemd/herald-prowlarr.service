@@ -1,0 +1,13 @@
+[Unit]
+Description=Herald Prowlarr indexer manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/root/prowlarr-app/Prowlarr/Prowlarr -data=/var/lib/herald/prowlarr
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

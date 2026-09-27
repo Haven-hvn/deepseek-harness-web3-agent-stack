@@ -1,0 +1,12 @@
+[Unit]
+Description=Herald Convos invite + QR (one-shot)
+After=herald-agent.service
+Wants=herald-agent.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/herald/convos-qr.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
