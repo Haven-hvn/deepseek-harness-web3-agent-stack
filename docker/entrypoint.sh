@@ -58,18 +58,22 @@ EOF
   rm -rf /data/dsh/profiles
   cp -a /opt/dsh-skel/profiles /data/dsh/profiles
   cp /opt/agent/profile.patch.yml /data/dsh/profiles/agent/cordis.patch.yml
-  # pnpm link: symlinks are relative — re-add absolute paths so they resolve
-  # from the new location (fast, offline: peers already in the skeleton).
+  # pnpm link: symlinks are relative to the skeleton — repoint the dangling
+  # top-level links at the absolute /opt/stack sources. (No pnpm at runtime:
+  # the profile volume is a different filesystem from the image store, which
+  # pnpm refuses. The image is immutable, so links never need re-resolution.)
   log "re-linking stack packages into the profile..."
-  export CI=true
-  dsh plugin --profile agent add \
-    /opt/stack/dsh-wallet /opt/stack/dsh-wallet-ethereum \
-    /opt/stack/dsh-wallet-tools /opt/stack/dsh-treasury \
-    /opt/stack/dsh-channel-xmtp /opt/stack/dsh-storage-synapse \
-    /opt/stack/dsh-arkiv /opt/stack/dsh-erc8004 \
-    /opt/stack/dsh-royalty-router /opt/stack/dsh-haven-aol \
-    /opt/stack/dsh-persona /opt/stack/dsh-tool-prowlarr \
-    /opt/stack/dsh-tool-acquisition > /data/logs/plugin-add.log 2>&1
+  for link in /data/dsh/profiles/agent/node_modules/dsh-*; do
+    if [ -L "$link" ] && [ ! -e "$link" ]; then
+      base=$(basename "$link")
+      if [ -d "/opt/stack/$base" ]; then
+        ln -sfn "/opt/stack/$base" "$link"
+      else
+        echo "entrypoint: cannot re-link $base (missing from /opt/stack)" >&2
+        exit 3
+      fi
+    fi
+  done
 
   log "preseeding service configs..."
   mkdir -p /data/prowlarr /data/transmission /data/home/.config/qBittorrent
