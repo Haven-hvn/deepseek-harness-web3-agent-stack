@@ -4,7 +4,7 @@
  * key server-side via the `X-Api-Key` header — never the `apikey` query
  * parameter — and refuses to send it to any non-Prowlarr origin.
  *
- * Ported from Haven CLI's `services/prowlarr.py` (`proxy_url`,
+ * Ported from the reference `services/prowlarr.py` (`proxy_url`,
  * `open_download`) plus the redirect branch of the Prowlarr plugin's
  * `_fetch_via_prowlarr`.
  *

@@ -1,7 +1,7 @@
 /**
  * Persistent handle store. Submit records outlive the agent process in a
  * JSON file (atomic tmp+rename writes), so `acquire_status` resolves a
- * handle after a restart — the same role as Haven CLI's
+ * handle after a restart — the same role as the reference
  * `AcquisitionStore`, minus retry bookkeeping (the agent owns retries).
  *
  * @module dsh-tool-acquisition/store

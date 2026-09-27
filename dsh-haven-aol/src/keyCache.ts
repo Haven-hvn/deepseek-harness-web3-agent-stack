@@ -1,8 +1,8 @@
 /**
- * In-memory Haven-AOL key caches (CLI Bugs 4–6 parity).
+ * In-memory Haven-AOL key caches (upstream Bugs 4–6 parity).
  *
- * Two caches, matching `haven_cli/crypto/epoch_key_cache.py` (encrypt
- * side) and `haven_cli/crypto/gate_key_cache.py` (decrypt side):
+ * Two caches, matching the reference `crypto/epoch_key_cache.py`
+ * (encrypt side) and `crypto/gate_key_cache.py` (decrypt side):
  *
  * - {@link EpochAesKeyCache}: one AES content key + its IBE-wrapped blob
  *   per v3 `(chain, token, threshold, epoch)` bucket. N files sealed in
@@ -12,29 +12,29 @@
  *   files, breaking the drip), so neither touches this cache.
  * - {@link VetKeyCache}: one canister-derived vetKey per derivation
  *   input. N decrypts in one bucket cost one signed gate round-trip
- *   plus N local unwraps. The CLI caches the canister's
- *   `{encrypted_key, verification_key}` bundle; the harness uses an
+ *   plus N local unwraps. The reference implementation caches the
+ *   canister's `{encrypted_key, verification_key}` bundle; the harness uses an
  *   ephemeral transport keypair per call, so it caches the RECOVERED
  *   vetKey instead (same bucket semantics, one less local op per hit).
  *
  * Custody: memory-first, with an optional durable store. The keys are
  * tiny (32-byte AES, 48-byte vetKeys) and append-only, so a configured
  * `keyStorePath` (see `./keyStore.ts`) keeps them across restarts in a
- * versioned JSON file; unset keeps the CLI's memory-only behavior.
+ * versioned JSON file; unset keeps memory-only behavior.
  * Either way there is deliberately no revocation within an epoch: a
  * member who legitimately held a bucket key could have saved the
  * unwrapped file keys anyway.
  *
- * Invariants (same as the CLI):
+ * Invariants (same as the reference implementation):
  * - Threshold-zero collapses epoch to 0 in the cache key, so the whole
  *   free corpus lands in one slot (callers pass the collapsed epoch;
  *   `makeEpochCacheKey` throws on `threshold == 0, epoch != 0` rather
  *   than silently collapsing, so callers stay honest).
  * - Decrypt lookups key off the derivation input computed from the
  *   gate METADATA — never the wall clock — so old-epoch ciphertext
- *   stays decryptable past rollover (CLI scenario-D rule).
+ *   stays decryptable past rollover (scenario-D rule).
  * - Concurrent misses attach to one in-flight factory call (the
- *   single-threaded equivalent of the CLI's lock-held miss-fill).
+ *   single-threaded equivalent of a lock-held miss-fill).
  * - Rejections are never cached: a failed factory drops its slot so
  *   the next call retries.
  *

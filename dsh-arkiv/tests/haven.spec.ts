@@ -3,8 +3,8 @@
  *
  * The runtime validates every create/update against ARKIV_FORMAT v2.1.0
  * BEFORE signing (see ../src/haven.ts, ported from
- * haven_cli/services/arkiv_sync.py). These specs pin the per-group record
- * shapes, the attr↔gate cross-checks, the CLI-compatible wire
+ * the reference services/arkiv_sync.py). These specs pin the per-group record
+ * shapes, the attr↔gate cross-checks, the reference-compatible wire
  * normalization, and the runtime wiring (invalid ⇒ throw before send).
  * No chain, no network.
  */
@@ -212,7 +212,7 @@ describe('haven writes: valid records pass', () => {
 });
 
 describe('haven writes: normalization', () => {
-  it('lowercases hex to the CLI wire (full groups stay str|int)', () => {
+  it('lowercases hex to the reference wire (full groups stay str|int)', () => {
     const record = fullV1();
     record.attributes.gate_token = TOKEN.toUpperCase().replace('0X', '0x');
     record.attributes.sha256_ct = `0x${SHA.toUpperCase()}`;
@@ -460,7 +460,7 @@ describe('haven writes: fail-closed rejections', () => {
 });
 
 describe('haven query filters', () => {
-  it('lowercases hex and passes the CLI wire through', () => {
+  it('lowercases hex and passes the reference wire through', () => {
     expect(normalizeHavenWhere({ grp: 'haven.video.full', gate_token: TOKEN.toUpperCase().replace('0X', '0x') }))
       .toEqual({ grp: 'haven.video.full', gate_token: TOKEN });
     expect(normalizeHavenWhere({ sha256_ct: `0x${SHA.toUpperCase()}` })).toEqual({ sha256_ct: SHA });

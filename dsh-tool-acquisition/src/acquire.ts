@@ -1,7 +1,7 @@
 /**
  * Acquisition orchestration: turn one submit call (magnet, direct URL, or
  * Prowlarr release reference) into local files. Ports the strategy of
- * Haven CLI's Prowlarr plugin (`_acquire`/`_submit`/`_wait`):
+ * the reference Prowlarr plugin (`_acquire`/`_submit`/`_wait`):
  *
  * - magnets and `.torrent` bodies go to a torrent client (qBittorrent,
  *   then Transmission), polled until the wait budget runs out

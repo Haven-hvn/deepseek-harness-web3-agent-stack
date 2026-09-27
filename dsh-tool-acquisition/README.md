@@ -5,7 +5,7 @@ Download/acquisition tools for DeepSeek Harness: the missing arm between
 link, a direct http(s) URL, or a Prowlarr release reference — into local
 files, then lets the agent poll the handle to completion.
 
-Ported from Haven CLI's `acquisition/` package plus the Prowlarr plugin's
+Ported from the reference `acquisition/` package plus the Prowlarr plugin's
 fetch strategy (`_acquire`/`_submit`/`_wait`), with the clients outsourced:
 torrents download in qBittorrent/Transmission (daemons beside Prowlarr),
 while the agent stays a thin poller. There is deliberately no in-process

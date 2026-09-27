@@ -1,5 +1,5 @@
 /**
- * qBittorrent Web API (v2) backend. Ported from Haven CLI's
+ * qBittorrent Web API (v2) backend. Ported from the reference
  * `acquisition/clients/qbittorrent.py`: torrents are added with a unique
  * tag and looked up by info-hash when known, else by tag. Paths reported
  * by qBittorrent are translated through `pathMappings` for setups where

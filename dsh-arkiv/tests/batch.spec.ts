@@ -2,7 +2,7 @@
  * Batch-create proofs for dsh-arkiv (`arkiv_create_entities`).
  *
  * N Haven records in ONE `execute()` transaction (atomic all-or-nothing),
- * mirroring the CLI's `batch_sync_contexts` multi path — including the
+ * mirroring the reference `batch_sync_contexts` multi path — including the
  * singleton short-circuit (one record behaves as one single create, with
  * the single path's ledger and hooks). Every record validates before
  * anything is sent; the attempt ledger keys the ordered batch; the

@@ -3,7 +3,7 @@
  *
  * 1. EVERY Filecoin operation resolves the credential per request via the
  *    harness gate (ctx.credentials / env) — like xmtp signatures — raw key
- *    never in config, never cached beyond the operation (haven-cli parity:
+ *    never in config, never cached beyond the operation (reference parity:
  *    HAVEN_PRIVATE_KEY + wss://api.calibration.node.glif.io/rpc/v1, filecoin-pin
  *    + @filoz/synapse-sdk).
  * 2. The `synapse_pin` tool works THROUGH THE EXECUTOR (ctx.tools.execute),

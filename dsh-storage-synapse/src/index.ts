@@ -82,7 +82,7 @@ export const Config: z<Config> = z.object({
 })
 
 /**
- * The `ctx.synapse` seam: Filecoin Synapse SDK only (haven-cli parity).
+ * The `ctx.synapse` seam: Filecoin Synapse SDK only (reference parity).
  * No Kubo, no localhost:5001 — uploads go through filecoin-pin paying USDFC
  * via a wallet-gated viem Account (OWS vault, no raw key).
  */

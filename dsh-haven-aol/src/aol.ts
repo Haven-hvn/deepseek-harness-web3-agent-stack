@@ -373,7 +373,7 @@ export interface GateSummary {
 /** Seal inputs: one file plus its gate policy. */
 export interface SealParams {
   version: 1 | 3 | 4
-  /** Gate CID. Unknown pre-upload → `sha256:<hex-of-plaintext>` (haven-cli convention). */
+  /** Gate CID. Unknown pre-upload → `sha256:<hex-of-plaintext>`. */
   cid: string
   chain: Chain
   tokenAddress: string

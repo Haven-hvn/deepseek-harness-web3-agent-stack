@@ -66,11 +66,11 @@ Without a wired `signDigest` (default OWS path), the `signGate` seam stays **uns
 
 - `attestHolding` — no wrapper exists in any SDK yet (TS, Python, or here).
 
-Sealing (`aol_seal`) is harness-native: v3/v4 metadata builders and derivation inputs stay SDK-verbatim, the v1 builder is ported from Python `core.py`, AES-GCM mirrors the SDK wire byte-for-byte, and the IBE wrap runs against `@icp-sdk/vetkeys` under the **canister-fetched** verification key. `haven-cli` is never invoked — seal here, upload the sealed bytes plus `gateMetadataJson` via the storage tools.
+Sealing (`aol_seal`) is harness-native: v3/v4 metadata builders and derivation inputs stay SDK-verbatim, the v1 builder is ported from Python `core.py`, AES-GCM mirrors the SDK wire byte-for-byte, and the IBE wrap runs against `@icp-sdk/vetkeys` under the **canister-fetched** verification key. Seal here, upload the sealed bytes plus `gateMetadataJson` via the storage tools.
 
 ## Key reuse (epoch buckets)
 
-`haven-cli` Bugs 4–6 fixed, ported: v3 is one key per epoch, not one per file.
+Upstream Bugs 4–6 fixed in the port: v3 is one key per epoch, not one per file.
 
 - **Seal side** (`EpochAesKeyCache`): one AES key + wrapped blob per `(chain, token, threshold, epoch)` bucket. Every file sealed in the epoch carries the same `encryptedAesKey`; `keySha256` is the bucket commitment. v1 (per-file) and v4 (per-rung — sharing across rungs would let one unlock open later files) still mint per seal. IVs are fresh per seal in all versions, so every seal's bytes stay unique.
 - **Decrypt side** (`VetKeyCache`): one signed canister round-trip per bucket, then local unwraps for every file in it. Lookups key off the derivation input from the gate metadata epoch — never the wall clock.

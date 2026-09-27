@@ -23,9 +23,7 @@ reason written in the conversation.
    sealed bytes plus gate metadata JSON out. v3 shares one key
    per community epoch; every seal's bytes are unique either
    way, so seal once per release. Verify the binding with
-   `aol_gate_info` before moving on. There is no operator side
-   — sealing is harness-native, and no procedure ever shells
-   out to a `haven` CLI.
+   `aol_gate_info` before moving on.
 5. **Pin.** `synapse_pin` the sealed bytes (by path; by CID only for
    re-pins), then confirm with `synapse_pin_status`. The CID is the
    release's permanent address — record it.

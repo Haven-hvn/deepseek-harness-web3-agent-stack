@@ -1,6 +1,6 @@
 /**
  * Outbound fetch-target validation for URLs from third-party data
- * (indexers, redirects). Ported from Haven CLI's
+ * (indexers, redirects). Ported from the reference
  * `services/url_safety.check_fetch_target`: scheme, optional host
  * allowlist, and a block on loopback / private / link-local / reserved
  * addresses to prevent SSRF.

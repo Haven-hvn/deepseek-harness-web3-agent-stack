@@ -1,5 +1,5 @@
 /**
- * Content-based file type detection. Ported from Haven CLI's
+ * Content-based file type detection. Ported from the reference
  * `media/filetype.py`: magic bytes first, ZIP-container refinement, then
  * extension, then a text heuristic. Types are sniffed from content, never
  * trusted from extensions, because indexer files often lie.

@@ -4,20 +4,22 @@
  * This harness is Haven-specific: every entity written through
  * `arkiv_create_entity` / `arkiv_update_entity` must conform to the Haven
  * data format, and the runtime rejects anything else BEFORE signing.
- * Reference implementation: `haven_cli/services/arkiv_sync.py`
+ * Reference: `services/arkiv_sync.py`
  * (`_build_attributes`, `_build_payload`, Tiramisu cell limits) — the
  * tables below are a TypeScript port of its wire rules, made fail-closed:
- * where the CLI derives attributes from its pipeline context (consistent
+ * where the reference implementation derives attributes from its pipeline
+ * context (consistent
  * by construction), the harness receives attributes and payload as
  * separate model-supplied values and must cross-check them.
  *
  * Two wire encodings, matching the two established writers:
- * - Full / generic / custom groups: the CLI's `str|int` wire. The Python
+ * - Full / generic / custom groups: the reference `str|int` wire. The Python
  *   SDK expresses only those two annotation types, so `gate_token` and
  *   `sha256_ct` are lowercase-hex STRINGS and every numeric fact is a
  *   plain int (which the chain stores as the one numeric kind, matching
  *   JS `i32(...)` queries). The harness normalizes to exactly this so
- *   dedup queries (`sha256_ct = str('…')`) keep hitting CLI-written rows.
+ *   dedup queries (`sha256_ct = str('…')`) keep hitting rows written by
+ *   the other established writer.
  * - Drip series / parts: the spec's tagged JS-SDK wire (`addr`, `bytes32`,
  *   `key`, `i32`, `str`), matching the dapp publisher — notably
  *   `series_ref` as `key`, which the one-query fan-out depends on.
@@ -44,20 +46,20 @@ export const HAVEN_GROUPS = {
 
 /** Groups the harness refuses to write (reserved, no reader contract yet). */
 export const HAVEN_RESERVED_GROUPS: ReadonlySet<string> = new Set([
-  HAVEN_GROUPS.audioFull, // audio writes haven.video.full, exactly like the CLI
+  HAVEN_GROUPS.audioFull, // audio writes haven.video.full, exactly like the reference implementation
   HAVEN_GROUPS.metaGate, // future shared gate-corpus records
 ]);
 
-/** Valid `grp` override: lowercase dot hierarchy, ≥2 labels (CLI `_GROUP_PATTERN`). */
+/** Valid `grp` override: lowercase dot hierarchy, ≥2 labels (reference `_GROUP_PATTERN`). */
 const GROUP_PATTERN = /^[a-z0-9][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)+$/;
 
-/** Arkiv `str` slots are 128 bytes (CLI `TITLE_MAX_BYTES`). */
+/** Arkiv `str` slots are 128 bytes (reference `TITLE_MAX_BYTES`). */
 export const HAVEN_TITLE_MAX_BYTES = 128;
 
 /** Upper bound on the serialized `x` (extra provenance) payload object. */
 export const HAVEN_PAYLOAD_EXTRA_MAX_BYTES = 2048;
 
-/** Haven-AOL chain variant → EIP-155 id (CLI `CHAIN_VARIANT_TO_EIP155`). */
+/** Haven-AOL chain variant → EIP-155 id (reference `CHAIN_VARIANT_TO_EIP155`). */
 export const CHAIN_VARIANT_TO_EIP155: Readonly<Record<string, number>> = {
   EthMainnet: 1,
   EthSepolia: 11155111,
@@ -90,14 +92,14 @@ export const MIME_TO_ENUM: Readonly<Record<string, number>> = {
 /** Highest assigned MIME enum code (`0` = unknown). */
 export const MIME_ENUM_MAX = 14;
 
-/** Chain cell limits (CLI Tiramisu dialect: engine caps, backstop only). */
+/** Chain cell limits (reference Tiramisu dialect: engine caps, backstop only). */
 export const HAVEN_MAX_ATTRIBUTES = 32;
 export const HAVEN_MAX_PAYLOAD_BYTES = 128 * 1024;
 
 /** Arkiv block time in seconds: lifetimes must be a multiple of this. */
 export const HAVEN_BLOCK_TIME_S = 2;
 
-/** `i32` range (spec numeric facts must fit; CLI raises at encode time). */
+/** `i32` range (spec numeric facts must fit; the reference raises at encode time). */
 export const HAVEN_I32_MIN = -(2 ** 31);
 export const HAVEN_I32_MAX = 2 ** 31 - 1;
 
@@ -106,7 +108,7 @@ export const HAVEN_BTL_FULL_S = 4 * 7 * 24 * 60 * 60;
 export const HAVEN_BTL_SERIES_S = 52 * 7 * 24 * 60 * 60;
 export const HAVEN_BTL_PART_S = 12 * 7 * 24 * 60 * 60;
 
-/** Haven payloads are JSON records; the CLI hardcodes this content type. */
+/** Haven payloads are JSON records; the reference implementation hardcodes this content type. */
 export const HAVEN_CONTENT_TYPE = 'application/json';
 
 /**
@@ -144,7 +146,7 @@ export const HAVEN_DROPPED_PAYLOAD_KEYS: ReadonlySet<string> = new Set([
   'expires_at_block', 'created_at_block', 'has_ai_data', 'description',
 ]);
 
-/** `Ident32` name grammar (CLI `_TIRAMISU_NAME_RE`). */
+/** `Ident32` name grammar (reference `_TIRAMISU_NAME_RE`). */
 const ATTR_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9._-]*$/;
 
 /** Query-language words the engine rejects as attribute names. */
@@ -167,7 +169,7 @@ export interface HavenNormalizedWrite {
   grpClass: HavenGroupClass;
   /** The `grp` value (known group or custom override). */
   grp: string;
-  /** Attributes exactly as they will be written (CLI `str|int` wire for full/generic, tagged SDK values for drips). */
+  /** Attributes exactly as they will be written (reference `str|int` wire for full/generic, tagged SDK values for drips). */
   attributes: Record<string, unknown>;
   /** Payload bytes, unchanged. */
   payload: Uint8Array;
@@ -212,7 +214,7 @@ function requireStr128(name: string, value: unknown): string {
   return value;
 }
 
-/** `0x` + 40 hex, any case → lowercase (CLI wire keeps the `0x`, lowercased). */
+/** `0x` + 40 hex, any case → lowercase (reference wire keeps the `0x`, lowercased). */
 function requireTokenAddress(name: string, value: unknown): string {
   if (typeof value !== 'string' || !HEX40.test(value)) {
     fail(`${name} must be a 0x address (40 hex), got ${JSON.stringify(value)}`);
@@ -220,7 +222,7 @@ function requireTokenAddress(name: string, value: unknown): string {
   return value.toLowerCase();
 }
 
-/** 64 hex with or without `0x` → bare lowercase (CLI `hexdigest()` shape). */
+/** 64 hex with or without `0x` → bare lowercase (reference `hexdigest()` shape). */
 function requireSha256Ct(name: string, value: unknown): string {
   if (typeof value !== 'string' || !HEX64.test(value)) {
     fail(`${name} must be a sha256 digest (64 hex, optional 0x), got ${JSON.stringify(value)}`);
@@ -282,7 +284,7 @@ const GATE_KEYS_V1 = ['version', 'cid', 'chain', 'tokenAddress', 'threshold', 'e
 const GATE_KEYS_V3 = [...GATE_KEYS_V1, 'epoch'] as const;
 const GATE_KEYS_V4 = [...GATE_KEYS_V3, 'marketCapTarget', 'oracleAddress'] as const;
 
-/** Structural gate check (CLI `is_gate_metadata_any`, extended to v4). Returns the parsed gate. */
+/** Structural gate check (reference `is_gate_metadata_any`, extended to v4). Returns the parsed gate. */
 function parseGateJson(field: string, raw: unknown): GateJson {
   if (typeof raw !== 'string' || raw.length === 0) fail(`${field} must be a gate JSON string`);
   let parsed: unknown;
@@ -293,7 +295,7 @@ function parseGateJson(field: string, raw: unknown): GateJson {
   }
   if (!isRecord(parsed)) fail(`${field} must decode to a JSON object`);
   const version = parsed.version;
-  // Pre-empt the bool-is-an-int ambiguity (CLI `parse_gate_metadata`): a
+  // Pre-empt the bool-is-an-int ambiguity (reference `parse_gate_metadata`): a
   // literal `true` must never route to the v1 parser.
   if (typeof version === 'boolean') fail(`${field}.version must be 1, 3, or 4, got boolean`);
   const required = version === 1 ? GATE_KEYS_V1 : version === 3 ? GATE_KEYS_V3 : version === 4 ? GATE_KEYS_V4 : null;
@@ -348,7 +350,7 @@ function defaultExpiresIn(grpClass: HavenGroupClass): number {
  * Validate one Haven entity write and normalize it to its wire encoding.
  * Fail-closed: any deviation from ARKIV_FORMAT v2.1.0 throws before anything
  * is signed. Normalization is what makes retries identical: hex lowercased,
- * `0x` stripped where the CLI wire is bare, drip facts wrapped in their
+ * `0x` stripped where the reference wire is bare, drip facts wrapped in their
  * spec-tagged SDK values.
  */
 export function validateHavenWrite(input: {
@@ -550,7 +552,7 @@ function finishFull(args: {
     normalized.mime = mime;
     if (payload.ct !== undefined) fail('payload ct and the mime attribute are exclusive (ct only when the MIME has no enum code)');
   } else if (grpClass === 'generic' && payload.ct === undefined) {
-    // Allowed: MIME unknown entirely (the CLI emits neither when the MIME
+    // Allowed: MIME unknown entirely (the reference implementation emits neither when the MIME
     // string itself is empty). Nothing to normalize.
   }
 

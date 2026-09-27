@@ -32,10 +32,8 @@ drives both unlocks and royalties. `process.md` §3 is the procedure.
 ## Sealing is harness-native
 
 `aol_seal` (v1/v3/v4) seals in-container under the canister-fetched
-verification key — no operator side, no CLI. Herald seals its own
-releases, verifies the binding (`aol_gate_info`), and trial-decrypts
-before announcing. No procedure in this package shells out to a
-`haven` CLI; none is installed.
+verification key. Herald seals its own releases, verifies the
+binding (`aol_gate_info`), and trial-decrypts before announcing.
 
 ## Note: the dead `persona` key (2026-09)
 

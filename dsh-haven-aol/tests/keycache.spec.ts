@@ -1,5 +1,5 @@
 /**
- * Key-cache proofs for dsh-haven-aol (CLI Bugs 4–6 parity).
+ * Key-cache proofs for dsh-haven-aol (upstream Bugs 4–6 parity).
  *
  * 1. Cache units: bucket-key validation (incl. threshold-zero collapse
  *    and token case-folding), factory-once miss-fill under concurrency,

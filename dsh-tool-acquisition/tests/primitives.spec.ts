@@ -442,7 +442,7 @@ describe('fetch', () => {
     if (outcome.kind !== 'file') return
     expect(outcome.file.path.endsWith('.pdf')).toBe(true)
     expect(outcome.file.mime).toBe('application/pdf')
-    // describeUrl keeps scheme://host only (no port), matching Haven CLI.
+    // describeUrl keeps scheme://host only (no port), matching the reference implementation.
     expect(outcome.file.finalUrl).toBe('http://127.0.0.1/…')
   })
   it('follows redirects, surfaces magnets, and bounds loops', async () => {

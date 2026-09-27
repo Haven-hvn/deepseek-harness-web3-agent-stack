@@ -1,7 +1,7 @@
 /**
  * Filecoin Synapse transport for dsh-storage-synapse.
  *
- * Port of haven-cli/js-services/synapse-wrapper.ts (filecoin-pin +
+ * Port of the reference js-services/synapse-wrapper.ts (filecoin-pin +
  * @filoz/synapse-sdk) — Filecoin Onchain Cloud only, no Kubo/localhost.
  * Uploads pay USDFC on calibration/mainnet via wss://api.calibration.node.glif.io/rpc/v1.
  * No localhost:5001, no Kubo HTTP fallback.

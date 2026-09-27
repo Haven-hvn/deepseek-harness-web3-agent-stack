@@ -1,7 +1,7 @@
 /**
  * Shared shapes for the acquisition arm.
  *
- * The lifecycle mirrors Haven CLI's `DownloadClient`/`ClientStatus` pair:
+ * The lifecycle mirrors the reference `DownloadClient`/`ClientStatus` pair:
  * submit a payload, get back an opaque handle, poll the handle until it
  * reaches a terminal state. Handles are persisted in a JSON store so a
  * poll after an agent restart still resolves.

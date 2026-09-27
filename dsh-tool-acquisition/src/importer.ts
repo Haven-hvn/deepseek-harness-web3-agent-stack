@@ -1,5 +1,5 @@
 /**
- * Bring completed files into the workspace. Ported from Haven CLI's
+ * Bring completed files into the workspace. Ported from the reference
  * `acquisition/importer.py`: files produced by an external download client
  * usually must stay where they are (the client keeps seeding them), so
  * import modes mirror the *arr convention — `hardlink` (default),

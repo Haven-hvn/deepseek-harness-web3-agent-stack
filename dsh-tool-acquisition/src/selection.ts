@@ -1,6 +1,6 @@
 /**
- * Choose the content files inside a completed download. Ported from Haven
- * CLI's `acquisition/selection.py`: clients leave behind extras (`.nfo`,
+ * Choose the content files inside a completed download. Ported from the
+ * reference `acquisition/selection.py`: clients leave behind extras (`.nfo`,
  * samples, par2 sets); this filters a file or directory down to what
  * should be archived, by type, size, and name. Types are sniffed from
  * content, not trusted from extensions.

@@ -1,6 +1,6 @@
 /**
- * Guarded HTTP downloads for URLs from third-party data. Ported from Haven
- * CLI's `acquisition/http_fetch.py`: every hop (including each redirect) is
+ * Guarded HTTP downloads for URLs from third-party data. Ported from the
+ * reference `acquisition/http_fetch.py`: every hop (including each redirect) is
  * checked with {@link checkFetchTarget}; bodies stream to a `.part` file
  * with a hard byte cap and are atomically renamed once complete; the saved
  * file gets an extension matching its sniffed content so type checks work

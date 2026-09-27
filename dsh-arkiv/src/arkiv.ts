@@ -1,6 +1,6 @@
 /**
  * Arkiv transport — Filecoin-style gated via @arkiv-network/sdk.
- * Mirrors haven_cli/services/arkiv_sync.py (ArkivSyncConfig + create_entity via privateKey+rpcUrl).
+ * Mirrors the reference services/arkiv_sync.py (ArkivSyncConfig + create_entity via privateKey+rpcUrl).
  * No raw key in memory beyond the operation — per-call gate like synapse & xmtp.
  */
 
@@ -129,7 +129,7 @@ export class ArkivBackend {
 
   /**
    * N creates in ONE `execute` transaction (atomic all-or-nothing), like
-   * the CLI's `batch_sync_contexts` multi path. Every record validates
+   * the reference `batch_sync_contexts` multi path. Every record validates
    * before this runs, so a chain revert is gas/chain state — never shape.
    */
   async createEntities(records: Array<{ payload: Uint8Array; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }>): Promise<Array<{ key: Hex; txHash: Hex }>> {

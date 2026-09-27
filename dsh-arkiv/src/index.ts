@@ -1,13 +1,13 @@
 /**
  * Arkiv entity storage for DSH — ctx.arkiv + arkiv_create_entity / arkiv_query tools.
  * Filecoin Onchain Cloud is Synapse; Arkiv is the entity chain (Tiramisu testnet).
- * This ports haven_cli/services/arkiv_sync.py (ArkivSyncConfig, create_entity) to DSH's
+ * This ports the reference services/arkiv_sync.py (ArkivSyncConfig, create_entity) to DSH's
  * isolated-bundles-coupled-at-seams model: TypeScript/Node v22/Cordis, gated credentials.
  *
  * This harness is Haven-specific: every write is validated against the Haven
  * application protocol (ARKIV_FORMAT v2.1.0 — see ./haven.ts) BEFORE signing.
- * Attributes arrive as a plain Record<string, unknown> like the CLI's, and
- * are normalized to the CLI's `str|int` wire (full/generic groups) or the
+ * Attributes arrive as a plain Record<string, unknown> like the reference, and
+ * are normalized to the reference `str|int` wire (full/generic groups) or the
  * spec's tagged SDK values (drip groups) before the ledger keys them, so
  * retries with differently-cased hex still hit the same ledger entry.
  *
@@ -431,7 +431,7 @@ export class ArkivRuntime {
    * N creates in one chain transaction (atomic all-or-nothing). Every
    * record validates BEFORE anything is sent, so one bad record rejects
    * the whole batch. Singletons delegate to the single path (dedup
-   * parity, like the CLI's `len == 1` short-circuit).
+   * parity, like the reference `len == 1` short-circuit).
    */
   async createEntities(records: Array<{ payload: Uint8Array; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }>): Promise<Array<{ key: `0x${string}`; txHash: `0x${string}` }>> {
     this.hook();
@@ -473,7 +473,7 @@ export class ArkivRuntime {
 
   async updateEntity(params: { key: `0x${string}`; payload: Uint8Array; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }): Promise<{ txHash: `0x${string}` }> {
     this.hook();
-    // Updates rewrite the whole record (like the CLI's patch path), so the
+    // Updates rewrite the whole record (like the reference patch path), so the
     // complete Haven record validates exactly like a create.
     const write = validateHavenWrite(params);
     const key = updateKeyFor({ key: params.key, payload: write.payload, contentType: write.contentType, attributes: write.attributes });

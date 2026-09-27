@@ -1,16 +1,8 @@
 # Herald — workflow
 
-The release pipeline, stage by stage. This is a port of the
-implicit pipeline the old Haven CLI ran for every upload
-(ingest → analyze → encrypt → upload → sync → cleanup) —
-with each stage mapped to the harness-native tool that
-performs it here.
-
-**The CLI itself is never invoked.** No `haven` binary exists
-in this container, no tool shells out to one, and no procedure
-in this document routes work through an operator-side command.
-If a step below ever seems to need the CLI, you are holding
-the map wrong — re-read the stage.
+The release pipeline, stage by stage: source → ingest →
+analyze → seal → upload → sync → cleanup — with each stage
+mapped to the tool that performs it here.
 
 `process.md` §1 is the checklist; this is the stage manual it
 points at. Stage order is fixed. A stage that errors or times
@@ -20,8 +12,8 @@ its evidence artifact.
 
 ## 0. Source — find the bytes
 
-The CLI ingested local files or acquisition imports; here both
-arrive the same way: `prowlarr_search` (after
+Local files and acquisition imports both arrive the same
+way: `prowlarr_search` (after
 `prowlarr_indexers`), then `acquire_submit` with the hit's
 `downloadUrl`/`magnetUrl`, then `acquire_status` to completion.
 A local file handed to you directly starts at stage 1.
@@ -31,9 +23,9 @@ never force a duplicate. Evidence: the acquired file path.
 ## 1. Ingest — validate and dedup
 
 Confirm size, type, and provenance (title, creator, source URL)
-before anything billable happens. Then the Tier-1 dedup the CLI
-ran against its local catalog: here the catalog is the chain,
-so query it — `arkiv_query` by `sha256_ct` of the plaintext.
+before anything billable happens. Then Tier-1 dedup against
+the catalog: the catalog is the chain, so query it —
+`arkiv_query` by `sha256_ct` of the plaintext.
 A hit means this file already released: stop the pipeline and
 say where it lives (CID, Arkiv key) instead of re-releasing it.
 Near-duplicates (same content, different bytes) have no
@@ -78,8 +70,8 @@ Evidence: the CID.
 
 ## 5. Sync — catalog on Arkiv
 
-The CLI distinguished create from update by lookup; do the
-same: `arkiv_query` first, then `arkiv_create_entity` for a
+Distinguish create from update by lookup: `arkiv_query`
+first, then `arkiv_create_entity` for a
 new release or `arkiv_update_entity` for a revision — or one
 `arkiv_create_entities` batch when the release is several
 records (a drip series plus its parts lands in a single
@@ -104,8 +96,7 @@ is what buyers will actually read. Evidence: the Arkiv key.
 
 ## 6. Cleanup — keep the evidence
 
-The CLI deleted locals after a successful sync; you do not
-delete anything. Originals, sealed bytes, and metadata stay
+Delete nothing. Originals, sealed bytes, and metadata stay
 until the release is verified end to end (pin status green,
 entity queried back, trial decrypt passed) — and the metadata
 JSON stays permanently, because re-announcing or debugging a
@@ -124,8 +115,7 @@ needs none: each access is one conversation, fully evidenced.
 
 ## Deliberately absent
 
-- Daemon job queues (`jobs run/list` in the old CLI): no
-  harness equivalent. Long work is a conversation with
-  evidenced stages, not a background job id.
+- Daemon job queues: none. Long work is a conversation
+  with evidenced stages, not a background job id.
 - `attestHolding`: no wrapper exists in any SDK. Do not
   promise on-chain holding proofs.

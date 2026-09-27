@@ -1,5 +1,5 @@
 /**
- * URL hygiene for anything that leaves the process. Ported from Haven CLI's
+ * URL hygiene for anything that leaves the process. Ported from the reference
  * `services/url_safety.py` (same semantics, same parameter table):
  *
  * - {@link redactText} — replace known secrets in free text.

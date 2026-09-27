@@ -1,5 +1,5 @@
 /**
- * Transmission RPC backend. Ported from Haven CLI's
+ * Transmission RPC backend. Ported from the reference
  * `acquisition/clients/transmission.py` (session-id handshake, torrent-add
  * with labels, torrent-get polling).
  *

@@ -1,6 +1,6 @@
 /**
  * Minimal bencode decoder plus torrent and magnet helpers. Ported from
- * Haven CLI's `acquisition/bencode.py`: only what acquisition needs —
+ * the reference `acquisition/bencode.py`: only what acquisition needs —
  * validate a `.torrent`, compute its v1 info-hash from the raw `info`
  * bytes, list its files, and parse the info-hash out of a magnet link.
  *

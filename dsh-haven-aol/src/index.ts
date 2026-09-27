@@ -299,7 +299,7 @@ export function apply(ctx: Context, config: Config): void {
       chain: { type: 'string', required: true, description: 'SDK chain name (EthMainnet, BaseMainnet, ArbitrumOne, OptimismMainnet, EthSepolia).' },
       tokenAddress: { type: 'string', required: true, description: 'Gate token contract address (0x...).' },
       threshold: { type: 'string', required: true, description: 'Minimum balance in smallest token units (raw integer string). 0 seals free-tier at the eternal epoch (v3/v4).' },
-      cid: { type: 'string', description: 'Gate CID the seal binds to. Default: sha256:<hex-of-plaintext> (haven-cli convention, for pre-upload seals).' },
+      cid: { type: 'string', description: 'Gate CID the seal binds to. Default: sha256:<hex-of-plaintext> (for pre-upload seals).' },
       epoch: { type: 'number', description: 'v3/v4 epoch (default: current from aol_epoch; forced 0 when threshold is 0).' },
       marketCapTarget: { type: 'string', description: 'v4 unlock rung in whole reserve units (required for v4).' },
       oracleAddress: { type: 'string', description: 'v4 oracle (required for v4; must be the chain Bond contract).' },
