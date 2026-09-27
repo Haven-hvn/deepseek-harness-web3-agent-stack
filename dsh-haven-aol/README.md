@@ -15,7 +15,7 @@ Haven-AOL token-gated seal/decrypt for DeepSeek Harness: `ctx.aol` plus five mod
 | `aol_epoch` | read | — | Current 30-day epoch + rollover (advisory). |
 | `aol_market_cap` | read | v4 | Live cap in whole reserve units (300s canister burst cache). Fails closed client-side on non-Bond oracles. |
 | `aol_decrypt` | execute | v1/v3/v4 | Full gated decrypt; dispatches on metadata version. Keys never leave the call. |
-| `aol_seal` | execute | v1/v3/v4 | Harness-native encrypt: fresh AES-GCM key + IBE wrap under the canister-fetched DPK. No wallet, no signature. |
+| `aol_seal` | execute | v1/v3/v4 | Harness-native encrypt: AES-GCM key (shared per epoch bucket for v3, fresh per seal for v1/v4, fresh IV always) + IBE wrap under the canister-fetched DPK. No wallet, no signature. |
 
 Gate denials (`InsufficientBalance`, `MarketCapNotReached {required, actual}` in whole reserve units, `InvalidSignature`, `InvalidEpoch`, `InvalidOracle`) surface as tool errors the model can report verbatim.
 
@@ -66,3 +66,11 @@ Without a wired `signDigest` (default OWS path), the `signGate` seam stays **uns
 - `attestHolding` — no wrapper exists in any SDK yet (TS, Python, or here).
 
 Sealing (`aol_seal`) is harness-native: v3/v4 metadata builders and derivation inputs stay SDK-verbatim, the v1 builder is ported from Python `core.py`, AES-GCM mirrors the SDK wire byte-for-byte, and the IBE wrap runs against `@icp-sdk/vetkeys` under the **canister-fetched** verification key. `haven-cli` is never invoked — seal here, upload the sealed bytes plus `gateMetadataJson` via the storage tools.
+
+## Key reuse (epoch buckets)
+
+`haven-cli` Bugs 4–6 fixed, ported: v3 is one key per epoch, not one per file.
+
+- **Seal side** (`EpochAesKeyCache`): one AES key + wrapped blob per `(chain, token, threshold, epoch)` bucket. Every file sealed in the epoch carries the same `encryptedAesKey`; `keySha256` is the bucket commitment. v1 (per-file) and v4 (per-rung — sharing across rungs would let one unlock open later files) still mint per seal. IVs are fresh per seal in all versions, so every seal's bytes stay unique.
+- **Decrypt side** (`VetKeyCache`): one signed canister round-trip per bucket, then local unwraps for every file in it. Lookups key off the derivation input from the gate metadata epoch — never the wall clock.
+- **Custody**: both caches live in runtime memory only — no disk, no TTL, cleared on restart. There is deliberately no revocation within an epoch (a member who held a bucket key could have saved the unwrapped file keys anyway). Gate denials are never cached.

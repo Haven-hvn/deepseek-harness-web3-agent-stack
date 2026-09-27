@@ -56,9 +56,12 @@ free (threshold-zero, `process.md` §2). Evidence: the notes.
 Gate choice is `process.md` §2 — version, pattern, token,
 threshold, epoch or rungs, written down before this stage
 starts. Then seal with `aol_seal`: plaintext path in, sealed
-bytes plus `gateMetadataJson` out. Every seal mints a fresh
-key, so sealing twice never reproduces a release — seal once
-per release, deliberately. Verify the binding immediately
+bytes plus `gateMetadataJson` out. v3 seals share one key per
+community epoch (every file in the epoch carries the same
+wrapped blob); v1/v4 mint per seal — and every seal's bytes
+are unique regardless, so sealing twice never reproduces a
+release. Seal once per release, deliberately. Verify the
+binding immediately
 with `aol_gate_info`: version, token, threshold, and CID must
 match what §2 decided. Evidence: sealed path, metadata JSON.
 

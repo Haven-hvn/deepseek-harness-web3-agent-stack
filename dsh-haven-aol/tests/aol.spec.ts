@@ -275,17 +275,31 @@ describe('seal (harness-native encrypt side)', () => {
     }
   })
 
-  it('every seal uses fresh randomness (no two seals share a key)', async () => {
+  it('seal bytes are unique per seal; v3 shares the epoch key, v1/v4 mint per seal', async () => {
     stubDpk()
     const rt = await sealRuntime()
     const plaintext = new TextEncoder().encode('same-bytes')
-    const params = {
+    // v3: one bucket key, but fresh IVs keep every seal's bytes unique.
+    const v3params = {
       version: 3 as const, cid: 'sha256:abc', chain: 'BaseMainnet' as const,
       tokenAddress: TOKEN, threshold: 100n, plaintext,
     }
-    const [a, b] = await Promise.all([rt.seal(params), rt.seal(params)])
-    expect(a.keySha256).not.toBe(b.keySha256)
+    const [a, b] = await Promise.all([rt.seal(v3params), rt.seal(v3params)])
+    expect(a.keySha256).toBe(b.keySha256)
     expect(Buffer.from(a.sealedBytes).equals(Buffer.from(b.sealedBytes))).toBe(false)
+    // v1/v4: a fresh key per seal by design.
+    for (const version of [1, 4] as const) {
+      const params = {
+        version, cid: 'sha256:abc', chain: 'BaseMainnet' as const,
+        tokenAddress: TOKEN, threshold: 100n, plaintext,
+        ...(version === 4
+          ? { marketCapTarget: 10n, oracleAddress: BOND_ADDRESSES.BaseMainnet as string }
+          : {}),
+      }
+      const [x, y] = await Promise.all([rt.seal(params), rt.seal(params)])
+      expect(x.keySha256).not.toBe(y.keySha256)
+      expect(Buffer.from(x.sealedBytes).equals(Buffer.from(y.sealedBytes))).toBe(false)
+    }
   })
 
   it('threshold-zero v3 seals at the eternal epoch', async () => {

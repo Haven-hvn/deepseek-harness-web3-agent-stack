@@ -16,9 +16,11 @@
  *   the DPK comes from `getVetKDPublicKey[V3][V4]`, exactly like the
  *   Python sealer's `_get_or_cache_derived_public_key`.
  *
- * Custody: AES keys and IBE plaintexts stay inside the sealing call. The
- * only key-derived output is the SHA-256 commitment (`keySha256`), which
- * proves which key sealed a file without revealing it.
+ * Custody: v1/v4 AES keys and all IBE plaintexts stay inside the sealing
+ * call; v3 epoch keys live in runtime memory (see `./keyCache.ts` — never
+ * disk, cleared on restart). The only key-derived output is the SHA-256
+ * commitment (`keySha256`), which proves which key sealed a file without
+ * revealing it.
  *
  * @module dsh-haven-aol/seal
  */
@@ -114,8 +116,9 @@ function toArrayBuffer(u: Uint8Array): ArrayBuffer {
  * AES-256-GCM encrypt. Output format `[12-byte IV][ciphertext+tag]`
  * decrypts with the SDK's `decryptFile` and Python's AESGCM alike.
  * @param plaintext - bytes to seal.
- * @param aesKey - 32-byte key (fresh per seal; never leaves the call).
- * @returns sealed bytes plus the IV (also prefixed in the output).
+ * @param aesKey - 32-byte key (per-seal for v1/v4, per-epoch-bucket for v3).
+ * @returns sealed bytes plus the IV (also prefixed in the output). The IV is
+ * fresh randomness per call — sharing a key across seals stays sound.
  */
 export async function encryptFileAesGcm(plaintext: Uint8Array, aesKey: Uint8Array): Promise<{ sealed: Uint8Array; iv: Uint8Array }> {
   if (aesKey.length !== 32) {

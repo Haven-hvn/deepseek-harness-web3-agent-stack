@@ -35,6 +35,8 @@ import type { AolDecryptedEvent, AolSealedEvent } from './types.ts'
 
 export { AolRuntime, HavenAolError, freshNonce, type Chain, type SignGate } from './aol.ts'
 export type { SealParams, SealResult } from './aol.ts'
+export { EpochAesKeyCache, VetKeyCache, makeEpochCacheKey, vetKeySlot } from './keyCache.ts'
+export type { EpochAesKey, EpochBucket } from './keyCache.ts'
 export type { AolDecryptedEvent, AolSealedEvent, AolSigningError } from './types.ts'
 
 /** Cordis plugin name. */
@@ -270,15 +272,16 @@ export function apply(ctx: Context, config: Config): void {
   })))
 
   // ── aol_seal (execute, local + one free DPK query) ───────────────────
-  // No wallet, no signature: sealing mints a fresh AES key locally and
-  // IBE-wraps it under the canister's verification key. Not exactly-once
-  // guarded on purpose: every seal uses fresh randomness, so a repeat
-  // seals a *different* valid pair rather than replaying — downstream
-  // (pin, catalog) always consumes the latest result.
+  // No wallet, no signature: sealing wraps an AES key locally under the
+  // canister's verification key (v3 shares one key per epoch bucket;
+  // v1/v4 mint per seal; IVs are fresh per seal in all versions). Not
+  // exactly-once guarded on purpose: every seal's bytes are unique, so
+  // a repeat seals a *different* valid pair rather than replaying —
+  // downstream (pin, catalog) always consumes the latest result.
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'aol_seal',
     description:
-      'Seal a file under a new Haven-AOL token gate (v1 per-file, v3 epoch corpus, v4 market-cap drip): mints a fresh AES-256-GCM content key, IBE-wraps it under the canister verification key, and builds gate metadata JSON. Writes sealed bytes to outputPath and returns path + byte count + gateMetadataJson + key commitment — the AES key never leaves the call. Fails closed on non-Bond v4 oracles.',
+      'Seal a file under a new Haven-AOL token gate (v1 per-file, v3 epoch corpus, v4 market-cap drip): wraps an AES-256-GCM content key (shared per epoch bucket for v3, fresh per seal for v1/v4, fresh IV per seal always) under the canister verification key, and builds gate metadata JSON. Writes sealed bytes to outputPath and returns path + byte count + gateMetadataJson + key commitment. Fails closed on non-Bond v4 oracles.',
     parameters: {
       path: { type: 'string', required: true, description: 'Local file to seal.' },
       outputPath: { type: 'string', required: true, description: 'Where to write the sealed bytes.' },

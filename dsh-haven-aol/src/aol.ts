@@ -72,6 +72,11 @@ import {
 } from 'haven-aol'
 import { AolSigningError } from './types.ts'
 import {
+  EpochAesKeyCache,
+  VetKeyCache,
+  vetKeySlot,
+} from './keyCache.ts'
+import {
   buildGateMetadataV1,
   gateMetadataV1ToJson,
   encryptFileAesGcm,
@@ -375,18 +380,33 @@ export interface SealParams {
   plaintext: Uint8Array
 }
 
-/** Seal outputs: sealed bytes plus gate metadata. The AES key never leaves the call. */
+/** Seal outputs: sealed bytes plus gate metadata. */
 export interface SealResult {
   sealedBytes: Uint8Array
   gateMetadataJson: string
   version: 1 | 3 | 4
-  /** SHA-256 of the AES content key: proves which key sealed a file without revealing it. */
+  /**
+   * SHA-256 of the AES content key: proves which key sealed a file
+   * without revealing it. A bucket commitment for v3 (stable across the
+   * epoch), per-seal for v1/v4.
+   */
   keySha256: string
 }
 
 export class AolRuntime {
   /** Verification keys by version (canister constants per key_id+context; cached per runtime). */
   private readonly dpkCache = new Map<1 | 3 | 4, Uint8Array>()
+  /**
+   * v3 seal-side epoch keys: one AES key + wrapped blob per
+   * (chain, token, threshold, epoch) bucket. Runtime memory only —
+   * never disk, cleared on restart (see ./keyCache.ts).
+   */
+  readonly epochKeys = new EpochAesKeyCache()
+  /**
+   * Decrypt-side recovered vetKeys by derivation input: one signed gate
+   * round-trip per bucket, then local unwraps. Same custody as above.
+   */
+  readonly vetKeys = new VetKeyCache()
 
   constructor(private readonly opts: AolRuntimeOpts) {
     if (!opts.canisterId || !opts.icpHost) throw new Error('dsh-haven-aol: canisterId+icpHost required')
@@ -471,61 +491,70 @@ export class AolRuntime {
     return { eip712ChainId: chainId, eip712VerifyingContract: verifier }
   }
 
-  /** v1 end-to-end decrypt. Keys stay inside this call; returns plaintext. */
+  /** v1 end-to-end decrypt. The recovered vetKey is cached by derivation input (exact-file repeats skip the gate call); returns plaintext. */
   async decryptV1(params: GateCallCommon & { gateMetadataJson: string; encryptedFileBytes: Uint8Array }): Promise<Uint8Array> {
     const metadata = parseGateMetadata(params.gateMetadataJson)
     const derivationInput = await computeDerivationInput(
       metadata.chain, metadata.tokenAddress, metadata.threshold, metadata.cid)
-    const agent = await this.agent()
-    const { secretKey, publicKey } = createTransportKeyPair()
-    const nonce = params.nonce ?? freshNonce()
-    const { eip712ChainId, eip712VerifyingContract } = this.gateDefaults(params)
-    const typed = buildGateRequestTypedData({
-      evmAddress: params.evmAddress, transportPublicKey: publicKey, nonce,
-      eip712ChainId, eip712VerifyingContract,
+    const vetKey = await this.vetKeys.getOrFetch(vetKeySlot(derivationInput), async () => {
+      const agent = await this.agent()
+      const { secretKey, publicKey } = createTransportKeyPair()
+      const nonce = params.nonce ?? freshNonce()
+      const { eip712ChainId, eip712VerifyingContract } = this.gateDefaults(params)
+      const typed = buildGateRequestTypedData({
+        evmAddress: params.evmAddress, transportPublicKey: publicKey, nonce,
+        eip712ChainId, eip712VerifyingContract,
+      })
+      const signature = await this.signOrThrow(typedDigest(typed))
+      const fn = internals.requestV1 ?? requestDecryptionKey
+      const result = await fn(agent, this.opts.canisterId, {
+        chain: metadata.chain, tokenAddress: metadata.tokenAddress, threshold: metadata.threshold,
+        cid: metadata.cid, evmAddress: params.evmAddress, transportPublicKey: publicKey,
+        nonce, signature, eip712ChainId, eip712VerifyingContract,
+      })
+      if ('err' in result) throw new HavenAolError(result.err)
+      return recoverVetKey(result.ok.encryptedKey, secretKey, result.ok.verificationKey, derivationInput)
     })
-    const signature = await this.signOrThrow(typedDigest(typed))
-    const fn = internals.requestV1 ?? requestDecryptionKey
-    const result = await fn(agent, this.opts.canisterId, {
-      chain: metadata.chain, tokenAddress: metadata.tokenAddress, threshold: metadata.threshold,
-      cid: metadata.cid, evmAddress: params.evmAddress, transportPublicKey: publicKey,
-      nonce, signature, eip712ChainId, eip712VerifyingContract,
-    })
-    if ('err' in result) throw new HavenAolError(result.err)
-    const vetKey = recoverVetKey(result.ok.encryptedKey, secretKey, result.ok.verificationKey, derivationInput)
     const aesKey = ibeDecryptAesKey(metadata.encryptedAesKey, vetKey)
     return decryptFile(params.encryptedFileBytes, aesKey)
   }
 
-  /** v3 end-to-end decrypt (corpus+epoch). Same key-custody contract as v1. */
+  /**
+   * v3 end-to-end decrypt (corpus+epoch). One signed gate round-trip per
+   * bucket, then local unwraps: the vetKey cache keys off the derivation
+   * input computed from the gate METADATA epoch (never the wall clock),
+   * so old-epoch files stay decryptable past rollover.
+   */
   async decryptV3(params: GateCallCommon & { gateMetadataJson: string; encryptedFileBytes: Uint8Array }): Promise<Uint8Array> {
     const { buildGateRequestV3TypedData: buildV3 } = await import('haven-aol')
     const metadata = parseGateMetadataV3(params.gateMetadataJson)
     if (!metadata) throw new Error('dsh-haven-aol: not v3 gate metadata')
     const derivationInput = await computeDerivationInputV3(
       metadata.chain, metadata.tokenAddress, BigInt(metadata.threshold), metadata.epoch)
-    const agent = await this.agent()
-    const { secretKey, publicKey } = createTransportKeyPair()
-    const nonce = params.nonce ?? freshNonce()
-    const { eip712ChainId, eip712VerifyingContract } = this.gateDefaults(params)
-    const typed = buildV3({
-      evmAddress: params.evmAddress, transportPublicKey: publicKey, epoch: metadata.epoch, nonce,
-      eip712ChainId, eip712VerifyingContract,
+    const vetKey = await this.vetKeys.getOrFetch(vetKeySlot(derivationInput), async () => {
+      const agent = await this.agent()
+      const { secretKey, publicKey } = createTransportKeyPair()
+      const nonce = params.nonce ?? freshNonce()
+      const { eip712ChainId, eip712VerifyingContract } = this.gateDefaults(params)
+      const typed = buildV3({
+        evmAddress: params.evmAddress, transportPublicKey: publicKey, epoch: metadata.epoch, nonce,
+        eip712ChainId, eip712VerifyingContract,
+      })
+      const signature = await this.signOrThrow(typedDigest(typed as never))
+      const fn = internals.requestV3 ?? liveRequestV3
+      const result = await fn(agent, this.opts.canisterId, {
+        chain: metadata.chain, tokenAddress: metadata.tokenAddress, threshold: BigInt(metadata.threshold),
+        epoch: BigInt(metadata.epoch), evmAddress: params.evmAddress, transportPublicKey: publicKey,
+        nonce, signature, eip712ChainId, eip712VerifyingContract,
+      })
+      if ('err' in result) throw new HavenAolError(result.err)
+      return recoverVetKey(result.ok.encryptedKey, secretKey, result.ok.verificationKey, derivationInput)
     })
-    const signature = await this.signOrThrow(typedDigest(typed as never))
-    const fn = internals.requestV3 ?? liveRequestV3
-    const result = await fn(agent, this.opts.canisterId, {
-      chain: metadata.chain, tokenAddress: metadata.tokenAddress, threshold: BigInt(metadata.threshold),
-      epoch: BigInt(metadata.epoch), evmAddress: params.evmAddress, transportPublicKey: publicKey,
-      nonce, signature, eip712ChainId, eip712VerifyingContract,
-    })
-    if ('err' in result) throw new HavenAolError(result.err)
-    const vetKey = recoverVetKey(result.ok.encryptedKey, secretKey, result.ok.verificationKey, derivationInput)
     const aesKey = ibeDecryptAesKey(metadata.encryptedAesKey, vetKey)
     return decryptFile(params.encryptedFileBytes, aesKey)
   }
 
-  /** v4 end-to-end decrypt (market-cap drip). Fails closed client-side on non-Bond oracles. */
+  /** v4 end-to-end decrypt (market-cap drip). Fails closed client-side on non-Bond oracles; same vetKey caching as v3 (per rung). */
   async decryptV4(params: GateCallCommon & { gateMetadataJson: string; encryptedFileBytes: Uint8Array }): Promise<Uint8Array> {
     const { buildGateRequestV4TypedData: buildV4 } = await import('haven-aol')
     const metadata = parseGateMetadataV4(params.gateMetadataJson)
@@ -538,34 +567,43 @@ export class AolRuntime {
     }
     const derivationInput = await computeDerivationInputV4(
       metadata.chain, metadata.tokenAddress, BigInt(metadata.threshold), metadata.epoch, metadata.marketCapTarget)
-    const agent = await this.agent()
-    const { secretKey, publicKey } = createTransportKeyPair()
-    const nonce = params.nonce ?? freshNonce()
-    const { eip712ChainId, eip712VerifyingContract } = this.gateDefaults(params)
-    const typed = buildV4({
-      evmAddress: params.evmAddress, transportPublicKey: publicKey, epoch: metadata.epoch,
-      marketCapTarget: metadata.marketCapTarget, nonce,
-      eip712ChainId, eip712VerifyingContract,
+    const vetKey = await this.vetKeys.getOrFetch(vetKeySlot(derivationInput), async () => {
+      const agent = await this.agent()
+      const { secretKey, publicKey } = createTransportKeyPair()
+      const nonce = params.nonce ?? freshNonce()
+      const { eip712ChainId, eip712VerifyingContract } = this.gateDefaults(params)
+      const typed = buildV4({
+        evmAddress: params.evmAddress, transportPublicKey: publicKey, epoch: metadata.epoch,
+        marketCapTarget: metadata.marketCapTarget, nonce,
+        eip712ChainId, eip712VerifyingContract,
+      })
+      const signature = await this.signOrThrow(typedDigest(typed as never))
+      const fn = internals.requestV4 ?? liveRequestV4
+      const result = await fn(agent, this.opts.canisterId, {
+        chain: metadata.chain, tokenAddress: metadata.tokenAddress, threshold: BigInt(metadata.threshold),
+        epoch: BigInt(metadata.epoch), marketCapTarget: BigInt(metadata.marketCapTarget),
+        oracleAddress: metadata.oracleAddress, evmAddress: params.evmAddress,
+        transportPublicKey: publicKey, nonce, signature, eip712ChainId, eip712VerifyingContract,
+      })
+      if ('err' in result) throw new HavenAolError(result.err)
+      return recoverVetKey(result.ok.encryptedKey, secretKey, result.ok.verificationKey, derivationInput)
     })
-    const signature = await this.signOrThrow(typedDigest(typed as never))
-    const fn = internals.requestV4 ?? liveRequestV4
-    const result = await fn(agent, this.opts.canisterId, {
-      chain: metadata.chain, tokenAddress: metadata.tokenAddress, threshold: BigInt(metadata.threshold),
-      epoch: BigInt(metadata.epoch), marketCapTarget: BigInt(metadata.marketCapTarget),
-      oracleAddress: metadata.oracleAddress, evmAddress: params.evmAddress,
-      transportPublicKey: publicKey, nonce, signature, eip712ChainId, eip712VerifyingContract,
-    })
-    if ('err' in result) throw new HavenAolError(result.err)
-    const vetKey = recoverVetKey(result.ok.encryptedKey, secretKey, result.ok.verificationKey, derivationInput)
     const aesKey = ibeDecryptAesKey(metadata.encryptedAesKey, vetKey)
     return decryptFile(params.encryptedFileBytes, aesKey)
   }
 
   /**
-   * Seal bytes under a new gate: fresh AES-256-GCM content key,
+   * Seal bytes under a new gate: an AES-256-GCM content key,
    * IBE-wrapped under the canister's verification key, plus gate
    * metadata JSON. No wallet, no signature — sealing is local plus one
-   * free DPK query. The AES key never leaves this call.
+   * free DPK query (cached per version).
+   *
+   * v3 seals share one AES key per (chain, token, threshold, epoch)
+   * bucket: every file in the epoch carries the same `encryptedAesKey`
+   * blob. v1 (per-file) and v4 (per-rung — sharing across rungs would
+   * let one unlock open later files) mint a fresh key per seal. IVs
+   * stay fresh per seal in all versions, so every seal's bytes are
+   * still unique — repeats never reproduce a release.
    */
   async seal(params: SealParams): Promise<SealResult> {
     if (params.version !== 1 && params.version !== 3 && params.version !== 4) {
@@ -594,17 +632,23 @@ export class AolRuntime {
         ? await computeDerivationInputV3(params.chain, params.tokenAddress, params.threshold, epoch)
         : await computeDerivationInputV4(
           params.chain, params.tokenAddress, params.threshold, epoch, params.marketCapTarget as bigint)
-    const dpk = await this.verificationKey(params.version)
-    const aesKey = freshAesKey()
+    let aesKey: Uint8Array
     let wrapped: string
-    try {
-      wrapped = ibeEncryptAesKey(dpk, derivationInput, aesKey)
-    } catch (error: unknown) {
-      throw new Error(
-        `dsh-haven-aol: IBE wrap failed under the v${params.version} verification key `
-        + '(refusing to seal an unopenable file)',
-        { cause: error },
+    if (params.version === 3) {
+      const hit = await this.epochKeys.getOrCreate(
+        { chain: params.chain, tokenAddress: params.tokenAddress, threshold: params.threshold, epoch },
+        async () => {
+          const dpk = await this.verificationKey(3)
+          const raw = freshAesKey()
+          return { rawKey: raw, wrappedB64: this.wrapOrThrow(3, dpk, derivationInput, raw) }
+        },
       )
+      aesKey = hit.rawKey
+      wrapped = hit.wrappedB64
+    } else {
+      const dpk = await this.verificationKey(params.version)
+      aesKey = freshAesKey()
+      wrapped = this.wrapOrThrow(params.version, dpk, derivationInput, aesKey)
     }
     const { sealed: sealedBytes } = await encryptFileAesGcm(params.plaintext, aesKey)
     const gateMetadataJson = params.version === 1
@@ -627,6 +671,19 @@ export class AolRuntime {
       gateMetadataJson,
       version: params.version,
       keySha256: createHash('sha256').update(aesKey).digest('hex'),
+    }
+  }
+
+  /** IBE-wrap one AES key, failing closed (an unopenable file is never sealed). */
+  private wrapOrThrow(version: 1 | 3 | 4, dpk: Uint8Array, derivationInput: Uint8Array, aesKey: Uint8Array): string {
+    try {
+      return ibeEncryptAesKey(dpk, derivationInput, aesKey)
+    } catch (error: unknown) {
+      throw new Error(
+        `dsh-haven-aol: IBE wrap failed under the v${version} verification key `
+        + '(refusing to seal an unopenable file)',
+        { cause: error },
+      )
     }
   }
 

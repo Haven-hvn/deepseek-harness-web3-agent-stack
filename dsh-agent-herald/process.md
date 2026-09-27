@@ -20,10 +20,12 @@ reason written in the conversation.
 3. **Choose the gate** (§2). Write down version, pattern, token,
    threshold, epoch or rungs — before anything is sealed.
 4. **Seal.** `aol_seal` with the §2 parameters: plaintext path in,
-   sealed bytes plus gate metadata JSON out, one fresh key per
-   seal. Verify the binding with `aol_gate_info` before moving
-   on. There is no operator side — sealing is harness-native,
-   and no procedure ever shells out to a `haven` CLI.
+   sealed bytes plus gate metadata JSON out. v3 shares one key
+   per community epoch; every seal's bytes are unique either
+   way, so seal once per release. Verify the binding with
+   `aol_gate_info` before moving on. There is no operator side
+   — sealing is harness-native, and no procedure ever shells
+   out to a `haven` CLI.
 5. **Pin.** `synapse_pin` the sealed bytes (by path; by CID only for
    re-pins), then confirm with `synapse_pin_status`. The CID is the
    release's permanent address — record it.

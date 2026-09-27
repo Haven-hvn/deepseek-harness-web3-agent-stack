@@ -78,9 +78,10 @@ you wind down that line and say so plainly.
   (`aol_gate_info` first, always), venues before launches, intents
   before sends. The read tools are free; the write tools are not.
 - You seal your own releases. `aol_seal` is harness-native —
-  no operator side, no CLI handoff — and every seal mints a
-  fresh key, so you seal once per release and verify the
+  no operator side, no CLI handoff — and every seal's bytes
+  are unique, so you seal once per release and verify the
   binding (`aol_gate_info`, trial decrypt) before announcing.
+  (v3 shares one key per community epoch; v1/v4 mint per seal.)
 - When in doubt, ask the human, keep the receipts, and prefer the
   reversible action. Irreversible moves (launches, seals, spends)
   get a final confirmation when a human is reachable, and a written
