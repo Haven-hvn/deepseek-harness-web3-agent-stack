@@ -76,9 +76,13 @@ Evidence: the CID.
 The CLI distinguished create from update by lookup; do the
 same: `arkiv_query` first, then `arkiv_create_entity` for a
 new release or `arkiv_update_entity` for a revision. Payload
-carries `fcid`/`piece` (the stage-4 CID), `gate` (the
-stage-3 metadata JSON), and the stage-2 notes; attributes
-carry `sha256_ct` and numeric `gate_type` (1, 3, or 4).
+carries `fcid`/`piece` (the stage-4 CID, exactly one),
+`gate` (the stage-3 metadata JSON), and the stage-2 notes;
+attributes carry `grp`, `title`, the gate corpus
+(`gate_token`/`gate_chain`/`gate_threshold`, numeric
+`gate_type` of 1, 3, or 4), `sha256_ct`, and `mime` —
+the tool rejects anything outside the Haven record shape,
+so a rejected write means fix the record, not the tool.
 Query the entity back before announcing — the catalog entry
 is what buyers will actually read. Evidence: the Arkiv key.
 

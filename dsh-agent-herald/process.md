@@ -27,12 +27,17 @@ reason written in the conversation.
 5. **Pin.** `synapse_pin` the sealed bytes (by path; by CID only for
    re-pins), then confirm with `synapse_pin_status`. The CID is the
    release's permanent address — record it.
-6. **Catalog.** `arkiv_create_entity` with the Haven entity format:
-   payload carries `fcid`/`piece` (Filecoin locator), `gate`
-   (gate-metadata JSON), `vlm` (analysis CID when present);
-   attributes carry `sha256_ct` and `gate_type` = the gate version
-   (1, 3, or 4 — numeric, no `gate_version` key). Query it back
-   with `arkiv_query` before announcing.
+6. **Catalog.** `arkiv_create_entity` with the Haven entity format
+   (enforced by the tool — malformed records are rejected before
+   signing, never silently stored): payload carries `fcid`/`piece`
+   (Filecoin locator, exactly one), `gate` (gate-metadata JSON),
+   `vlm` (analysis CID when present); attributes carry `grp`
+   (`haven.video.full`, or the generic-file / drip group),
+   `title`, the gate corpus (`gate_type` = the gate version —
+   1, 3, or 4, numeric, no `gate_version` key — plus
+   `gate_token`/`gate_chain`/`gate_threshold`, and `gate_epoch`
+   for v3), `sha256_ct`, and `mime`. Query it back with
+   `arkiv_query` before announcing.
 7. **Fund.** Make sure the release earns (§3): the community token
    exists with you as fee recipient, royalties are set, and the
    first sweep path is clear.

@@ -1,13 +1,15 @@
 /**
  * Arkiv entity storage for DSH — ctx.arkiv + arkiv_create_entity / arkiv_query tools.
- * Filecoin Onchain Cloud is Synapse; Arkiv is the entity chain (Braga Hoodi testnet / mainnet).
+ * Filecoin Onchain Cloud is Synapse; Arkiv is the entity chain (Tiramisu testnet).
  * This ports haven_cli/services/arkiv_sync.py (ArkivSyncConfig, create_entity) to DSH's
  * isolated-bundles-coupled-at-seams model: TypeScript/Node v22/Cordis, gated credentials.
  *
- * Entity definition is conformant with arkiv-sdk-js/src/types/entity.ts (EntityFields)
- * — haven-core has no Arkiv entity type, so canonical is arkiv-sdk-js. Haven's
- * arkiv_sync builds attributes as plain Record<string, unknown> with payload+contentType
- * + expiresIn; we preserve that shape so a haven-cli export can be re-imported as DSH.
+ * This harness is Haven-specific: every write is validated against the Haven
+ * application protocol (ARKIV_FORMAT v2.1.0 — see ./haven.ts) BEFORE signing.
+ * Attributes arrive as a plain Record<string, unknown> like the CLI's, and
+ * are normalized to the CLI's `str|int` wire (full/generic groups) or the
+ * spec's tagged SDK values (drip groups) before the ledger keys them, so
+ * retries with differently-cased hex still hit the same ledger entry.
  *
  * @module dsh-arkiv
  */
@@ -22,9 +24,23 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 // optional via `ctx.reflect.get`, so this plugin mounts cleanly unguarded).
 import type { CheckContext, CheckDecision } from 'dsh-exactly-once';
 import { ArkivBackend } from './arkiv.ts';
+import { normalizeHavenWhere, validateHavenWrite } from './haven.ts';
 import type { ArkivEntityRecord } from './types.ts';
 
 export type { ArkivEntityRecord } from './types.ts';
+export {
+  CHAIN_VARIANT_TO_EIP155,
+  HAVEN_BTL_FULL_S,
+  HAVEN_BTL_PART_S,
+  HAVEN_BTL_SERIES_S,
+  HAVEN_CONTENT_TYPE,
+  HAVEN_FORMAT_VERSION,
+  HAVEN_GROUPS,
+  MIME_TO_ENUM,
+  normalizeHavenWhere,
+  validateHavenWrite,
+} from './haven.ts';
+export type { HavenGroupClass, HavenNormalizedWrite } from './haven.ts';
 
 export const name = 'storage-arkiv';
 export const inject = {
@@ -169,10 +185,12 @@ export class ArkivRuntime {
    * outcomes: settled attempts replay; in-flight attempts report unknown
    * (the body attaches on dispatch); ledger misses with attributes fall
    * through to an entity query with a payload-hash match (restart cover).
+   * Invalid Haven records report unknown (the re-dispatch rethrows the
+   * validation error, exactly like the first attempt).
    */
   async checkCreate(input: unknown): Promise<CheckDecision> {
     this.hook();
-    const args = (input ?? {}) as { path?: unknown; payload?: unknown; contentType?: unknown; attributes?: unknown };
+    const args = (input ?? {}) as { path?: unknown; payload?: unknown; contentType?: unknown; attributes?: unknown; expiresIn?: unknown };
     let payload: Uint8Array;
     try {
       if (typeof args.path === 'string' && args.path !== '') {
@@ -189,10 +207,21 @@ export class ArkivRuntime {
     const attributes = (typeof args.attributes === 'object' && args.attributes !== null
       ? args.attributes as Record<string, unknown>
       : undefined);
+    let write: { payload: Uint8Array; attributes: Record<string, unknown> };
+    try {
+      write = validateHavenWrite({
+        payload,
+        contentType: args.contentType,
+        ...(attributes !== undefined ? { attributes } : {}),
+        ...(typeof args.expiresIn === 'number' ? { expiresIn: args.expiresIn } : {}),
+      });
+    } catch {
+      return { kind: 'unknown' };
+    }
     const key = createKeyFor({
-      payload,
+      payload: write.payload,
       contentType: args.contentType,
-      ...(attributes !== undefined ? { attributes } : {}),
+      attributes: write.attributes,
     });
     const prior = this.creates.get(key);
     if (prior !== undefined) {
@@ -206,9 +235,9 @@ export class ArkivRuntime {
     // Restart cover: the ledger is gone, but an attributes-targeted query
     // plus a payload-hash match still proves the create committed. A query
     // hit cannot recover the creation txHash, so the replay value says so.
-    if (attributes === undefined) return { kind: 'unknown' };
+    // (The write validated above, so normalized attributes always exist.)
     try {
-      const entities = await this.queryEntities({ where: attributes, limit: 25 });
+      const entities = await this.queryEntities({ where: write.attributes, limit: 25 });
       const want = createHash('sha256').update(payload).digest('hex');
       for (const entity of entities) {
         const bytes = queryPayloadBytes(entity);
@@ -233,11 +262,12 @@ export class ArkivRuntime {
   /**
    * Read-back hook for `arkiv_update_entity` repeats: settled attempts
    * replay, everything else reports unknown (a re-patch of identical
-   * content converges anyway).
+   * content converges anyway; invalid records report unknown and the
+   * re-dispatch rethrows the validation error).
    */
   async checkUpdate(input: unknown): Promise<CheckDecision> {
     this.hook();
-    const args = (input ?? {}) as { key?: unknown; path?: unknown; payload?: unknown; contentType?: unknown; attributes?: unknown };
+    const args = (input ?? {}) as { key?: unknown; path?: unknown; payload?: unknown; contentType?: unknown; attributes?: unknown; expiresIn?: unknown };
     if (typeof args.key !== 'string' || !args.key.startsWith('0x')) return { kind: 'unknown' };
     let payload: Uint8Array;
     try {
@@ -253,11 +283,22 @@ export class ArkivRuntime {
     const updateAttributes = (typeof args.attributes === 'object' && args.attributes !== null
       ? args.attributes as Record<string, unknown>
       : undefined);
+    let write: { payload: Uint8Array; attributes: Record<string, unknown> };
+    try {
+      write = validateHavenWrite({
+        payload,
+        contentType: args.contentType,
+        ...(updateAttributes !== undefined ? { attributes: updateAttributes } : {}),
+        ...(typeof args.expiresIn === 'number' ? { expiresIn: args.expiresIn } : {}),
+      });
+    } catch {
+      return { kind: 'unknown' };
+    }
     const prior = this.updates.get(updateKeyFor({
       key: args.key as `0x${string}`,
-      payload,
+      payload: write.payload,
       contentType: args.contentType,
-      ...(updateAttributes !== undefined ? { attributes: updateAttributes } : {}),
+      attributes: write.attributes,
     }));
     if (prior === undefined) return { kind: 'unknown' };
     try {
@@ -269,10 +310,13 @@ export class ArkivRuntime {
 
   async createEntity(params: { payload: Uint8Array; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }): Promise<ArkivEntityRecord> {
     this.hook();
-    const key = createKeyFor(params);
+    // Fail-closed Haven validation FIRST: invalid records throw before the
+    // ledger keys them, so no invalid attempt is ever replayed or sent.
+    const write = validateHavenWrite(params);
+    const key = createKeyFor({ payload: write.payload, contentType: write.contentType, attributes: write.attributes });
     const prior = this.creates.get(key);
     if (prior !== undefined) return prior;
-    const task = this.doCreate(params);
+    const task = this.doCreate({ payload: write.payload, contentType: write.contentType, attributes: write.attributes, expiresIn: write.expiresIn });
     this.creates.set(key, task);
     // Failed attempts must not replay: drop them so the repeat retries.
     // (The caller's await still observes the rejection; this sink only
@@ -293,10 +337,13 @@ export class ArkivRuntime {
 
   async updateEntity(params: { key: `0x${string}`; payload: Uint8Array; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }): Promise<{ txHash: `0x${string}` }> {
     this.hook();
-    const key = updateKeyFor(params);
+    // Updates rewrite the whole record (like the CLI's patch path), so the
+    // complete Haven record validates exactly like a create.
+    const write = validateHavenWrite(params);
+    const key = updateKeyFor({ key: params.key, payload: write.payload, contentType: write.contentType, attributes: write.attributes });
     const prior = this.updates.get(key);
     if (prior !== undefined) return prior;
-    const task = this.doUpdate(params);
+    const task = this.doUpdate({ key: params.key, payload: write.payload, contentType: write.contentType, attributes: write.attributes, expiresIn: write.expiresIn });
     this.updates.set(key, task);
     task.catch(() => {
       if (this.updates.get(key) === task) this.updates.delete(key);
@@ -311,7 +358,8 @@ export class ArkivRuntime {
 
   async queryEntities(query: { where?: Record<string, unknown>; limit?: number }): Promise<ArkivEntityRecord[]> {
     const be = await this.ensureBackend();
-    const entities = await be.queryEntities(query);
+    const where = normalizeHavenWhere(query.where);
+    const entities = await be.queryEntities({ where, limit: query.limit });
     return entities as ArkivEntityRecord[];
   }
 }
@@ -342,13 +390,13 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'arkiv_create_entity',
-    description: 'Create an Arkiv entity (permanent queryable record) — payload+contentType+attributes, expiresIn seconds. Mirrors haven_cli arkiv_sync create_entity.',
+    description: 'Create a Haven Arkiv entity (ARKIV_FORMAT v2.1.0 — enforced before signing). Attributes: grp (haven.video.full / haven.image.full / haven.text.full / haven.file.full / haven.video.drip.series / haven.video.drip.part, or custom dot hierarchy), title, gate corpus (gate_type 1|3|4 numeric, gate_token 0x, gate_chain EIP id, gate_threshold; gate_epoch for v3), sha256_ct (64 hex), mime (0-14), dur_s video-only. Payload is JSON: piece (encrypted) XOR fcid (clear), gate JSON string (version == gate_type), size/pt_hash/vlm/seg/codecs/src/creator/phash/attn, plus name (+ct when MIME has no enum code) on generic groups. Drip series payload is {targets, creator?, mime?}; drip parts carry series_ref + mcap_usd. Deleted v1.x keys are rejected. expiresIn seconds (defaults 4w full/generic, 52w series, 12w parts).',
     parameters: {
-      path: { type: 'string', description: 'Local file to use as payload. Exactly one of path or payload.' },
-      payload: { type: 'string', description: 'Raw payload string (utf8) if no file. Exactly one of path or payload.' },
-      contentType: { type: 'string', description: 'MIME content type, e.g. application/json', required: true } as any,
-      attributes: { type: 'object', description: 'Plain attributes Record<string, unknown> (haven entity attributes)' } as any,
-      expiresIn: { type: 'number', description: 'Seconds until expiry (default 4 weeks)' } as any,
+      path: { type: 'string', description: 'Local file holding the JSON payload. Exactly one of path or payload.' },
+      payload: { type: 'string', description: 'JSON payload string (utf8) if no file. Exactly one of path or payload.' },
+      contentType: { type: 'string', description: 'Must be application/json (Haven entities are JSON records)', required: true } as any,
+      attributes: { type: 'object', description: 'Haven attributes Record<string, unknown> (grp/title/gate corpus/sha256_ct/mime/dur_s or drip coordinates)', required: true } as any,
+      expiresIn: { type: 'number', description: 'Seconds until expiry (default per group: 4w full/generic, 52w series, 12w parts)' } as any,
     },
     output: { schema: CREATE_RESULT_SCHEMA, render: (_args, value) => [{ type: 'text', text: `${(value as any).key}: created tx ${(value as any).txHash}` }] },
     async execute(args: { path?: string; payload?: string; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }, exec): Promise<{ key: string; owner: string; txHash: string }> {
@@ -365,14 +413,14 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'arkiv_update_entity',
-    description: 'Update an existing Arkiv entity — payload+contentType+attributes. Mirrors haven_cli arkiv_sync update_entity.',
+    description: 'Rewrite a Haven Arkiv entity (same ARKIV_FORMAT v2.1.0 shape as create — send the complete record, not a sparse patch). Validated before signing.',
     parameters: {
       key: { type: 'string', required: true, description: 'Entity key 0x...' },
-      path: { type: 'string', description: 'Local file for new payload' } as any,
-      payload: { type: 'string', description: 'Raw payload string if no file' } as any,
-      contentType: { type: 'string', required: true } as any,
-      attributes: { type: 'object', description: 'Attributes to patch' } as any,
-      expiresIn: { type: 'number', description: 'Extend expiry seconds' } as any,
+      path: { type: 'string', description: 'Local file holding the new JSON payload' } as any,
+      payload: { type: 'string', description: 'New JSON payload string if no file' } as any,
+      contentType: { type: 'string', required: true, description: 'Must be application/json' } as any,
+      attributes: { type: 'object', description: 'Complete Haven attributes for the rewritten record', required: true } as any,
+      expiresIn: { type: 'number', description: 'Extend expiry seconds (default per group)' } as any,
     },
     output: { schema: { type: 'object', additionalProperties: true } as any, render: (_args, v) => [{ type: 'text', text: JSON.stringify(v) }] },
     async execute(args: { key: string; path?: string; payload?: string; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }, exec) {
@@ -384,9 +432,9 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'arkiv_query',
-    description: 'Query Arkiv entities by attributes (haven-spec entity query).',
+    description: 'Query Haven Arkiv entities by attributes (all filters ANDed). Comparisons are type-exact: numbers stay numbers (gate_type 4, not "4"), hex is lowercased, series_ref matches the series entity key.',
     parameters: {
-      where: { type: 'object', description: 'Attribute filter, e.g. {category:"doc"}' } as any,
+      where: { type: 'object', description: 'Attribute filter, e.g. {grp:"haven.video.full", gate_type:3} or {sha256_ct:"<64 hex>"}' } as any,
       limit: { type: 'number', description: 'Max results' } as any,
     },
     output: { schema: QUERY_RESULT_SCHEMA, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }] },

@@ -5,12 +5,43 @@
  */
 
 import type { Hex } from 'viem';
+import type { CreateEntityReturnType } from '@arkiv-network/sdk';
 
 export interface ArkivBackendOpts {
   privateKeyRef: string;
   getPrivateKey: () => Promise<string>;
   rpcUrl: string;
   chainId?: number;
+}
+
+/**
+ * Minimal wallet-client surface for creates. The result type is the SDK's
+ * own `CreateEntityReturnType` (`{ entityKey, txHash, expiresAt }`) — NOT
+ * `{ key }`: the SDK names the minted key `entityKey`, and reading `key`
+ * yields `undefined`. The compiler pins this: if the SDK ever renames the
+ * field, both this signature and the mapper below break loudly.
+ */
+export interface ArkivCreateClient {
+  createEntity: (data: any) => Promise<CreateEntityReturnType>;
+}
+
+/** One create through an explicit client (the backend delegates to this). */
+export async function createEntityWithClient(
+  client: ArkivCreateClient,
+  params: { payload: Uint8Array; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number },
+): Promise<{ key: Hex; txHash: Hex }> {
+  const { ExpirationTime } = await import('@arkiv-network/sdk');
+  // Plain number, NOT BigInt: the SDK's toBlocks rejects non-numbers, and
+  // requires a positive multiple of the 2s block time (haven.ts enforces
+  // both before the ledger keys the write).
+  const expires = params.expiresIn ? ExpirationTime.fromSeconds(params.expiresIn) : ExpirationTime.fromDays(28);
+  const { entityKey, txHash } = await client.createEntity({
+    payload: params.payload,
+    contentType: params.contentType,
+    attributes: params.attributes ?? {},
+    expires,
+  });
+  return { key: entityKey, txHash };
 }
 
 /** Minimal chain shape the resolver needs (viem chain objects satisfy this). */
@@ -66,21 +97,13 @@ export class ArkivBackend {
 
   async createEntity(params: { payload: Uint8Array; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }): Promise<{ key: Hex; txHash: Hex }> {
     const client = await this.getWalletClient();
-    const { ExpirationTime } = await import('@arkiv-network/sdk');
-    const expires = params.expiresIn ? ExpirationTime.fromSeconds(BigInt(params.expiresIn)) : ExpirationTime.fromDays(28);
-    const { key, txHash } = await client.createEntity({
-      payload: params.payload,
-      contentType: params.contentType,
-      attributes: params.attributes ?? {},
-      expires,
-    });
-    return { key, txHash };
+    return createEntityWithClient(client as ArkivCreateClient, params);
   }
 
   async updateEntity(params: { key: Hex; payload: Uint8Array; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }): Promise<{ txHash: Hex }> {
     const client = await this.getWalletClient();
     const { ExpirationTime } = await import('@arkiv-network/sdk');
-    const expires = params.expiresIn ? ExpirationTime.fromSeconds(BigInt(params.expiresIn)) : undefined;
+    const expires = params.expiresIn ? ExpirationTime.fromSeconds(params.expiresIn) : undefined;
     const { txHash } = await (client as any).patchEntity({
       entityKey: params.key,
       payload: params.payload,
@@ -94,7 +117,7 @@ export class ArkivBackend {
   async extendEntity(params: { key: Hex; expiresIn: number }): Promise<{ txHash: Hex }> {
     const client = await this.getWalletClient();
     const { ExpirationTime } = await import('@arkiv-network/sdk');
-    const expires = ExpirationTime.fromSeconds(BigInt(params.expiresIn));
+    const expires = ExpirationTime.fromSeconds(params.expiresIn);
     const { txHash } = await (client as any).extendEntity({ entityKey: params.key, expires });
     return { txHash };
   }
@@ -104,12 +127,16 @@ export class ArkivBackend {
     // Use arkiv query builder: select + where + fetch
     let builder: any = client.select({ key: true, owner: true, payload: true, contentType: true, attributes: true, expiresAt: true });
     if (query.where) {
-      const { eq } = await import('@arkiv-network/sdk/query');
-      // Simple where: first entry
+      const { and, eq } = await import('@arkiv-network/sdk/query');
+      // Every filter entry ANDed: single-entry {sha256_ct} dedup lookups and
+      // multi-entry {grp, gate_type} feed scopes share one path. Values are
+      // pre-normalized (haven.ts) to the wire types they compare against.
       const entries = Object.entries(query.where);
-      if (entries.length > 0) {
+      if (entries.length === 1) {
         const [k, v] = entries[0] as [string, unknown];
         builder = builder.where(eq(k, v as any));
+      } else if (entries.length > 1) {
+        builder = builder.where(and(entries.map(([k, v]) => eq(k, v as any))));
       }
     }
     if (query.limit) builder = builder.limit(query.limit);

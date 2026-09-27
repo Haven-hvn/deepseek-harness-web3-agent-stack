@@ -9,6 +9,7 @@
     ".": { "types": "./lib/index.d.ts", "default": "./lib/index.js" },
     "./types": { "types": "./lib/types.d.ts", "default": "./lib/types.js" },
     "./arkiv": { "types": "./lib/arkiv.d.ts", "default": "./lib/arkiv.js" },
+    "./haven": { "types": "./lib/haven.d.ts", "default": "./lib/haven.js" },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./src/*": "./src/*",
     "./package.json": "./package.json"
