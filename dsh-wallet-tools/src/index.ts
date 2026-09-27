@@ -383,6 +383,15 @@ export function apply(ctx: Context, config: Config): void {
               }
             } catch {}
 
+            ctx.emit('wallet/balances', {
+              address,
+              balances: toTreasuryBalances(liveResult).map(balance => ({
+                chain: balance.chain,
+                token: balance.token,
+                amount: balance.amount,
+                usd: balance.usdEstimate,
+              })),
+            })
             return `${formatLiveResult(liveResult, args.chain)}${syncNote}${walletAddrs}`
           }
 

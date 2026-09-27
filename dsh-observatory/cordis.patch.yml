@@ -1,0 +1,13 @@
+# Insert the collector into the agent profile. Do not patch an id that
+# dsh-base does not already have.
+- insert:
+    - id: observatory
+      name: dsh-observatory
+      config:
+        dir: /data/observatory
+        pollMs: 15000
+        qbittorrentUrl: http://127.0.0.1:8080
+        transmissionUrl: http://127.0.0.1:9091
+        prowlarrUrl: http://127.0.0.1:9696
+        supervisorSock: /data/supervisor.sock
+        acquireStore: /data/downloads/acquire/acquisitions.json

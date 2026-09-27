@@ -65,6 +65,7 @@ COPY dsh-haven-aol/ /opt/stack/dsh-haven-aol/
 COPY dsh-persona/ /opt/stack/dsh-persona/
 COPY dsh-tool-prowlarr/ /opt/stack/dsh-tool-prowlarr/
 COPY dsh-tool-acquisition/ /opt/stack/dsh-tool-acquisition/
+COPY dsh-observatory/ /opt/stack/dsh-observatory/
 
 # haven-aol source: dsh-haven-aol depends on it via
 # file:../../haven-aol/packages/typescript, which resolves to /opt/haven-aol
@@ -91,15 +92,17 @@ RUN git init -q /opt/mint-glue-graduate && cd /opt/mint-glue-graduate \
     && npm cache clean --force
 
 # Build the stack in-image (lib/ is dockerignored out of the context, so the
-# profile links would otherwise point at unbuilt sources). The workspace
-# node_modules stays: symlinked bundles resolve their prod deps through
-# /opt/stack/node_modules at runtime. Dev deps are pruned after the build.
+# profile links would otherwise point at unbuilt sources). Plugin imports
+# resolve from /opt/stack, not from the global dsh install. Peers live in
+# devDependencies, so do not `pnpm prune --prod` — that removes cordis and
+# every bundle fails to import.
 RUN cd /opt/stack && pnpm install --frozen-lockfile --ignore-scripts \
-    && pnpm -r build \
-    && pnpm prune --prod --ignore-scripts
+    && pnpm -r build
 
 # Profile skeleton: base bundles + all stack packages + xmtp runtime dep.
 # Built once here; first boot copies it into /data (never rebuilt at runtime).
+# Do not `pnpm store prune` here. With no project in cwd it drops the store
+# packages /opt/stack/node_modules still links.
 ENV DSH_HOME=/opt/dsh-skel
 RUN dsh plugin --profile agent add \
       /opt/stack/dsh-wallet /opt/stack/dsh-wallet-ethereum \
@@ -108,12 +111,12 @@ RUN dsh plugin --profile agent add \
       /opt/stack/dsh-arkiv /opt/stack/dsh-erc8004 \
       /opt/stack/dsh-royalty-router /opt/stack/dsh-haven-aol \
       /opt/stack/dsh-persona /opt/stack/dsh-tool-prowlarr \
-      /opt/stack/dsh-tool-acquisition \
+      /opt/stack/dsh-tool-acquisition /opt/stack/dsh-observatory \
     && dsh plugin --profile agent add @xmtp/node-sdk \
-    && pnpm store prune \
     && dsh --profile agent --dump-default-config > /dev/null \
-    && node --input-type=module -e "await import('/opt/stack/dsh-wallet/lib/index.js'); await import('/opt/stack/dsh-tool-acquisition/lib/index.js'); console.log('stack import gate: OK')"
+    && node --input-type=module -e "await import('/opt/stack/dsh-wallet/lib/index.js'); await import('/opt/stack/dsh-tool-acquisition/lib/index.js'); await import('/opt/stack/dsh-observatory/lib/index.js'); console.log('stack import gate: OK')"
 
+EXPOSE 8787
 VOLUME /data
 ENTRYPOINT ["/opt/agent/entrypoint.sh"]
 

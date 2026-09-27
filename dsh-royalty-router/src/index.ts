@@ -169,8 +169,18 @@ export function apply(ctx: Context, config: Config): void {
       'Launch a graduation: build intent, simulate, then send. Caller funds the reserve/seed in the configured wallet. Signs via ctx.wallet. On swapper routes quote a real minOut.',
     parameters: intentShape as never,
     output: { schema: { type: 'object', additionalProperties: true } as never, render: (_a, v) => renderJson(v) as never },
-    execute: async (args: never): Promise<unknown> =>
-      launchTool(await executeDeps(), args as never),
+    execute: async (args: never): Promise<unknown> => {
+      const result = await launchTool(await executeDeps(), args as never)
+      const row = result as { token?: string; tokenAddress?: string; symbol?: string; txHash?: string; hash?: string; factory?: string }
+      ctx.emit('rr/launched', {
+        chain: String(config.chainId ?? ''),
+        token: row?.token ?? row?.tokenAddress,
+        symbol: row?.symbol,
+        tx: row?.txHash ?? row?.hash,
+        factory: row?.factory,
+      })
+      return result
+    },
     presentCall: () => ({ card: 'generic', title: 'Graduation launch', kind: 'execute' }),
   })))
 
@@ -184,8 +194,17 @@ export function apply(ctx: Context, config: Config): void {
       minOut: { type: 'string', description: 'Swap floor for swapper routes. MUST be a decimal string in quotes (default "0").' },
     } as never,
     output: { schema: { type: 'object', additionalProperties: true } as never, render: (_a, v) => renderJson(v) as never },
-    execute: async (args: never): Promise<unknown> =>
-      sweepTool(await executeDeps(), args as never),
+    execute: async (args: never): Promise<unknown> => {
+      const result = await sweepTool(await executeDeps(), args as never)
+      const row = result as { token?: string; txHash?: string; hash?: string; amount?: number }
+      ctx.emit('rr/swept', {
+        chain: String(config.chainId ?? ''),
+        token: row?.token,
+        tx: row?.txHash ?? row?.hash,
+        amount: row?.amount,
+      })
+      return result
+    },
     presentCall: args => ({ card: 'generic', title: `Sweep ${(args as { router: string }).router}`, kind: 'execute' }),
   })))
 

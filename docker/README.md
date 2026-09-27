@@ -8,20 +8,25 @@ every boot starts the supervisor tree and prints a Convos invite QR.
 ## Run
 
 ```sh
-podman build -f docker/Dockerfile -t dsh-agent:latest .
+podman build -f docker/Dockerfile -t dsh-haven-web3-agent:latest .
 podman run -d --name agent \
   -v agent-data:/data \
   -e ACCEPT_HOT_WALLET_RISK=yes \
   -e MODEL_BASE_URL=https://your-openai-compatible-endpoint/v1 \
   -e MODEL_ID=your-model-id \
   -e MODEL_API_KEY=your-key \
-  dsh-agent:latest
+  dsh-haven-web3-agent:latest
 podman logs -f agent   # instantiation summary, then services, then the QR
 ```
 
-No ports need publishing: Prowlarr/qBittorrent/Transmission bind inside the
-container's network namespace for the agent's own tools. Do not `-p` them
-unless you put auth in front.
+Publish the dashboard only:
+
+```sh
+podman run -d --name agent -p 8787:8787 ...
+```
+
+`http://127.0.0.1:8787` is the redacted snapshot. Prowlarr, qBittorrent, and
+Transmission stay on localhost. Do not `-p` them.
 
 ## First boot
 
@@ -37,7 +42,8 @@ unless you put auth in front.
    `podman exec agent /opt/agent/convos-qr.sh`.
 
 Delete the volume to start over (new wallets): `podman rm agent`,
-`podman volume rm agent-data`.
+`podman volume rm agent-data`. An existing volume does not pick up a newly
+added plugin; delete it or `dsh plugin add` the observatory into `/data/dsh`.
 
 ## Testnet defaults
 
