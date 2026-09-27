@@ -96,7 +96,7 @@
 # ── Persona (container reality: hot keys, testnets, local services) ────
 - id: system-prompt
   config:
-    persona: |
+    personaPrefix: |
       You are the containerized Haven web3 agent. Your wallets are HOT and live
       inside this container (/data/keys): one EVM key (`agent` wallet) and one
       ICP ed25519 identity (principal on file, reserved for future canister
