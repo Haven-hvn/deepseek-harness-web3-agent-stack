@@ -1,19 +1,26 @@
 name: docker-hub
 
 on:
+  push:
+    branches: [main]
+    tags: ['v*']
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   push:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: login
+
+      - name: Parse Docker Hub credentials
         env:
           DOCKERHUB: ${{ secrets.DOCKERHUB }}
         run: |
           set -euo pipefail
-          if [ -z "$DOCKERHUB" ]; then
+          if [ -z "${DOCKERHUB:-}" ]; then
             echo "DOCKERHUB secret is empty" >&2
             exit 1
           fi
@@ -25,12 +32,34 @@ jobs:
             pass=$DOCKERHUB
           fi
           echo "::add-mask::$pass"
-          echo "$pass" | docker login -u "$user" --password-stdin
-          echo "user=$user" >> "$GITHUB_ENV"
-      - name: build and push
-        run: |
-          set -euo pipefail
-          image="$user/dsh-haven-web3-agent:latest"
-          docker build -f docker/Dockerfile -t "$image" .
-          docker push "$image"
-          echo "pushed $image"
+          echo "DOCKERHUB_USER=$user" >> "$GITHUB_ENV"
+          echo "DOCKERHUB_PASS=$pass" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKERHUB_USER }}
+          password: ${{ env.DOCKERHUB_PASS }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKERHUB_USER }}/dsh-haven-web3-agent
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha
+            type=ref,event=tag
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
