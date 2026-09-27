@@ -221,6 +221,15 @@ importers:
         specifier: '=5.0.2'
         version: 5.0.2(@opentelemetry/api@1.9.1)(@types/node@26.6.3)(vite@8.3.1(@types/node@26.6.3)(yaml@2.9.1))
 
+  dsh-observatory:
+    dependencies:
+      '@deepseek-ai/cordis':
+        specifier: 4.0.4
+        version: 4.0.4(@deepseek-ai/cordis-plugin-include@1.0.9)(@deepseek-ai/cordis-plugin-loader@1.0.5)
+      '@deepseek-ai/schemastery':
+        specifier: '=3.18.4'
+        version: 3.18.4
+
   dsh-persona:
     dependencies:
       '@deepseek-ai/cordis':

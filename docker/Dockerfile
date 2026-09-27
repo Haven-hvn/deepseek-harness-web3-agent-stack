@@ -114,7 +114,7 @@ RUN dsh plugin --profile agent add \
       /opt/stack/dsh-tool-acquisition /opt/stack/dsh-observatory \
     && dsh plugin --profile agent add @xmtp/node-sdk \
     && dsh --profile agent --dump-default-config > /dev/null \
-    && node --input-type=module -e "await import('/opt/stack/dsh-wallet/lib/index.js'); await import('/opt/stack/dsh-tool-acquisition/lib/index.js'); console.log('stack import gate: OK')"
+    && node --input-type=module -e "await import('/opt/stack/dsh-wallet/lib/index.js'); await import('/opt/stack/dsh-tool-acquisition/lib/index.js'); await import('/opt/stack/dsh-observatory/lib/index.js'); console.log('stack import gate: OK')"
 
 EXPOSE 8787
 VOLUME /data
