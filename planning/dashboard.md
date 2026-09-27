@@ -10,7 +10,7 @@ One image, one volume, one published port (`8787`). qBittorrent `:8080`, Prowlar
 
 Cordis events exist only inside `dsh --profile agent`. A sibling process cannot subscribe. So:
 
-1. `dsh-observatory` runs in the agent. It copies facts it is allowed to see into `/data/observatory/snapshot.json` and appends the same rows to `events.jsonl`.
+1. `dsh-observatory` runs in the agent. It appends ledger rows to `/data/observatory/events.jsonl`. Live panels are filled by reading the owning component when the page asks, not from that log.
 2. `dashboard` is a supervisord program that reads that directory and serves it. It does not import wallet code, viem, or qBit. If it dies, the agent keeps running.
 
 The reader never opens `/data/keys`, `.credentials.yaml`, the qBit WebUI, or Prowlarr.
@@ -19,15 +19,21 @@ The reader never opens `/data/keys`, `.credentials.yaml`, the qBit WebUI, or Pro
 
 Treasury is a survival engine (`funded` / `low` / `critical` / `depleted`, integer µUSD). It is not the business ledger. Do not put revenue in `recordExpense`. The observatory writes its own rows. Money is µUSD everywhere, same as `dsh-treasury`.
 
-Each row is a flat object: `ts`, `kind`, and the fields below. No joins, no second database. The snapshot is the latest row per key plus the raw log for history. History is the log. Retention is "rotate the file", not a pipeline.
+Two stores, not one log of everything.
 
-### Health
+**Ledger** (`events.jsonl`): append only facts whose past values are the analytic. A row is `ts` plus the fields below. Retention is "rotate the file".
 
-From supervisord socket (`/data/supervisor.sock`, already mode 0700) and localhost version checks the agent already knows (`qbittorrent.ts` `health()`, Transmission RPC, Prowlarr `/api/v1/health` if present):
+**Live**: overwritten or read at request time from the component that already owns it. No history. Download progress is the example. qBit, Transmission, and `acquisition-handles.json` are the source. The panel asks them (or a one-row cache the collector refreshed from them). It does not append `progress: 0.4`.
 
-- program name, state, last exit, uptime
-- qBit and Transmission: torrent count by state (`queued`, `downloading`, `completed`, `failed`), `dlSpeed`, `upSpeed`, `bytesDone`, `bytesLeft`
-- no name, path, magnet, hash, or indexer title on the public snapshot
+### Health and downloads (live)
+
+Read when asked. Do not append.
+
+- supervisord socket (`/data/supervisor.sock`, mode 0700): program, state, uptime
+- qBit and Transmission, the same localhost calls the agent already makes (`qbittorrent.ts` `health()`, Transmission RPC): counts by state, speeds, progress, bytes left
+- acquire handles: state and progress only
+
+No name, path, magnet, hash, or indexer title on the public response. The reader still does not hold qBit credentials; the collector performs that read and returns the redacted object. It does not keep the previous one.
 
 ### Wallet and treasury
 
@@ -43,10 +49,6 @@ Cost rows use the existing categories: `inference`, `tools`, `infrastructure`, `
 ### Token meter
 
 `@deepseek-ai/dsh-token-meter` has no events in this repo. Policy already prices `measure(session).totalTokens`. Record that number next to the inference expense: `tokens`, `usd`, `model` if the session exposes it. No prompt text.
-
-### Acquisition
-
-`/data/downloads/acquire/acquisition-handles.json` has `handle`, `state`, `progress`, `files[].path`. Public row is handle, state, progress, byte size, backend. Paths and names are dropped in the collector, not hidden in the page.
 
 ### Launches and revenue
 
@@ -84,7 +86,7 @@ No DataDAO type exists. Do not invent a chain stack for the dashboard. A file ro
 | treasury expense / state | events exist | copy |
 | wallet balances | tool only | `wallet/balances` |
 | token meter | in-process measure | record beside inference cost |
-| acquire | JSON file with paths | `acquire/updated` without path or name |
+| acquire | JSON file with paths | live read, drop path and name. no event |
 | royalty launch / sweep | tool return only | `rr/launched`, `rr/swept` |
 | AOL gate | tool + decrypt event | copy `GateSummary`; sale row only if a caller has one |
 | file ↔ token | absent | `catalog/upsert` with cid, gate kind, token |
@@ -92,21 +94,21 @@ No DataDAO type exists. Do not invent a chain stack for the dashboard. A file ro
 
 ## Panels
 
-The page is these panels and nothing else. Each panel is one array already on the snapshot. No derived visuals beyond a sum or a ratio the row already has (`runwayDays`, ROI).
+The page is these panels and nothing else. No derived visuals beyond a sum or a ratio the row already has (`runwayDays`, ROI). A `24h` / `7d` / `30d` control applies only to ledger panels.
 
-| Panel | Rows | Why it is here |
+| Panel | Source | History |
 |---|---|---|
-| Status | health | Is the agent, qBit, Transmission, Prowlarr up, and since when |
-| Downloads | acquire aggregate | Counts, states, speeds. Not names. This is the qBit panel |
-| Treasury | latest `TreasuryReport` | State, runway, total µUSD, budget vs burn by category |
-| Balances | `wallet/balances` | Per chain, per token, address, amount, µUSD |
-| Burn | `cost` log | Usage over time by category. This is the Cost Explorer panel |
-| Tokens | inference cost rows | Token count and µUSD, not prompts |
-| Revenue | `revenue` log | Royalty, gate, other, over time |
-| Launches | `rr/launched` joined only by shared token id | Cost, revenue, ROI per token the agent created |
-| Catalog | file + gate rows | cid, gate kind, token, price, sales, revenue. DataDAO is a gate kind on this panel |
+| Status | supervisord socket, localhost health checks | no. up/down and uptime now |
+| Downloads | qBit WebUI, Transmission RPC, acquire handles | no. counts, states, speeds, progress now. No names |
+| Treasury | `TreasuryReport` | no for the pill (state, runway, total). burn history is the Burn panel |
+| Balances | `get_balances` / wallet | yes. append on change, not on a timer. level over time is the treasury chart |
+| Burn | `treasury/expense` | yes. category, µUSD, ts. Cost Explorer panel |
+| Tokens | token meter beside inference expense | yes. token count and µUSD |
+| Revenue | royalty sweep, gate sale | yes. stream, amount, token or cid |
+| Launches | `rr/launched` plus ledger rows with the same token | the launch is an event. ROI is a sum of ledger rows, not a stored series |
+| Catalog | current file, pin, and gate records | no for pin progress and gate config. yes for sales already on the Revenue panel |
 
-Window controls are `24h` / `7d` / `30d` filters on `ts`. That is the only interaction.
+Do not store: download progress, speeds, process state, pin progress, prompt text, torrent names. Read those from the component that has them.
 
 ## Reader
 
