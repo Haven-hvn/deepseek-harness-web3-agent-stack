@@ -168,8 +168,13 @@ export function mapRelease(wire: ProwlarrWireRelease, apiKey: string): ProwlarrR
   if (infoUrl !== undefined) fields.infoUrl = infoUrl
   const commentUrl = redactUrl(wire.commentUrl, apiKey)
   if (commentUrl !== undefined) fields.commentUrl = commentUrl
-  const downloadUrl = redactUrl(wire.downloadUrl ?? wire.magnetUrl, apiKey)
+  // Indexers disagree about which field holds the proxy link (TPB uses
+  // magnetUrl, others downloadUrl), and some return a real DHT magnet in
+  // magnetUrl alongside an http link. Keep both so the agent can try each.
+  const downloadUrl = redactUrl(wire.downloadUrl, apiKey)
   if (downloadUrl !== undefined) fields.downloadUrl = downloadUrl
+  const magnetUrl = redactUrl(wire.magnetUrl, apiKey)
+  if (magnetUrl !== undefined) fields.magnetUrl = magnetUrl
   return {
     title,
     indexer: text(wire.indexer) ?? 'unknown',

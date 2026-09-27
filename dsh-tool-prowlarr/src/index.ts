@@ -154,6 +154,7 @@ const releaseSchema = {
     infoUrl: { type: 'string' },
     commentUrl: { type: 'string' },
     downloadUrl: { type: 'string', description: 'Prowlarr proxy link with the API key removed; not directly fetchable' },
+    magnetUrl: { type: 'string', description: 'Magnet link or second proxy link with the API key removed; try when downloadUrl fails' },
     categories: { type: 'array', items: categorySchema, required: true },
   },
 } as const
@@ -274,10 +275,10 @@ export function createTools(client: ProwlarrClient, config: ResolvedConfig): [To
   const search = defineTool({
     name: searchTool,
     description: [
-      'Search the indexers configured in Prowlarr and return matching releases (title, indexer, publish date, size, categories, info URL).',
+      'Search the indexers configured in Prowlarr and return matching releases (title, indexer, publish date, size, categories, info URL, download/magnet links).',
       'Searches every enabled indexer unless indexerIds is given; call',
       `${config.toolPrefix}_indexers first to discover ids, supported search types, and category ids.`,
-      'Results are metadata only; nothing is downloaded.',
+      'Results are metadata only; nothing is downloaded. Pass a hit\'s downloadUrl or magnetUrl to a download tool to fetch it.',
     ].join(' '),
     parameters: {
       query: { type: 'string', required: true, description: 'Search terms, passed to each indexer as-is' },

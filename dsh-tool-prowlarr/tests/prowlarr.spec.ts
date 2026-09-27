@@ -125,6 +125,26 @@ describe('mapping', () => {
     expect(mapRelease({ title: '  ' }, KEY)).toBeUndefined()
   })
 
+  it('keeps downloadUrl and magnetUrl as separate redacted fields', () => {
+    const both = mapRelease({
+      title: 'Both', indexerId: 1,
+      downloadUrl: `http://h/1/download?apikey=${KEY}&link=x`,
+      magnetUrl: 'magnet:?xt=urn:btih:abc',
+    } as never, KEY)
+    expect(both).toMatchObject({
+      downloadUrl: 'http://h/1/download?link=x',
+      magnetUrl: 'magnet:?xt=urn:btih:abc',
+    })
+    // TPB shape: the proxy link lives in magnetUrl, downloadUrl is empty.
+    const tpb = mapRelease({
+      title: 'Tpb', indexerId: 1,
+      magnetUrl: `http://h/1/download?apikey=${KEY}&link=x`,
+    } as never, KEY)
+    expect(tpb).toMatchObject({ magnetUrl: 'http://h/1/download?link=x' })
+    expect(tpb).not.toHaveProperty('downloadUrl')
+    expect(JSON.stringify([both, tpb])).not.toContain(KEY)
+  })
+
   it('formats sizes', () => {
     expect(formatSize(512)).toBe('512 B')
     expect(formatSize(1536)).toBe('1.5 KB')

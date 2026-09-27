@@ -106,6 +106,7 @@ export interface ProwlarrRelease {
   infoUrl?: string
   commentUrl?: string
   downloadUrl?: string
+  magnetUrl?: string
   categories: ProwlarrCategory[]
 }
 

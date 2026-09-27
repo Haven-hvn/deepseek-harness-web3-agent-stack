@@ -50,6 +50,9 @@ Prowlarr instances or two scoped views of one.
   reports `total` and `truncated`.
 - An `allowedIndexerIds` list with no explicit selection searches exactly the
   allowlist, never "all indexers"; requesting an id outside it is a tool error.
+- Hits carry `downloadUrl` and `magnetUrl` independently: indexers disagree
+  about which holds the proxy link, and some return a real DHT magnet
+  alongside an http link. Both are key-stripped; try one, then the other.
 - Errors are `ProwlarrError` with a `code`: `PROWLARR_NOT_CONFIGURED`,
   `PROWLARR_INVALID_REQUEST`, `PROWLARR_UNAUTHORIZED`, `PROWLARR_HTTP_ERROR`,
   `PROWLARR_NETWORK_ERROR`, `PROWLARR_BAD_RESPONSE`, `PROWLARR_TIMEOUT`, `PROWLARR_ABORTED`.
