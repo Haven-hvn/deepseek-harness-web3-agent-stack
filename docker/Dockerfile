@@ -6,7 +6,8 @@ FROM node:22-bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
     DSH_TELEMETRY_DISABLED=1 \
-    COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+    COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
+    CI=true
 
 # OS binaries: torrent clients, media, QR, supervision. libicu72 for the
 # self-contained Prowlarr build on slim.
