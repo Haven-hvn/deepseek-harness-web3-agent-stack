@@ -19,7 +19,10 @@
  *   plain int (which the chain stores as the one numeric kind, matching
  *   JS `i32(...)` queries). The harness normalizes to exactly this so
  *   dedup queries (`sha256_ct = str('…')`) keep hitting rows written by
- *   the other established writer.
+ *   the other established writer. One exception: `gate_threshold` is a
+ *   tagged `u256` cell, because real ERC-20 thresholds (1e18 and beyond)
+ *   do not fit i32 — an i32 threshold made every genuine gate unwritable.
+ *   Readers already parse u64/u256 cells; nothing filters on threshold.
  * - Drip series / parts: the spec's tagged JS-SDK wire (`addr`, `bytes32`,
  *   `key`, `i32`, `str`), matching the dapp publisher — notably
  *   `series_ref` as `key`, which the one-query fan-out depends on.
@@ -27,10 +30,10 @@
  * @module dsh-arkiv/haven
  */
 
-import { addr, bytes32, i32, key, str } from '@arkiv-network/sdk/attr';
+import { addr, bytes32, i32, key, str, u256, U256_MAX } from '@arkiv-network/sdk/attr';
 
 /** Spec version this module enforces (bump with ARKIV_FORMAT.md). */
-export const HAVEN_FORMAT_VERSION = '2.2.0';
+export const HAVEN_FORMAT_VERSION = '2.3.0';
 
 /** Usenet-style group taxonomy (spec §Taxonomy). */
 export const HAVEN_GROUPS = {
@@ -205,6 +208,28 @@ function requireNonNegativeI32(name: string, value: unknown): number {
   const parsed = requireI32(name, value);
   if (parsed < 0) fail(`${name} must be >= 0, got ${parsed}`);
   return parsed;
+}
+
+/**
+ * Token-amount threshold: a safe-integer number or an exact decimal string,
+ * always compared and stored as bigint (u256 cell). Plain JSON numbers lose
+ * precision past 2**53, so callers with wei-scale thresholds SHOULD pass
+ * strings — but 1e18-scale safe values keep working as numbers.
+ */
+function requireThreshold(name: string, value: unknown): bigint {
+  if (typeof value === 'boolean') fail(`${name} must be a u256 token amount (safe-integer number or decimal string), got boolean`);
+  if (typeof value === 'number') {
+    if (!Number.isInteger(value)) fail(`${name} must be an integer, got ${value}`);
+    if (value < 0) fail(`${name} must be >= 0, got ${value}`);
+    if (!Number.isSafeInteger(value)) fail(`${name}=${value} is not a safe integer — pass a decimal string for exact u256`);
+    return BigInt(value);
+  }
+  if (typeof value === 'string' && /^\d+$/.test(value)) {
+    const parsed = BigInt(value);
+    if (parsed > U256_MAX) fail(`${name} exceeds u256`);
+    return parsed;
+  }
+  fail(`${name} must be a u256 token amount (safe-integer number or decimal string), got ${JSON.stringify(value)}`);
 }
 
 function requireStr128(name: string, value: unknown): string {
@@ -526,11 +551,11 @@ function finishFull(args: {
     if (chainId !== wantChain) fail(`gate_chain (${chainId}) != EIP-155 id of gate.chain (${JSON.stringify(gate.chain)} → ${wantChain})`);
     if (chainId <= 0) fail(`gate_chain must be a positive EIP-155 id, got ${chainId}`);
     normalized.gate_chain = chainId;
-    const threshold = requireNonNegativeI32('gate_threshold', attributes.gate_threshold);
-    if (BigInt(threshold) !== gateThresholdValue('payload gate', gate.threshold)) {
+    const threshold = requireThreshold('gate_threshold', attributes.gate_threshold);
+    if (threshold !== gateThresholdValue('payload gate', gate.threshold)) {
       fail(`gate_threshold (${threshold}) != gate.threshold (${JSON.stringify(gate.threshold)})`);
     }
-    normalized.gate_threshold = threshold;
+    normalized.gate_threshold = u256(threshold);
     if (gateType === 3) {
       if (attributes.gate_epoch === undefined) fail('gate_epoch is required for v3 (epoch corpus grouping)');
       const attrEpoch = requireNonNegativeI32('gate_epoch', attributes.gate_epoch);
@@ -629,7 +654,7 @@ function finishSeries(args: {
     gate_type: i32(gateType),
     gate_token: addr(requireTokenAddress('gate_token', attributes.gate_token)),
     gate_chain: i32(chainId),
-    gate_threshold: i32(requireNonNegativeI32('gate_threshold', attributes.gate_threshold)),
+    gate_threshold: u256(requireThreshold('gate_threshold', attributes.gate_threshold)),
     drip_id: str(requireStr128('drip_id', attributes.drip_id)),
     drip_total: i32(dripTotal),
   };
@@ -731,9 +756,19 @@ export function normalizeHavenWhere(where: Record<string, unknown> | undefined):
           ? key((value.toLowerCase().startsWith('0x') ? value.toLowerCase() : `0x${value.toLowerCase()}`) as `0x${string}`)
           : value;
         break;
+      case 'gate_threshold':
+        // Threshold cells are u256 (v2.3.0): tag the filter so type-exact
+        // matching hits them. Strings stay exact past 2**53.
+        if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) {
+          normalized[name] = u256(BigInt(value));
+        } else if (typeof value === 'string' && /^\d+$/.test(value) && BigInt(value) <= U256_MAX) {
+          normalized[name] = u256(BigInt(value));
+        } else {
+          fail(`query filter ${name} must be a u256 amount (safe-integer number or decimal string), got ${JSON.stringify(value)}`);
+        }
+        break;
       case 'gate_type':
       case 'gate_chain':
-      case 'gate_threshold':
       case 'gate_epoch':
       case 'mime':
       case 'dur_s':

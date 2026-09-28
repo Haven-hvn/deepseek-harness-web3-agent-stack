@@ -1,7 +1,7 @@
 /**
  * Haven application-protocol proofs for dsh-arkiv writes.
  *
- * The runtime validates every create/update against ARKIV_FORMAT v2.2.0
+ * The runtime validates every create/update against ARKIV_FORMAT v2.3.0
  * BEFORE signing (see ../src/haven.ts, ported from
  * the reference services/arkiv_sync.py). These specs pin the per-group record
  * shapes, the attr↔gate cross-checks, the reference-compatible wire
@@ -281,6 +281,28 @@ describe('haven writes: normalization', () => {
     const record = fullV1();
     expect(validateHavenWrite({ ...record, expiresIn: 3600 }).expiresIn).toBe(3600);
   });
+
+  it('writes wei-scale thresholds as u256 cells (number or exact string)', () => {
+    // 2**31 exceeds i32 but is a safe integer — valid as a number.
+    const mid = fullV1();
+    const midGate = { ...gateV1(), threshold: String(2 ** 31) };
+    mid.payload = new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibpiece', gate: JSON.stringify(midGate) }));
+    mid.attributes = { ...mid.attributes, gate_threshold: 2 ** 31 };
+    expect(validateHavenWrite(mid).attributes.gate_threshold).toEqual({ type: 'u256', value: BigInt(2 ** 31) });
+    // 1e18 is past 2**53: numbers are refused, decimal strings stay exact.
+    const wei = fullV1();
+    const weiGate = { ...gateV1(), threshold: '1000000000000000000' };
+    wei.payload = new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibpiece', gate: JSON.stringify(weiGate) }));
+    wei.attributes = { ...wei.attributes, gate_threshold: '1000000000000000000' };
+    expect(validateHavenWrite(wei).attributes.gate_threshold).toEqual({ type: 'u256', value: 10n ** 18n });
+    expect(() => validateHavenWrite({ ...fullV1(), attributes: { ...fullV1().attributes, gate_threshold: 10 ** 18 } }))
+      .toThrow(/safe integer/);
+  });
+
+  it('tags series thresholds u256 too', () => {
+    const series = validateHavenWrite(dripSeries());
+    expect(series.attributes.gate_threshold).toEqual({ type: 'u256', value: 5n });
+  });
 });
 
 describe('haven writes: fail-closed rejections', () => {
@@ -307,8 +329,10 @@ describe('haven writes: fail-closed rejections', () => {
     }, /not a known Haven-AOL variant/],
     ['gate_chain mismatch', () => { const r = fullV1(); return { ...r, attributes: { ...r.attributes, gate_chain: 1 } }; }, /EIP-155/],
     ['threshold mismatch', () => { const r = fullV1(); return { ...r, attributes: { ...r.attributes, gate_threshold: 5 } }; }, /!= gate.threshold/],
-    ['threshold overflow', () => { const r = fullV1(); return { ...r, attributes: { ...r.attributes, gate_threshold: 2 ** 31 } }; }, /i32/],
+    ['threshold beyond u256', () => { const r = fullV1(); return { ...r, attributes: { ...r.attributes, gate_threshold: `${2n ** 256n}` } }; }, /exceeds u256/],
+    ['unsafe-number threshold', () => { const r = fullV1(); return { ...r, attributes: { ...r.attributes, gate_threshold: 2 ** 53 + 1 } }; }, /safe integer/],
     ['negative threshold', () => { const r = fullV1(); return { ...r, attributes: { ...r.attributes, gate_threshold: -1 } }; }, />= 0/],
+    ['bool threshold', () => { const r = fullV1(); return { ...r, attributes: { ...r.attributes, gate_threshold: true } }; }, /boolean/],
     ['v3 without epoch', () => { const r = fullV3(); const { gate_epoch: _d, ...rest } = r.attributes; return { ...r, attributes: rest }; }, /gate_epoch is required/],
     ['v3 epoch mismatch', () => { const r = fullV3(); return { ...r, attributes: { ...r.attributes, gate_epoch: 13 } }; }, /!= gate.epoch/],
     ['v1 with epoch', () => { const r = fullV1(); return { ...r, attributes: { ...r.attributes, gate_epoch: 1 } }; }, /v3 only/],
@@ -516,6 +540,14 @@ describe('haven query filters', () => {
 
   it('rejects str-typed numeric filters (they would silently miss)', () => {
     expect(() => normalizeHavenWhere({ gate_type: '4' })).toThrow(/must be a number/);
+  });
+
+  it('tags threshold filters u256 to match the cells', () => {
+    expect(normalizeHavenWhere({ gate_threshold: 5 }).gate_threshold).toEqual({ type: 'u256', value: 5n });
+    expect(normalizeHavenWhere({ gate_threshold: '1000000000000000000' }).gate_threshold)
+      .toEqual({ type: 'u256', value: 10n ** 18n });
+    expect(() => normalizeHavenWhere({ gate_threshold: -1 })).toThrow(/u256 amount/);
+    expect(() => normalizeHavenWhere({ gate_threshold: true })).toThrow(/u256 amount/);
   });
 
   it('allows system attributes and rejects reserved names', () => {

@@ -5,7 +5,7 @@
  * isolated-bundles-coupled-at-seams model: TypeScript/Node v22/Cordis, gated credentials.
  *
  * This harness is Haven-specific: every write is validated against the Haven
- * application protocol (ARKIV_FORMAT v2.2.0 — see ./haven.ts) BEFORE signing.
+ * application protocol (ARKIV_FORMAT v2.3.0 — see ./haven.ts) BEFORE signing.
  * Attributes arrive as a plain Record<string, unknown> like the reference, and
  * are normalized to the reference `str|int` wire (full/generic groups) or the
  * spec's tagged SDK values (drip groups) before the ledger keys them, so
@@ -61,6 +61,9 @@ export const Config: z<Config> = z.object({
 
 /** Stable stringify with sorted object keys (retry-identical args hash identically). */
 function stableStringify(value: unknown): string {
+  // Bigints (u256 cells) are unquoted with an `n` suffix: distinct from both
+  // numbers and quoted strings, so the ledger key never collides across types.
+  if (typeof value === 'bigint') return `${value}n`;
   if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
   const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
@@ -579,7 +582,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'arkiv_create_entity',
-    description: 'Create a Haven Arkiv entity (ARKIV_FORMAT v2.2.0 — enforced before signing). Attributes: grp (haven.video.full / haven.audio.full / haven.image.full / haven.text.full / haven.file.full / haven.video.drip.series / haven.video.drip.part, or custom dot hierarchy), title, gate corpus (gate_type 1|3|4 numeric, gate_token 0x, gate_chain EIP id, gate_threshold; gate_epoch for v3), sha256_ct (64 hex), mime (0-14), dur_s video-only. Payload is JSON: piece (encrypted) XOR fcid (clear), gate JSON string (version == gate_type), size/pt_hash/vlm/seg/codecs/src/creator/phash/attn, plus name (+ct when MIME has no enum code) on audio/generic groups. Drip series payload is {targets, creator?, mime?}; drip parts carry series_ref + mcap_usd. Deleted v1.x keys are rejected. expiresIn seconds (defaults 4w full/generic, 52w series, 12w parts).',
+    description: 'Create a Haven Arkiv entity (ARKIV_FORMAT v2.3.0 — enforced before signing). Attributes: grp (haven.video.full / haven.audio.full / haven.image.full / haven.text.full / haven.file.full / haven.video.drip.series / haven.video.drip.part, or custom dot hierarchy), title, gate corpus (gate_type 1|3|4 numeric, gate_token 0x, gate_chain EIP id, gate_threshold as u256: safe-integer number or decimal string, must equal gate JSON threshold; gate_epoch for v3 — NOT epoch), sha256_ct (64 hex), mime enum 0-14 only (no duration_s/duration keys on generic groups; MIME strings ride payload ct instead), dur_s video-only. Payload is JSON: piece (encrypted) XOR fcid (clear), gate JSON string (version == gate_type), size/pt_hash/vlm/seg/codecs/src/creator/phash/attn, plus name (+ct when MIME has no enum code) on audio/generic groups. Drip series payload is {targets, creator?, mime?}; drip parts carry series_ref + mcap_usd. Deleted v1.x keys are rejected. expiresIn seconds (defaults 4w full/generic, 52w series, 12w parts).',
     parameters: {
       path: { type: 'string', description: 'Local file holding the JSON payload. Exactly one of path or payload.' },
       payload: { type: 'string', description: 'JSON payload string (utf8) if no file. Exactly one of path or payload.' },
@@ -602,7 +605,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'arkiv_update_entity',
-    description: 'Rewrite a Haven Arkiv entity (same ARKIV_FORMAT v2.2.0 shape as create — send the complete record, not a sparse patch). Validated before signing.',
+    description: 'Rewrite a Haven Arkiv entity (same ARKIV_FORMAT v2.3.0 shape as create — send the complete record, not a sparse patch). Validated before signing.',
     parameters: {
       key: { type: 'string', required: true, description: 'Entity key 0x...' },
       path: { type: 'string', description: 'Local file holding the new JSON payload' } as any,
