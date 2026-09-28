@@ -43,7 +43,10 @@ export {
 export type { HavenGroupClass, HavenNormalizedWrite } from './haven.ts';
 
 export const name = 'storage-arkiv';
-export const inject = ['wallet', 'tools'] as const;
+// 'credentials': resolvePrivateKey reads ctx.credentials (privateKeyRef) —
+// without the declaration Cordis throws "cannot get property credentials
+// without inject" on every signing path.
+export const inject = ['wallet', 'tools', 'credentials'] as const;
 
 export interface Config {
   wallet: string;

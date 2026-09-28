@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
-import { CREATE_RESULT_SCHEMA, QUERY_RESULT_SCHEMA, toJsonSafeRecord } from '../src/index.ts'
+import { CREATE_RESULT_SCHEMA, QUERY_RESULT_SCHEMA, inject, toJsonSafeRecord } from '../src/index.ts'
 
 describe('arkiv output contracts', () => {
   it('arkiv_query accepts an entity list (array-rooted)', () => {
@@ -61,5 +61,11 @@ describe('arkiv output contracts', () => {
       'value',
     )
     expect(violations.length).toBeGreaterThan(0)
+  })
+
+  it('injects credentials: signing reads ctx.credentials (privateKeyRef)', () => {
+    // Live failure: without the declaration Cordis throws 'cannot get
+    // property "credentials" without inject' on every signing path.
+    expect([...inject]).toEqual(expect.arrayContaining(['wallet', 'tools', 'credentials']))
   })
 })
