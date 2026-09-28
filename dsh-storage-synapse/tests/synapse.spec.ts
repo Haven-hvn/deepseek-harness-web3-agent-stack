@@ -22,13 +22,34 @@ import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import * as storageSynapse from '../src/index.ts'
+import { FilecoinBackend, isProviderSelectionError } from '../src/synapse.ts'
 import type { SynapsePinnedEvent } from '../src/types.ts'
 import { MemoryCredentials } from '../../dsh-wallet/tests/helpers/memory-credentials.ts'
 
 const testSignal = new AbortController().signal
 
-// No vi.mock for filecoin-pin — harness stubs SynapseRuntime methods directly to avoid wss network
-// This keeps tests fast and proves the gated harness wiring (wallet OWS + rpcUrl) without hitting calibration
+// Harness tests stub SynapseRuntime methods directly to avoid wss network — fast,
+// deterministic, proves the gated wiring. Only the backend retry suite below mocks
+// filecoin-pin itself (upload-selection inputs), never the network.
+
+// filecoin-pin seam mocks for the backend suite: no network, no wallet.
+const pinMocks = vi.hoisted(() => ({
+  executeUpload: vi.fn(),
+  buildCar: vi.fn(),
+  cleanup: vi.fn(),
+}))
+vi.mock('filecoin-pin/core/synapse', () => ({
+  initializeSynapse: vi.fn(async () => ({})),
+}))
+vi.mock('filecoin-pin/core/unixfs', () => ({
+  createUnixfsCarBuilder: vi.fn(() => ({ buildCar: pinMocks.buildCar, cleanup: pinMocks.cleanup })),
+}))
+vi.mock('filecoin-pin/core/upload', () => ({
+  executeUpload: pinMocks.executeUpload,
+}))
+vi.mock('multiformats/cid', () => ({
+  CID: { parse: (s: string) => s },
+}))
 
 /** Mount credentials (gated HAVEN_PRIVATE_KEY) + wallet + synapse plugin. */
 async function harness() {
@@ -280,6 +301,79 @@ describe('exactly-once: content ledger + pin read-back (real runtime path)', () 
     expect(guard.checks.has('synapse_pin')).toBe(true)
     rt.unhook()
     expect(guard.checks.has('synapse_pin')).toBe(false)
+  })
+})
+
+describe('provider selection: no default exclusions, one loud fallback', () => {
+  it('defaults exclude nobody — the old [4, 9] was the whole endorsed set', () => {
+    // Calibration's endorsed set has been exactly [4, 9]: excluding both fails
+    // every upload ("No endorsed provider available") with zero candidates.
+    const validated: any = storageSynapse.Config({ wallet: 'agent', rpcUrl: 'wss://api.calibration.node.glif.io/rpc/v1' } as any)
+    expect(validated.excludeProviderIds).toEqual([])
+    expect(validated.copies).toBe(1)
+  })
+
+  it('recognizes both SDK selection-failure spellings, nothing else', () => {
+    expect(isProviderSelectionError(new Error('StorageContext smartSelect failed: No endorsed provider available'))).toBe(true)
+    expect(isProviderSelectionError(new Error('No endorsed provider available — all endorsed provider(s) failed health check'))).toBe(true)
+    expect(isProviderSelectionError(new Error('filecoin store failed: 507 Insufficient Storage'))).toBe(false)
+    expect(isProviderSelectionError(new Error('treasury blocked Filecoin store: insufficient funds'))).toBe(false)
+    expect(isProviderSelectionError(undefined)).toBe(false)
+  })
+
+  /** Backend with mocked filecoin-pin: CAR bytes come from a real temp file, selection from the mock. */
+  async function backendHarness(opts: { excludeProviderIds?: bigint[]; providerIds?: bigint[] }) {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-synapse-be-'))
+    const carFile = join(dir, 'piece.car')
+    await writeFile(carFile, 'car-bytes')
+    pinMocks.buildCar.mockResolvedValue({ rootCid: 'bafybackend', carPath: carFile })
+    const backend = new FilecoinBackend({
+      getAccount: async () => ({}) as any,
+      rpcUrl: 'wss://api.calibration.node.glif.io/rpc/v1',
+      copies: 1,
+      ...opts,
+    } as any)
+    return { backend, dir }
+  }
+
+  it('retries once without exclusions on selection failure, then succeeds', async () => {
+    const { backend, dir } = await backendHarness({ excludeProviderIds: [4n, 9n] })
+    try {
+      pinMocks.executeUpload
+        .mockRejectedValueOnce(new Error('StorageContext smartSelect failed: No endorsed provider available'))
+        .mockResolvedValueOnce({ pieceCid: 'baga-piece' })
+      const stored = await backend.store(new TextEncoder().encode('payload'))
+      expect(stored).toEqual({ cid: 'bafybackend', pieceCid: 'baga-piece' })
+      expect(pinMocks.executeUpload).toHaveBeenCalledTimes(2)
+      // Primary carries the exclusions; the fallback drops them (stale lists fail open, loudly).
+      expect(pinMocks.executeUpload.mock.calls[0]?.[3]).toMatchObject({ excludeProviderIds: [4n, 9n] })
+      expect(pinMocks.executeUpload.mock.calls[1]?.[3]).not.toHaveProperty('excludeProviderIds')
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('never second-guesses explicit providerIds', async () => {
+    const { backend, dir } = await backendHarness({ excludeProviderIds: [4n], providerIds: [2n] })
+    try {
+      pinMocks.executeUpload.mockRejectedValueOnce(new Error('StorageContext smartSelect failed: No endorsed provider available'))
+      await expect(backend.store(new TextEncoder().encode('payload'))).rejects.toThrow(/No endorsed provider available/)
+      expect(pinMocks.executeUpload).toHaveBeenCalledTimes(1)
+      expect(pinMocks.executeUpload.mock.calls[0]?.[3]).toMatchObject({ providerIds: [2n], excludeProviderIds: [4n] })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('mid-upload faults surface without a retry (the attempt may have spent)', async () => {
+    const { backend, dir } = await backendHarness({ excludeProviderIds: [4n, 9n] })
+    try {
+      pinMocks.executeUpload.mockRejectedValueOnce(new Error('filecoin store failed: 507 Insufficient Storage'))
+      await expect(backend.store(new TextEncoder().encode('payload'))).rejects.toThrow(/507/)
+      expect(pinMocks.executeUpload).toHaveBeenCalledTimes(1)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 })
 

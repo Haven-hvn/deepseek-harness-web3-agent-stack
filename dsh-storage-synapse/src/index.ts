@@ -64,9 +64,16 @@ export interface Config {
   withCDN?: boolean
   /** Workaround for calibration #615: number of copies (default 1 to avoid 2-copy replication failure). */
   copies?: number
-  /** Workaround for calibration #615: provider IDs to exclude (e.g. [4,9] flaky primaries). */
+  /**
+   * Provider IDs to exclude from auto-selection. Default empty: calibration's
+   * endorsed set is tiny (observed as exactly [4, 9]) and excluding all of it
+   * fails every upload with "No endorsed provider available" — the old [4, 9]
+   * default did exactly that. Exclude only a provider you have live evidence
+   * is down; the store path retries once without exclusions on selection
+   * failure anyway.
+   */
   excludeProviderIds?: number[]
-  /** Workaround for calibration #615: explicit provider IDs to use (overrides auto-selection). */
+  /** Explicit provider IDs to use (overrides auto-selection). Never second-guessed by the retry path. */
   providerIds?: number[]
 }
 
@@ -77,7 +84,7 @@ export const Config: z<Config> = z.object({
   networkMode: z.union(['calibration', 'mainnet']).default('calibration'),
   withCDN: z.boolean().default(false),
   copies: z.number().step(1).min(1).max(3).default(1),
-  excludeProviderIds: z.array(z.number().step(1).min(0)).default([4, 9]),
+  excludeProviderIds: z.array(z.number().step(1).min(0)).default([]),
   providerIds: z.array(z.number().step(1).min(0)),
 })
 

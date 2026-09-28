@@ -27,6 +27,10 @@
         rpcUrl: https://api.calibration.node.glif.io/rpc/v1
         networkMode: calibration
         withCDN: false
-        # filecoin-pin#615 workaround: calibration 2-copy replication fails on flaky primaries 4,9
+        # filecoin-pin#615 workaround: calibration 2-copy replication fails, so one copy.
+        # No exclusions by default: the endorsed set has been exactly [4, 9] and
+        # excluding all of it fails every upload ("No endorsed provider
+        # available"). Exclude a provider only with live evidence it is down;
+        # the store path retries once without exclusions on selection failure.
         copies: 1
-        excludeProviderIds: [4, 9]
+        excludeProviderIds: []

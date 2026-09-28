@@ -30,6 +30,18 @@ export function httpError(operation: string, response: Response): Error {
 
 export type SynapseMode = 'filecoin'
 
+/**
+ * Provider-selection failures happen before anything is committed: no dataset,
+ * no lockup, no spend — the SDK throws while choosing who stores the bytes.
+ * Safe to retry with different selection inputs; anything later in the flow
+ * (mid-upload faults) must surface, never silently re-drive, because the
+ * first attempt may have locked funds.
+ */
+export function isProviderSelectionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  return message.includes('No endorsed provider available')
+}
+
 type SynapseInstance = import('@filoz/synapse-sdk').Synapse
 type Account = import('viem').Account
 
@@ -85,22 +97,61 @@ export class FilecoinBackend {
     const rootCid: any = CID.parse(car.rootCid)
     const log = (lvl: string, ...a: any[]) => { try { console.log(`[synapse:${lvl}]`, ...a) } catch {} }
     const logger: any = { debug: (...a: any[]) => log('debug', ...a), info: (...a: any[]) => log('info', ...a), warn: (...a: any[]) => log('warn', ...a), error: (...a: any[]) => log('error', ...a) }
-    const uploadOpts: any = {
+    const baseOpts: any = {
       logger,
       ipniValidation: { enabled: false },
       ...(opts?.onProgress ? { onProgress: opts.onProgress } : {}),
       ...(opts?.signal ? { signal: opts.signal } : {}),
       ...(this.opts.copies !== undefined ? { copies: this.opts.copies } : {}),
       ...(this.opts.providerIds ? { providerIds: this.opts.providerIds } : {}),
-      ...(this.opts.excludeProviderIds ? { excludeProviderIds: this.opts.excludeProviderIds } : {}),
     }
-    console.log(`[synapse] executeUpload start copies=${this.opts.copies} exclude=${String(this.opts.excludeProviderIds)}`)
     let result: any
-    try { result = await (executeUpload as any)(synapse, carBytes, rootCid, uploadOpts); console.log(`[synapse] executeUpload done result=${JSON.stringify(result)?.slice(0,500)}`) } catch (e: any) { console.log(`[synapse] executeUpload error ${e?.message ?? e} ${e?.stack?.slice(0,500) ?? ''}`); throw e } finally { try { await unlink(tmpPath) } catch {} try { await builder.cleanup?.(car?.carPath) } catch {} }
+    try {
+      try {
+        result = await this.runUpload(executeUpload, synapse, carBytes, rootCid, baseOpts, this.opts.excludeProviderIds, 'primary')
+      } catch (primaryError: unknown) {
+        // Calibration's endorsed set is tiny (it has been exactly the once-excluded
+        // [4, 9]) and it shifts without notice — a stale exclusion list fails
+        // selection with zero candidates. One fallback without exclusions, loudly
+        // logged; explicit providerIds are the operator's deliberate target and
+        // are never second-guessed.
+        if (this.opts.excludeProviderIds?.length && !this.opts.providerIds && isProviderSelectionError(primaryError)) {
+          console.log(`[synapse] primary selection failed with exclusions [${this.opts.excludeProviderIds.join(',')}]; retrying once without exclusions`)
+          result = await this.runUpload(executeUpload, synapse, carBytes, rootCid, baseOpts, undefined, 'fallback-no-exclusions')
+        } else {
+          throw primaryError
+        }
+      }
+    } finally { try { await unlink(tmpPath) } catch {} try { await builder.cleanup?.(car?.carPath) } catch {} }
     const cid: string = car?.rootCid ?? result?.cid ?? result?.rootCid ?? ''
     if (!cid) throw new Error('dsh-storage-synapse: filecoin store returned empty CID')
     const pieceCid: string | undefined = result?.pieceCid ?? result?.piece
     return { cid, pieceCid }
+  }
+
+  /** One upload attempt against filecoin-pin; selection inputs vary per attempt, the CAR is built once. */
+  private async runUpload(
+    executeUpload: unknown,
+    synapse: SynapseInstance,
+    carBytes: any,
+    rootCid: any,
+    baseOpts: any,
+    excludeProviderIds: bigint[] | undefined,
+    label: string,
+  ): Promise<any> {
+    const uploadOpts: any = {
+      ...baseOpts,
+      ...(excludeProviderIds?.length ? { excludeProviderIds } : {}),
+    }
+    console.log(`[synapse] executeUpload start copies=${this.opts.copies} exclude=${excludeProviderIds?.join(',') ?? '(none)'} attempt=${label}`)
+    try {
+      const result = await (executeUpload as any)(synapse, carBytes, rootCid, uploadOpts)
+      console.log(`[synapse] executeUpload done result=${JSON.stringify(result)?.slice(0, 500)}`)
+      return result
+    } catch (e: any) {
+      console.log(`[synapse] executeUpload error attempt=${label} ${e?.message ?? e} ${e?.stack?.slice(0, 500) ?? ''}`)
+      throw e
+    }
   }
 
   async retrieve(cid: Cid, signal?: AbortSignal): Promise<Uint8Array> {
