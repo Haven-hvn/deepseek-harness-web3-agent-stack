@@ -369,6 +369,13 @@ describe('seal (harness-native encrypt side)', () => {
       expect(res.isError).toBe(false)
       expect(JSON.stringify(res.content)).toContain(`sealed ${bytes.length + 28} bytes`)
       expect((await readFile(join(dir, 'sealed.bin'))).length).toBe(bytes.length + 28)
+      // Durable twin: the gate sidecar survives restarts that lose in-turn results.
+      const sidecar = await readFile(join(dir, 'sealed.bin.gate.json'), 'utf8')
+      const meta = JSON.parse(sidecar) as { version: number; cid: string; encryptedAesKey: string }
+      expect(meta.version).toBe(3)
+      expect(meta.cid).toMatch(/^sha256:[0-9a-f]{64}$/)
+      expect(meta.encryptedAesKey.length).toBeGreaterThan(0)
+      expect(JSON.stringify(res.content)).toContain('sealed.bin.gate.json')
       // The tool path rejects bad input before touching the runtime.
       const bad = await execute('aol_seal', {
         path: input, outputPath: join(dir, 's2.bin'), version: 9,

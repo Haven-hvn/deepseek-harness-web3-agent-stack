@@ -291,7 +291,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'aol_seal',
     description:
-      'Seal a file under a new Haven-AOL token gate (v1 per-file, v3 epoch corpus, v4 market-cap drip): wraps an AES-256-GCM content key (shared per epoch bucket for v3, fresh per seal for v1/v4, fresh IV per seal always) under the canister verification key, and builds gate metadata JSON. Writes sealed bytes to outputPath and returns path + byte count + gateMetadataJson + key commitment. Fails closed on non-Bond v4 oracles.',
+      'Seal a file under a new Haven-AOL token gate (v1 per-file, v3 epoch corpus, v4 market-cap drip): wraps an AES-256-GCM content key (shared per epoch bucket for v3, fresh per seal for v1/v4, fresh IV per seal always) under the canister verification key, and builds gate metadata JSON. Writes sealed bytes to outputPath plus a gate sidecar (<outputPath>.gate.json, the durable gateMetadataJson — restarts lose in-turn results, never this file) and returns paths + byte count + gateMetadataJson + key commitment. Fails closed on non-Bond v4 oracles.',
     parameters: {
       path: { type: 'string', required: true, description: 'Local file to seal.' },
       outputPath: { type: 'string', required: true, description: 'Where to write the sealed bytes.' },
@@ -312,16 +312,17 @@ export function apply(ctx: Context, config: Config): void {
           bytes: { type: 'number', required: true },
           version: { type: 'number', required: true },
           gateMetadataJson: { type: 'string', required: true },
+          gateMetadataPath: { type: 'string', required: true },
           keySha256: { type: 'string', required: true },
         },
       } as never,
-      render: (_a, v) => [{ type: 'text', text: `sealed ${(v as { bytes: number }).bytes} bytes → ${(v as { outputPath: string }).outputPath}` }] as never,
+      render: (_a, v) => [{ type: 'text', text: `sealed ${(v as { bytes: number }).bytes} bytes → ${(v as { outputPath: string }).outputPath} (gate ${(v as { gateMetadataPath: string }).gateMetadataPath})` }] as never,
     },
     isConcurrencySafe: () => true,
     execute: async (args: {
       path: string; outputPath: string; version: number; chain: string; tokenAddress: string
       threshold: string; cid?: string; epoch?: number; marketCapTarget?: string; oracleAddress?: string
-    }): Promise<{ outputPath: string; bytes: number; version: 1 | 3 | 4; gateMetadataJson: string; keySha256: string }> => {
+    }): Promise<{ outputPath: string; bytes: number; version: 1 | 3 | 4; gateMetadataJson: string; gateMetadataPath: string; keySha256: string }> => {
       if (args.version !== 1 && args.version !== 3 && args.version !== 4) {
         throw new Error(`dsh-haven-aol: unsupported seal version ${String(args.version)} (want 1, 3, or 4)`)
       }
@@ -359,6 +360,10 @@ export function apply(ctx: Context, config: Config): void {
         plaintext,
       })
       await writeFile(args.outputPath, sealed.sealedBytes)
+      // Durable twin: the gate JSON is load-bearing for verify/decrypt/catalog,
+      // and in-turn results die on restart — the sidecar must not.
+      const gateMetadataPath = `${args.outputPath}.gate.json`
+      await writeFile(gateMetadataPath, sealed.gateMetadataJson, 'utf8')
       const event: AolSealedEvent = {
         version: sealed.version, cid, outputPath: args.outputPath, bytes: sealed.sealedBytes.length,
         keySha256: sealed.keySha256,
@@ -369,6 +374,7 @@ export function apply(ctx: Context, config: Config): void {
         bytes: sealed.sealedBytes.length,
         version: sealed.version,
         gateMetadataJson: sealed.gateMetadataJson,
+        gateMetadataPath,
         keySha256: sealed.keySha256,
       }
     },
