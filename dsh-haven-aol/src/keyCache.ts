@@ -66,6 +66,10 @@ function fail(message: string): never {
 /**
  * Canonical cache slot for a bucket. The token lowercases (same corpus,
  * any case, one slot); the threshold stringifies (u256 has no JS number).
+ * INVARIANT: seal() canonicalizes tokenAddress to lowercase BEFORE
+ * wrapping, so the slot always agrees with the case-sensitive derivation
+ * preimage. Never serve this slot a wrap computed under a differently-
+ * cased token — the IBE open would fail although the gate terms match.
  */
 export function makeEpochCacheKey(bucket: EpochBucket): string {
   if (typeof bucket.chain !== 'string' || bucket.chain.length === 0) fail('epoch cache key needs a non-empty chain')

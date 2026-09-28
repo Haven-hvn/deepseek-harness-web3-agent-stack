@@ -352,6 +352,39 @@ describe('seal (harness-native encrypt side)', () => {
     }
   })
 
+  it('seal canonicalizes token case: mixed/lower callers share one wrap + metadata', async () => {
+    // The derivation preimage hashes tokenAddress VERBATIM while the epoch
+    // cache slots lowercase — a mixed-case seal must canonicalize BEFORE
+    // wrapping, or the cached wrap and the metadata derivation diverge and
+    // the IBE open fails although every gate term is correct (live
+    // incident: checksummed seal vs lowercased decrypt metadata).
+    stubDpk()
+    const rt = await sealRuntime()
+    const plaintext = new TextEncoder().encode('case-me')
+    const mixed = '0xF23a728b55BE576c75D98A8032982F85cBAD493E'
+    const base = {
+      version: 3 as const, cid: 'sha256:abc', chain: 'EthSepolia' as const,
+      threshold: 1000000000000000000n, epoch: 690, plaintext,
+    }
+    const [a, b] = await Promise.all([
+      rt.seal({ ...base, tokenAddress: mixed }),
+      rt.seal({ ...base, tokenAddress: mixed.toLowerCase() }),
+    ])
+    const metaA = JSON.parse(a.gateMetadataJson) as { tokenAddress: string; encryptedAesKey: string }
+    const metaB = JSON.parse(b.gateMetadataJson) as { tokenAddress: string; encryptedAesKey: string }
+    expect(metaA.tokenAddress).toBe(mixed.toLowerCase())
+    expect(metaB.tokenAddress).toBe(mixed.toLowerCase())
+    expect(metaA.encryptedAesKey).toBe(metaB.encryptedAesKey)
+    expect(a.keySha256).toBe(b.keySha256)
+    // And the metadata derivation is identical — one bucket, one vetKey.
+    const { computeDerivationInputV3 } = await import('haven-aol')
+    const [dA, dB] = await Promise.all([
+      computeDerivationInputV3('EthSepolia', metaA.tokenAddress, 1000000000000000000n, 690),
+      computeDerivationInputV3('EthSepolia', metaB.tokenAddress, 1000000000000000000n, 690),
+    ])
+    expect(Buffer.from(dA).equals(Buffer.from(dB))).toBe(true)
+  })
+
   it('threshold-zero v3 seals at the eternal epoch', async () => {
     stubDpk()
     const rt = await sealRuntime()

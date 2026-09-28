@@ -731,6 +731,16 @@ export class AolRuntime {
     if (params.threshold < 0n) {
       throw new Error('dsh-haven-aol: threshold must be a non-negative integer')
     }
+    // Canonicalize the token BEFORE wrap+metadata: the derivation preimage
+    // hashes tokenAddress VERBATIM (spec: casing preserved on all three
+    // stacks — Motoko, Python, TS), while the epoch cache slots lowercase.
+    // A mixed-case caller would otherwise mint a wrap the cache serves
+    // under a slot whose derivation differs → a self-inconsistent seal
+    // whose IBE open fails at 'epoch-key IBE unwrap' although every gate
+    // term is correct. Lowercase matches the cache slot and the canister's
+    // balance-check normalization. Decrypt stays verbatim: third-party
+    // seals keep whatever case they were wrapped under.
+    const tokenAddress = params.tokenAddress.toLowerCase()
     // Threshold-zero collapse (canister rule): free content seals at the
     // eternal epoch, matching what the decrypt side derives.
     const epoch = params.threshold === 0n ? 0 : (params.epoch ?? currentEpoch())
@@ -746,16 +756,16 @@ export class AolRuntime {
       }
     }
     const derivationInput = params.version === 1
-      ? await computeDerivationInput(params.chain, params.tokenAddress, params.threshold, params.cid)
+      ? await computeDerivationInput(params.chain, tokenAddress, params.threshold, params.cid)
       : params.version === 3
-        ? await computeDerivationInputV3(params.chain, params.tokenAddress, params.threshold, epoch)
+        ? await computeDerivationInputV3(params.chain, tokenAddress, params.threshold, epoch)
         : await computeDerivationInputV4(
-          params.chain, params.tokenAddress, params.threshold, epoch, params.marketCapTarget as bigint)
+          params.chain, tokenAddress, params.threshold, epoch, params.marketCapTarget as bigint)
     let aesKey: Uint8Array
     let wrapped: string
     if (params.version === 3) {
       const hit = await this.epochKeys.getOrCreate(
-        { chain: params.chain, tokenAddress: params.tokenAddress, threshold: params.threshold, epoch },
+        { chain: params.chain, tokenAddress, threshold: params.threshold, epoch },
         async () => {
           const dpk = await this.verificationKey(3)
           const raw = freshAesKey()
@@ -773,16 +783,16 @@ export class AolRuntime {
     const { sealed: sealedBytes } = await encryptFileAesGcm(params.plaintext, aesKey)
     const gateMetadataJson = params.version === 1
       ? gateMetadataV1ToJson(buildGateMetadataV1({
-        cid: params.cid, chain: params.chain, tokenAddress: params.tokenAddress,
+        cid: params.cid, chain: params.chain, tokenAddress,
         threshold: params.threshold, encryptedAesKey: wrapped,
       }))
       : params.version === 3
         ? gateMetadataV3ToJson(buildGateMetadataV3({
-          cid: params.cid, chain: params.chain, tokenAddress: params.tokenAddress,
+          cid: params.cid, chain: params.chain, tokenAddress,
           threshold: params.threshold, epoch, encryptedAesKey: wrapped,
         }))
         : gateMetadataV4ToJson(buildGateMetadataV4({
-          cid: params.cid, chain: params.chain, tokenAddress: params.tokenAddress,
+          cid: params.cid, chain: params.chain, tokenAddress,
           threshold: params.threshold, epoch, marketCapTarget: params.marketCapTarget as bigint,
           oracleAddress: params.oracleAddress as string, encryptedAesKey: wrapped,
         }))
