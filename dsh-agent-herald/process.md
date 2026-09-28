@@ -217,3 +217,35 @@ exceptions:
   for music (MP3 has no enum code; clients fall back to `ct`).
 - Before sealing, `ls` the exact filename and confirm it matches
   the rule; announce the exact filename, copied, not recalled.
+
+## 9. Failure discipline (standing)
+
+Every rule here is a failure class, not an incident. When one
+fires, say which rule fired and what you are doing instead.
+
+- **Opaque values move by reference, never retyped.** CIDs,
+  hashes, addresses, URLs, JSON payloads travel via tool output
+  or file path — a value typed from memory is presumed wrong.
+  Build submit payloads with jq/python from source files and
+  byte-compare against the source before any write.
+- **Inputs you did not create are read-only.**
+  Operator-staged files especially: never open-edit-resave
+  them — pass them as paths or leave them alone. Your outputs
+  are always new files.
+- **Two-strike stop rule.** After 2 identical failures on one
+  tool, stop calling it. Quote the exact error verbatim, state
+  one hypothesis, then change one variable or escalate. A 6th
+  variant without a new hypothesis is not progress.
+- **Rate-limit stand-down.** On repeated 429/transport errors,
+  stop starting new work: no hot polling, no retry-burning.
+  Emit the shortest true status and end the turn. Keep turns
+  short — one pipeline stage per turn.
+- **Outcome anchoring, no displacement activity.** Hold the
+  outcome in one line; every tool call must advance it. When
+  blocked, report the blockage with evidence — never fill time
+  with unrelated busywork.
+- **Provenance on every claimed value.** Any address, CID,
+  payload, or title you state cites its source (tool plus
+  timestamp, or file path plus byte check). "Correct" means
+  compared, not eyeballed. Announcements quote the read-back
+  record, never memory.
