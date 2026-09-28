@@ -240,6 +240,65 @@ describe('gated decrypt', () => {
     expect(JSON.stringify(res.content)).toContain('exactly one of path or cid')
   })
 
+  it('aol_decrypt requires exactly one of gateMetadataJson/gateMetadataPath', async () => {
+    const { execute } = await harness()
+    const neither = await execute('aol_decrypt', { path: 'enc.bin', outputPath: 'out.bin' })
+    expect(neither.isError).toBe(true)
+    expect(JSON.stringify(neither.content)).toContain('exactly one of gateMetadataJson or gateMetadataPath')
+    const both = await execute('aol_decrypt', {
+      path: 'enc.bin', outputPath: 'out.bin',
+      gateMetadataJson: v3meta(), gateMetadataPath: 'sidecar.json',
+    })
+    expect(both.isError).toBe(true)
+    expect(JSON.stringify(both.content)).toContain('exactly one of gateMetadataJson or gateMetadataPath')
+  })
+
+  it('aol_decrypt reads gate metadata from gateMetadataPath (byte-exact, no retyping)', async () => {
+    // Live incident: an agent retyped the sidecar with a one-character
+    // token-case drift and derived a foreign vetKey. The path form must
+    // feed file bytes straight into the v3 dispatch.
+    const dir = await mkdtemp(join(tmpdir(), 'aol-'))
+    try {
+      const enc = join(dir, 'enc.bin')
+      const sidecar = join(dir, 'enc.bin.gate.json')
+      await writeFile(enc, new Uint8Array([1, 2, 3]))
+      await writeFile(sidecar, v3meta())
+      const { execute } = await harness()
+      const res = await execute('aol_decrypt', {
+        path: enc,
+        gateMetadataPath: sidecar,
+        outputPath: join(dir, 'out.bin'),
+      })
+      expect(res.isError).toBe(true)
+      // Unwired signer: reaching signGate proves the file was read and
+      // dispatched into v3 decrypt (a misread would fail at parse).
+      expect(JSON.stringify(res.content)).toContain('EIP-712 gate signing is unwired')
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('aol_gate_info reads a mixed-case sidecar from gateMetadataPath verbatim', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'aol-'))
+    try {
+      const mixed = '0xF23a728b55BE576c75D98A8032982F85cBAD493E'
+      const meta = gateMetadataV3ToJson(buildGateMetadataV3({
+        cid: 'bafytest', chain: 'EthSepolia', tokenAddress: mixed,
+        threshold: 100, epoch: currentEpoch(),
+        encryptedAesKey: Buffer.from('ciphertext').toString('base64'),
+      }))
+      const sidecar = join(dir, 'file.gate.json')
+      await writeFile(sidecar, meta)
+      const { execute } = await harness()
+      const res = await execute('aol_gate_info', { gateMetadataPath: sidecar })
+      expect(res.isError).toBe(false)
+      const summary = JSON.parse((res.content as Array<{ text: string }>)[0]?.text ?? '{}')
+      expect(summary).toMatchObject({ version: 3, tokenAddress: mixed })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
   it('marketCap fails closed client-side on non-Bond oracles', async () => {
     const { execute } = await harness()
     const res = await execute('aol_market_cap', {

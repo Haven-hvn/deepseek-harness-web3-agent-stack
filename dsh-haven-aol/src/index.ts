@@ -170,17 +170,38 @@ export function apply(ctx: Context, config: Config): void {
   const signalOf = (exec: unknown): AbortSignal | undefined =>
     (exec as { signal?: AbortSignal } | undefined)?.signal
 
+  /**
+   * Exactly one of inline JSON or a sidecar path. The metadata is
+   * byte-load-bearing (tokenAddress case feeds the case-sensitive
+   * derivation preimage), so callers holding a sidecar file must pass
+   * the path and never retype the JSON — a one-character case drift
+   * derives a different vetKey and the IBE open fails although the
+   * gate terms all read correct.
+   */
+  const gateMetadataFromArgs = async (
+    args: { gateMetadataJson?: string; gateMetadataPath?: string }, tool: string,
+  ): Promise<string> => {
+    const inline = args.gateMetadataJson !== undefined && args.gateMetadataJson !== ''
+    const fromPath = args.gateMetadataPath !== undefined && args.gateMetadataPath !== ''
+    if (inline === fromPath) {
+      throw new Error(`dsh-haven-aol: ${tool} needs exactly one of gateMetadataJson or gateMetadataPath`)
+    }
+    if (fromPath) return readFile(args.gateMetadataPath as string, 'utf8')
+    return args.gateMetadataJson as string
+  }
+
   // ── aol_gate_info (read, pure) ────────────────────────────────────
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'aol_gate_info',
     description:
       'Inspect Haven-AOL gate metadata (v1/v3/v4): version, chain, token, threshold, epoch, and for v4 the market-cap target + Bond pin check. Pure read, no network. Call before aol_decrypt to decide whether a decrypt is worth attempting.',
     parameters: {
-      gateMetadataJson: { type: 'string', required: true, description: 'Gate metadata JSON (from upload sidecar / Arkiv entity / .encmeta).' },
+      gateMetadataJson: { type: 'string', description: 'Gate metadata JSON (from upload sidecar / Arkiv entity / .encmeta). Exactly one of gateMetadataJson or gateMetadataPath.' },
+      gateMetadataPath: { type: 'string', description: 'Path to a gate sidecar JSON file (byte-exact, no retyping). Exactly one of gateMetadataJson or gateMetadataPath.' },
     },
     output: { schema: { type: 'object', additionalProperties: true } as never, render: (_a, v) => renderJson(v) as never },
-    execute: async (args: { gateMetadataJson: string }): Promise<unknown> => {
-      const summary = aol.gateInfo(args.gateMetadataJson)
+    execute: async (args: { gateMetadataJson?: string; gateMetadataPath?: string }): Promise<unknown> => {
+      const summary = aol.gateInfo(await gateMetadataFromArgs(args, 'aol_gate_info'))
       ctx.emit('catalog/upsert', {
         cid: summary.cid,
         gate: 'aol',
@@ -228,7 +249,8 @@ export function apply(ctx: Context, config: Config): void {
     parameters: {
       path: { type: 'string', description: 'Local encrypted file. Exactly one of path or cid.' },
       cid: { type: 'string', description: 'Filecoin CID to fetch via ctx.synapse first. Exactly one of path or cid.' },
-      gateMetadataJson: { type: 'string', required: true, description: 'Gate metadata JSON for this file.' },
+      gateMetadataJson: { type: 'string', description: 'Gate metadata JSON for this file. Exactly one of gateMetadataJson or gateMetadataPath.' },
+      gateMetadataPath: { type: 'string', description: 'Path to the gate sidecar JSON file (byte-exact, prefer over retyping). Exactly one of gateMetadataJson or gateMetadataPath.' },
       outputPath: { type: 'string', required: true, description: 'Where to write the plaintext.' },
       eip712ChainId: { type: 'number', description: 'EIP-712 domain chain id (falls back to plugin config).' },
       eip712VerifyingContract: { type: 'string', description: 'EIP-712 verifying contract (falls back to plugin config).' },
@@ -246,12 +268,13 @@ export function apply(ctx: Context, config: Config): void {
       render: (_a, v) => [{ type: 'text', text: `decrypted ${(v as { bytes: number }).bytes} bytes → ${(v as { outputPath: string }).outputPath}` }] as never,
     },
     execute: async (args: {
-      path?: string; cid?: string; gateMetadataJson: string; outputPath: string
+      path?: string; cid?: string; gateMetadataJson?: string; gateMetadataPath?: string; outputPath: string
       eip712ChainId?: number; eip712VerifyingContract?: string; nonce?: string
     }, exec): Promise<{ outputPath: string; bytes: number; version: 1 | 3 | 4 }> => {
       if ((args.path === undefined) === (args.cid === undefined)) {
         throw new Error('provide exactly one of path or cid')
       }
+      const gateMetadataJson = await gateMetadataFromArgs(args, 'aol_decrypt')
       const wallet = requireWallet(ctx)
       const evmAddress = await wallet.address(config.wallet)
       const rt = runtimeForCall(wallet)
@@ -265,10 +288,10 @@ export function apply(ctx: Context, config: Config): void {
         }
         encrypted = await synapse.retrieve(args.cid as string, signalOf(exec))
       }
-      const summary = aol.gateInfo(args.gateMetadataJson)
+      const summary = aol.gateInfo(gateMetadataJson)
       const common = {
         evmAddress,
-        gateMetadataJson: args.gateMetadataJson,
+        gateMetadataJson,
         encryptedFileBytes: encrypted,
         ...(args.eip712ChainId !== undefined ? { eip712ChainId: BigInt(args.eip712ChainId) } : {}),
         ...(args.eip712VerifyingContract !== undefined ? { eip712VerifyingContract: args.eip712VerifyingContract } : {}),
