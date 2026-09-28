@@ -14,6 +14,10 @@
       "types": "./lib/client.d.ts",
       "default": "./lib/client.js"
     },
+    "./links": {
+      "types": "./lib/links.d.ts",
+      "default": "./lib/links.js"
+    },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./src/*": "./src/*",
     "./package.json": "./package.json"

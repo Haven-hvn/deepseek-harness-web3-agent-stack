@@ -14,6 +14,7 @@ import type { AcquireServiceOptions } from '../src/acquire.ts'
 import { AcquisitionError } from '../src/errors.ts'
 import { QBittorrentClient } from '../src/qbittorrent.ts'
 import { TransmissionClient } from '../src/transmission.ts'
+import { storeReleaseLinks } from 'dsh-tool-prowlarr/links'
 import { resolveConfig } from '../src/index.ts'
 import type { AcquireResult } from '../src/types.ts'
 
@@ -401,6 +402,30 @@ describe('AcquireService', () => {
     const service = new AcquireService(serviceOptions(dir))
     await expect(service.submit({ downloadUrl: `${filesUrl}/9/download`, title: 'Gate' }))
       .rejects.toMatchObject({ code: 'ACQUIRE_INVALID_REQUEST', permanent: true })
+    expect(qbAdds).toHaveLength(0)
+    expect(trAdds).toHaveLength(0)
+  })
+  it('resolves a release ref to the byte-exact proxy link', async () => {
+    const seed = join(tmpRoot(), 'r')
+    writeFileSync(seed, Buffer.from(MP4))
+    qbTorrents = [{ state: 'uploading', progress: 1, content_path: seed }]
+    const dir = tmpRoot()
+    const service = new AcquireService(serviceOptions(dir, { defaultWaitMs: 2_000 }))
+    const ref = storeReleaseLinks({ downloadUrl: `${filesUrl}/1/download?link=x` })
+    const result = await service.submit({ ref, title: 'Rel' })
+    expect(result.state).toBe('completed')
+    expect(qbAdds).toHaveLength(1)
+    expect(result.files).toHaveLength(1)
+  })
+  it('rejects an unknown ref and a Prowlarr normalize failure as invalid input', async () => {
+    const dir = tmpRoot()
+    const service = new AcquireService(serviceOptions(dir))
+    await expect(service.submit({ ref: 'pl_deadbeefcafe', title: 'X' }))
+      .rejects.toMatchObject({ code: 'ACQUIRE_INVALID_REQUEST', permanent: true })
+    routes['/5/download'] = { status: 500, body: '{"message":"Failed to normalize provided link"}' }
+    const error = await service.submit({ downloadUrl: `${filesUrl}/5/download`, title: 'Y' }).catch(error => error)
+    expect(error).toMatchObject({ code: 'ACQUIRE_INVALID_REQUEST', permanent: true })
+    expect(String(error.message)).toContain('fresh ref')
     expect(qbAdds).toHaveLength(0)
     expect(trAdds).toHaveLength(0)
   })

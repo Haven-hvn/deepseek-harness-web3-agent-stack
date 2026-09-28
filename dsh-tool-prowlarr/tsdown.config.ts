@@ -5,7 +5,7 @@ import { defineConfig } from 'tsdown'
  * `prepare`, which must build the published entry points from source.
  */
 export default defineConfig({
-  entry: ['src/index.ts', 'src/client.ts', 'src/types.ts'],
+  entry: ['src/index.ts', 'src/client.ts', 'src/types.ts', 'src/links.ts'],
   outDir: 'lib',
   format: ['esm'],
   platform: 'node',

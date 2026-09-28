@@ -141,6 +141,16 @@ export class ProwlarrDownload {
     if (response.status >= 400) {
       const status = response.status
       const body = (await response.text().catch(() => '')).slice(0, 500)
+      if (body.toLowerCase().includes('normaliz')) {
+        // The encrypted link blob arrived corrupted (almost always a
+        // mistranscribed copy of the ~330-character URL): retrying the
+        // same string cannot help — the caller needs a fresh ref/link.
+        throw new AcquisitionError(
+          `Prowlarr rejected the download link as corrupt (HTTP ${status}, failed to normalize): re-run prowlarr_search and pass the fresh ref exactly`,
+          'ACQUIRE_INVALID_REQUEST',
+          { permanent: true },
+        )
+      }
       const retryHeader = response.headers.get('retry-after') ?? ''
       const retryAfterMs = /^\d+$/.test(retryHeader) ? Number(retryHeader) * 1000 : undefined
       const transient = status === 408 || status === 429 || status >= 500

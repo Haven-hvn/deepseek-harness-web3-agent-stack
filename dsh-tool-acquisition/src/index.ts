@@ -409,13 +409,15 @@ export function createTools(service: AcquireService, config: ResolvedConfig, hoo
     name: submitName,
     description: [
       'Download one source into local files: a magnet link, a direct http(s) URL, or a Prowlarr release',
-      'reference (downloadUrl/magnetUrl from prowlarr_search; the API key is attached server-side).',
+      'reference (ref, downloadUrl, or magnetUrl from prowlarr_search; the API key is attached server-side).',
+      'Prefer ref: it resolves to the byte-exact links, while the long URLs are easy to mistranscribe.',
       'Torrents download via a torrent client; direct files are fetched with guardrails.',
       `Returns an opaque handle. When the state is queued/downloading, poll ${statusName}.`,
     ].join(' '),
     parameters: {
       magnet: { type: 'string', description: 'Magnet URI (exactly one source per call)' },
       url: { type: 'string', description: 'Direct http(s) URL (exactly one source per call)' },
+      ref: { type: 'string', description: 'Short release ref from prowlarr_search (the ref: line; preferred over copying links)' },
       downloadUrl: { type: 'string', description: 'Prowlarr download link from prowlarr_search (the downloadUrl: line; redacted form is fine — never the info page URL, which fails)' },
       magnetUrl: { type: 'string', description: 'Prowlarr magnet link from prowlarr_search' },
       title: { type: 'string', description: 'Display title for the acquisition' },
@@ -440,7 +442,7 @@ export function createTools(service: AcquireService, config: ResolvedConfig, hoo
     async execute(args, exec) {
       hooks?.ensureSubmitHook?.()
       const input = args as {
-        magnet?: string; url?: string; downloadUrl?: string; magnetUrl?: string; title?: string; waitMs?: number
+        magnet?: string; url?: string; ref?: string; downloadUrl?: string; magnetUrl?: string; title?: string; waitMs?: number
       }
       if (input.waitMs !== undefined && (!Number.isInteger(input.waitMs) || input.waitMs < 0)) {
         invalid('waitMs must be a non-negative integer')
@@ -449,6 +451,7 @@ export function createTools(service: AcquireService, config: ResolvedConfig, hoo
         {
           ...(input.magnet !== undefined ? { magnet: input.magnet } : {}),
           ...(input.url !== undefined ? { url: input.url } : {}),
+          ...(input.ref !== undefined ? { ref: input.ref } : {}),
           ...(input.downloadUrl !== undefined ? { downloadUrl: input.downloadUrl } : {}),
           ...(input.magnetUrl !== undefined ? { magnetUrl: input.magnetUrl } : {}),
           ...(input.title !== undefined ? { title: input.title } : {}),

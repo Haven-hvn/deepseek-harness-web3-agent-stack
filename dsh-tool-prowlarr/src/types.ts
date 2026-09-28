@@ -107,6 +107,8 @@ export interface ProwlarrRelease {
   commentUrl?: string
   downloadUrl?: string
   magnetUrl?: string
+  /** Short server-side ref for these links (see `./links`); absent when the hit carries no fetchable link. */
+  ref?: string
   categories: ProwlarrCategory[]
 }
 

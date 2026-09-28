@@ -27,6 +27,7 @@ import type { FetchFn, FetchedFile, FetchPolicy } from './fetch.ts'
 import { fetchDirect, safeFilename } from './fetch.ts'
 import { mediaKind } from './filetype.ts'
 import { importFiles } from './importer.ts'
+import { takeReleaseLinks } from 'dsh-tool-prowlarr/links'
 import { ProwlarrDownload } from './prowlarr.ts'
 import { QBittorrentClient } from './qbittorrent.ts'
 import type { QBittorrentOptions } from './qbittorrent.ts'
@@ -42,6 +43,8 @@ import type { AcquiredFile, AcquireResult, AcquireState, BackendStatus, ImportMo
 export interface AcquireSubmitInput {
   magnet?: string
   url?: string
+  /** Short server-side ref from prowlarr_search (preferred over copying links). */
+  ref?: string
   downloadUrl?: string
   magnetUrl?: string
   guid?: string
@@ -208,10 +211,11 @@ export class AcquireService {
     const sources = [
       input.magnet !== undefined && input.magnet !== '' ? 'magnet' : undefined,
       input.url !== undefined && input.url !== '' ? 'url' : undefined,
+      input.ref !== undefined && input.ref !== '' ? 'ref' : undefined,
       (input.downloadUrl !== undefined && input.downloadUrl !== '') || (input.magnetUrl !== undefined && input.magnetUrl !== '') ? 'prowlarr' : undefined,
     ].filter((s): s is string => s !== undefined)
     if (sources.length === 0) {
-      throw new AcquisitionError('one source is required: magnet, url, or downloadUrl/magnetUrl', 'ACQUIRE_INVALID_REQUEST', { permanent: true })
+      throw new AcquisitionError('one source is required: magnet, url, ref, or downloadUrl/magnetUrl', 'ACQUIRE_INVALID_REQUEST', { permanent: true })
     }
     if (sources.length > 1) {
       throw new AcquisitionError(`only one source per call; got ${sources.join(' + ')}`, 'ACQUIRE_INVALID_REQUEST', { permanent: true })
@@ -242,11 +246,27 @@ export class AcquireService {
     }
     // Prowlarr release reference. Either field may hold the proxy link
     // (indexers disagree) or a real magnet; resolve() sorts out all three.
-    const link = input.downloadUrl !== undefined && input.downloadUrl !== ''
-      ? input.downloadUrl
-      : (input.magnetUrl ?? '')
+    // A `ref` resolves server-side to the byte-exact links, so the model
+    // never transcribes the ~330 opaque characters (one wrong char fails
+    // the download at Prowlarr with "Failed to normalize").
+    let link: string
+    if (input.ref !== undefined && input.ref !== '') {
+      const stored = takeReleaseLinks(input.ref)
+      if (stored === undefined) {
+        throw new AcquisitionError(
+          `unknown or expired release ref '${input.ref}' (refs die with the process) — re-run prowlarr_search and pass a fresh ref`,
+          'ACQUIRE_INVALID_REQUEST',
+          { permanent: true },
+        )
+      }
+      link = stored.downloadUrl ?? stored.magnetUrl ?? ''
+    } else {
+      link = input.downloadUrl !== undefined && input.downloadUrl !== ''
+        ? input.downloadUrl
+        : (input.magnetUrl ?? '')
+    }
     if (link === '') {
-      throw new AcquisitionError('prowlarr reference needs downloadUrl or magnetUrl', 'ACQUIRE_INVALID_REQUEST', { permanent: true })
+      throw new AcquisitionError('prowlarr reference needs ref, downloadUrl, or magnetUrl', 'ACQUIRE_INVALID_REQUEST', { permanent: true })
     }
     const refKey = refKeyFor(link)
     const existing = await this.resolveExisting(await this.store.findByContentKey(refKey), signal)
@@ -280,13 +300,18 @@ export class AcquireService {
    * infohash anyway.
    */
   async checkSubmit(input: unknown): Promise<CheckDecision> {
-    const args = (input ?? {}) as { magnet?: unknown; url?: unknown; downloadUrl?: unknown; magnetUrl?: unknown }
+    const args = (input ?? {}) as { magnet?: unknown; url?: unknown; ref?: unknown; downloadUrl?: unknown; magnetUrl?: unknown }
     const keys: string[] = []
     if (typeof args.magnet === 'string' && args.magnet !== '') {
       const key = torrentKeyFor({ magnet: args.magnet })
       if (key !== undefined) keys.push(key)
     }
     if (typeof args.url === 'string' && args.url !== '') keys.push(urlKeyFor(args.url))
+    if (typeof args.ref === 'string' && args.ref !== '') {
+      const stored = takeReleaseLinks(args.ref)
+      const resolved = stored?.downloadUrl ?? stored?.magnetUrl ?? ''
+      keys.push(refKeyFor(resolved !== '' ? resolved : args.ref))
+    }
     const link = typeof args.downloadUrl === 'string' && args.downloadUrl !== ''
       ? args.downloadUrl
       : (typeof args.magnetUrl === 'string' ? args.magnetUrl : '')

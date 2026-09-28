@@ -26,6 +26,7 @@ import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { ProwlarrClient, ProwlarrError } from './client.ts'
+import { storeReleaseLinks } from './links.ts'
 import { PROWLARR_SEARCH_TYPES } from './types.ts'
 import type { ProwlarrIndexer, ProwlarrRelease, ProwlarrSearchType } from './types.ts'
 
@@ -155,6 +156,7 @@ const releaseSchema = {
     commentUrl: { type: 'string' },
     downloadUrl: { type: 'string', description: 'Prowlarr proxy link with the API key removed; not directly fetchable' },
     magnetUrl: { type: 'string', description: 'Magnet link or second proxy link with the API key removed; try when downloadUrl fails' },
+    ref: { type: 'string', description: 'Short server-side ref for these links; pass to acquire_submit instead of copying the long URLs' },
     categories: { type: 'array', items: categorySchema, required: true },
   },
 } as const
@@ -210,6 +212,9 @@ export function formatSearch(value: { query: string; type: string; total: number
     // The fetchable links (API key already stripped): an info page alone
     // cannot be downloaded — private indexers answer it with a login gate —
     // so the model must see these to pass one to a download tool.
+    // The ref first: short enough to copy exactly, resolving server-side
+    // to the byte-exact links. The long URLs stay visible as fallback.
+    if (release.ref !== undefined) lines.push(`   ref: ${release.ref}`)
     if (release.downloadUrl !== undefined) lines.push(`   downloadUrl: ${release.downloadUrl}`)
     if (release.magnetUrl !== undefined) lines.push(`   magnetUrl: ${release.magnetUrl}`)
   })
@@ -283,7 +288,7 @@ export function createTools(client: ProwlarrClient, config: ResolvedConfig): [To
       'Search the indexers configured in Prowlarr and return matching releases (title, indexer, publish date, size, categories, info URL, download/magnet links).',
       'Searches every enabled indexer unless indexerIds is given; call',
       `${config.toolPrefix}_indexers first to discover ids, supported search types, and category ids.`,
-      'Results are metadata only; nothing is downloaded. Each hit lists its fetchable downloadUrl/magnetUrl links below the info URL — pass one of those to a download tool; the info URL itself is a details page, not a download.',
+      'Results are metadata only; nothing is downloaded. Each hit lists a short ref plus its fetchable downloadUrl/magnetUrl links below the info URL — pass the ref to acquire_submit (preferred: exact, short) or one of the links; the info URL itself is a details page, not a download.',
     ].join(' '),
     parameters: {
       query: { type: 'string', required: true, description: 'Search terms, passed to each indexer as-is' },
@@ -337,13 +342,24 @@ export function createTools(client: ProwlarrClient, config: ResolvedConfig): [To
         limit: effectiveLimit,
         ...args.offset !== undefined ? { offset: args.offset } : {},
       }, exec.signal)
+      const page = releases.slice(0, effectiveLimit)
+      // Mint server-side refs so the model passes a short token instead of
+      // transcribing ~330 opaque characters (one wrong char fails the
+      // download). Hits without links get no ref.
+      for (const release of page) {
+        if (release.downloadUrl === undefined && release.magnetUrl === undefined) continue
+        release.ref = storeReleaseLinks({
+          ...(release.downloadUrl !== undefined ? { downloadUrl: release.downloadUrl } : {}),
+          ...(release.magnetUrl !== undefined ? { magnetUrl: release.magnetUrl } : {}),
+        })
+      }
       return {
         query,
         type,
         indexerIds: [...indexerIds],
         total: releases.length,
         truncated: releases.length > effectiveLimit,
-        results: releases.slice(0, effectiveLimit),
+        results: page,
       }
     },
   })

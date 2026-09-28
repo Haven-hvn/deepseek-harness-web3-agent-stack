@@ -361,6 +361,9 @@ importers:
       '@deepseek-ai/schemastery':
         specifier: '=3.18.4'
         version: 3.18.4
+      dsh-tool-prowlarr:
+        specifier: workspace:*
+        version: link:../dsh-tool-prowlarr
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: '=4.0.4'

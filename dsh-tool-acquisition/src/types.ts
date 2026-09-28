@@ -41,6 +41,8 @@ export type AcquisitionErrorCode =
 
 /** A Prowlarr release reference, as returned by `prowlarr_search` (redacted form). */
 export interface ProwlarrReleaseRef {
+  /** Short server-side ref resolving to the byte-exact links (preferred). */
+  ref?: string
   /** Redacted proxy link; the arm re-attaches the API key server-side. Never model-supplied with a key. */
   downloadUrl?: string
   magnetUrl?: string

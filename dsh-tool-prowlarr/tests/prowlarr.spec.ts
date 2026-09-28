@@ -6,6 +6,7 @@ import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import * as ProwlarrPlugin from '../src/index.ts'
+import { MAX_LINK_REFS, storeReleaseLinks, takeReleaseLinks } from '../src/links.ts'
 import {
   Config,
   formatSize,
@@ -93,6 +94,21 @@ function textOf(result: { content: readonly { type: string; text?: string }[] })
 }
 
 // ── Pure mapping ───────────────────────────────────────────────────────────
+
+describe('release link refs', () => {
+  it('stores links under a short ref and peeks without consuming', () => {
+    const ref = storeReleaseLinks({ downloadUrl: 'http://h/1/download?link=x' })
+    expect(ref).toMatch(/^pl_[0-9a-f]{12}$/)
+    expect(takeReleaseLinks(ref)).toEqual({ downloadUrl: 'http://h/1/download?link=x' })
+    expect(takeReleaseLinks(ref)).toEqual({ downloadUrl: 'http://h/1/download?link=x' })
+    expect(takeReleaseLinks('pl_deadbeefcafe')).toBeUndefined()
+  })
+  it('prunes oldest-first past the cap', () => {
+    const first = storeReleaseLinks({ downloadUrl: 'http://h/old' })
+    for (let i = 0; i < MAX_LINK_REFS; i++) storeReleaseLinks({ downloadUrl: `http://h/${i}` })
+    expect(takeReleaseLinks(first)).toBeUndefined()
+  })
+})
 
 describe('redaction', () => {
   it('drops the apikey query parameter regardless of case and keeps the rest', () => {
@@ -274,6 +290,10 @@ describe('registered tools', () => {
     expect(text).toContain('https://arxiv.org/abs/2609.00001')
     // The model must see the fetchable link (key stripped) — the info URL alone is not downloadable.
     expect(text).toContain('downloadUrl: http://localhost:9696/1/download?link=abc&file=Paper')
+    // ... and a short ref resolving server-side to the byte-exact links.
+    const ref = text.match(/ref: (pl_[0-9a-f]+)/)?.[1]
+    expect(ref).toBeDefined()
+    expect(takeReleaseLinks(ref!)).toEqual({ downloadUrl: 'http://localhost:9696/1/download?link=abc&file=Paper' })
     expect(text).toContain('untrusted data')
     expect(JSON.stringify(result.value) + text).not.toContain(KEY)
   })
