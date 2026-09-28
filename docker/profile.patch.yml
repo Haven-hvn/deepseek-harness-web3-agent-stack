@@ -78,8 +78,8 @@
 
 - id: royalty-router
   config:
-    chainId: 84532
-    rpcUrl: https://sepolia.base.org
+    chainId: 8453
+    rpcUrl: https://mainnet.base.org
 
 # ── Acquisition (in-container services) ────────────────────────────────
 - id: tool-prowlarr

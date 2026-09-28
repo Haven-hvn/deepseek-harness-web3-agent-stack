@@ -256,3 +256,11 @@ describe('assembleSignedTransaction (offline, local secp256k1 only)', () => {
     await expect(assembleSignedTransaction(unsigned, 'not-hex')).rejects.toThrow('non-hex signature')
   })
 })
+
+describe('docker profile chain', () => {
+  it('royalty-router row targets Base mainnet 8453 (the only SDK deployment)', async () => {
+    const { readFile } = await import('node:fs/promises')
+    const yml = await readFile('./docker/profile.patch.yml', 'utf8')
+    expect(yml).toMatch(/- id: royalty-router\n {2}config:\n {4}chainId: 8453\n {4}rpcUrl: https:\/\/mainnet\.base\.org/)
+  })
+})
