@@ -180,6 +180,31 @@ describe('gated decrypt', () => {
     })).rejects.toThrow(/InvalidSignature/)
   })
 
+  it('decrypt defaults the EIP-712 domain to the gate chain + zero verifier', async () => {
+    // v3meta() is a BaseMainnet gate: no per-call domain, no config domain —
+    // the request must still carry chain 8453 and the dapp zero verifier.
+    let seen: { eip712ChainId?: unknown; eip712VerifyingContract?: unknown } = {}
+    internals.requestV3 = (async (_agent: unknown, _canister: string, req: Record<string, unknown>) => {
+      seen = req
+      return { err: { InvalidSignature: 'stop-here' } }
+    }) as never
+    const { AolRuntime } = await import('../src/aol.ts')
+    const rt = new AolRuntime({
+      canisterId: 'gny6k-fqaaa-aaaab-ag3ra-cai',
+      icpHost: 'https://icp-api.io',
+      fetchRootKey: false,
+      signGate: async () => ('0x' + 'ab'.repeat(65)) as `0x${string}`,
+    })
+    await expect(rt.decryptV3({
+      gateMetadataJson: v3meta(),
+      encryptedFileBytes: new Uint8Array([9, 9]),
+      evmAddress: VERIFIER,
+      nonce: 1n,
+    })).rejects.toThrow(/InvalidSignature/)
+    expect(seen.eip712ChainId).toBe(8453n)
+    expect(seen.eip712VerifyingContract).toBe('0x0000000000000000000000000000000000000000')
+  })
+
   it('aol_decrypt requires exactly one of path/cid', async () => {
     const { execute } = await harness()
     const res = await execute('aol_decrypt', {

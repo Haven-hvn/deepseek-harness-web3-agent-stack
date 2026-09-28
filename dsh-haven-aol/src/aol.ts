@@ -334,6 +334,18 @@ export function freshNonce(): bigint {
   return BigInt('0x' + randomBytes(32).toString('hex'))
 }
 
+/** Chain variant → EIP-155 id (mirrors dsh-arkiv's reference table). */
+const CHAIN_VARIANT_TO_EIP155: Readonly<Record<string, number>> = {
+  EthMainnet: 1,
+  EthSepolia: 11155111,
+  ArbitrumOne: 42161,
+  BaseMainnet: 8453,
+  OptimismMainnet: 10,
+}
+
+/** Zero verifier: the mobile/dapp EIP-712 default (canister rebuilds the separator from request values). */
+const ZERO_VERIFIER = '0x0000000000000000000000000000000000000000'
+
 export interface AolRuntimeOpts {
   canisterId: string
   icpHost: string
@@ -547,18 +559,27 @@ export class AolRuntime {
     return parseSignatureHex(await this.opts.signGate(digestHex))
   }
 
-  private gateDefaults(common: Partial<Pick<GateCallCommon, 'eip712ChainId' | 'eip712VerifyingContract'>>): {
+  private gateDefaults(
+    common: Partial<Pick<GateCallCommon, 'eip712ChainId' | 'eip712VerifyingContract'>>,
+    chainVariant?: string,
+  ): {
     eip712ChainId: bigint
     eip712VerifyingContract: string
   } {
+    // Precedence: per-call > config > gate's own chain + zero verifier (the
+    // mobile/dapp default — the canister rebuilds the separator from the
+    // request values, so self-consistency is what matters, and the gate's
+    // chain commits the signature to the chain actually checked).
     const chainId = common.eip712ChainId ?? this.opts.eip712ChainId
+      ?? (chainVariant !== undefined ? CHAIN_VARIANT_TO_EIP155[chainVariant] : undefined)
     const verifier = common.eip712VerifyingContract ?? this.opts.eip712VerifyingContract
+      ?? ZERO_VERIFIER
     if (chainId === undefined || !verifier) {
       throw new Error(
         'dsh-haven-aol: eip712ChainId + eip712VerifyingContract required per call or in cordis.patch.yml config',
       )
     }
-    return { eip712ChainId: chainId, eip712VerifyingContract: verifier }
+    return { eip712ChainId: BigInt(chainId), eip712VerifyingContract: verifier }
   }
 
   /** v1 end-to-end decrypt. The recovered vetKey is cached by derivation input (exact-file repeats skip the gate call); returns plaintext. */
@@ -570,7 +591,7 @@ export class AolRuntime {
       const agent = await this.agent()
       const { secretKey, publicKey } = createTransportKeyPair()
       const nonce = params.nonce ?? freshNonce()
-      const { eip712ChainId, eip712VerifyingContract } = this.gateDefaults(params)
+      const { eip712ChainId, eip712VerifyingContract } = this.gateDefaults(params, metadata.chain)
       const typed = buildGateRequestTypedData({
         evmAddress: params.evmAddress, transportPublicKey: publicKey, nonce,
         eip712ChainId, eip712VerifyingContract,
@@ -605,7 +626,7 @@ export class AolRuntime {
       const agent = await this.agent()
       const { secretKey, publicKey } = createTransportKeyPair()
       const nonce = params.nonce ?? freshNonce()
-      const { eip712ChainId, eip712VerifyingContract } = this.gateDefaults(params)
+      const { eip712ChainId, eip712VerifyingContract } = this.gateDefaults(params, metadata.chain)
       const typed = buildV3({
         evmAddress: params.evmAddress, transportPublicKey: publicKey, epoch: metadata.epoch, nonce,
         eip712ChainId, eip712VerifyingContract,
@@ -641,7 +662,7 @@ export class AolRuntime {
       const agent = await this.agent()
       const { secretKey, publicKey } = createTransportKeyPair()
       const nonce = params.nonce ?? freshNonce()
-      const { eip712ChainId, eip712VerifyingContract } = this.gateDefaults(params)
+      const { eip712ChainId, eip712VerifyingContract } = this.gateDefaults(params, metadata.chain)
       const typed = buildV4({
         evmAddress: params.evmAddress, transportPublicKey: publicKey, epoch: metadata.epoch,
         marketCapTarget: metadata.marketCapTarget, nonce,
