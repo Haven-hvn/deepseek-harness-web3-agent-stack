@@ -17,6 +17,12 @@ reason written in the conversation.
    never force a duplicate.
 2. **Prepare.** Confirm the bytes: size, type, provenance (title,
    creator, source URL). Name the release and its community.
+   Audio albums ship as one merged file: combine the tracks with
+   ffmpeg, embed the cover, then write the track boundaries as ID3
+   chapters (`CHAP` + `CTOC`) with mutagen — ffmpeg cannot write
+   chapters into MP3, so `-map_metadata` is not the path.
+   `ffprobe -show_chapters` must list every track before anything
+   is sealed: never ship a chapterless file.
 3. **Choose the gate** (§2). Write down version, pattern, token,
    threshold, epoch or rungs — before anything is sealed.
 4. **Seal.** `aol_seal` with the §2 parameters: plaintext path in,

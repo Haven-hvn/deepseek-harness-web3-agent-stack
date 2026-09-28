@@ -39,6 +39,7 @@ rides Base mainnet config for quotes (no factory deployed — advise only).
 ```sh
 # after pulling stack changes:
 pnpm install --frozen-lockfile && pnpm -r build
+pip3 install 'mutagen==1.48.1' # ID3 chapters for merged MP3s (process.md §1 step 2)
 cp native/herald.patch.yml /root/.dsh/profiles/herald/cordis.patch.yml
 cp native/*.sh native/*.mjs native/*.md /opt/herald/
 cp native/systemd/* /etc/systemd/system/ && systemctl daemon-reload

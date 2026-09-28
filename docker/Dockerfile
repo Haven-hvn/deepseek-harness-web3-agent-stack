@@ -10,12 +10,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CI=true
 
 # OS binaries: torrent clients, media, QR, supervision. libicu72 for the
-# self-contained Prowlarr build on slim.
+# self-contained Prowlarr build on slim. python3-mutagen writes the ID3
+# CHAP/CTOC chapters ffmpeg cannot emit into MP3 (process.md §1 step 2).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git xz-utils \
       libicu72 \
       qbittorrent-nox transmission-daemon \
       ffmpeg qrencode supervisor \
+      python3-mutagen \
     && rm -rf /var/lib/apt/lists/*
 
 # yt-dlp standalone binary (pinned).
