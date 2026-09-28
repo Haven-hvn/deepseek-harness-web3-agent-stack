@@ -75,6 +75,12 @@ export interface Config {
   excludeProviderIds?: number[]
   /** Explicit provider IDs to use (overrides auto-selection). Never second-guessed by the retry path. */
   providerIds?: number[]
+  /**
+   * Optional JSON path persisting the root→piece ledger checkPin verifies
+   * against. Without it the ledger is memory-only: restarts forget which
+   * pieces carry which roots and status degrades to "not pinned".
+   */
+  pieceLedgerPath?: string
 }
 
 /** Config schema — no credential fields, only wallet name + public RPC URL. */
@@ -86,6 +92,7 @@ export const Config: z<Config> = z.object({
   copies: z.number().step(1).min(1).max(3).default(1),
   excludeProviderIds: z.array(z.number().step(1).min(0)).default([]),
   providerIds: z.array(z.number().step(1).min(0)),
+  pieceLedgerPath: z.string(),
 })
 
 /**
@@ -105,11 +112,12 @@ export class SynapseRuntime {
   private readonly _copies: number
   private readonly _excludeProviderIds?: bigint[] | undefined
   private readonly _providerIds?: bigint[] | undefined
+  private readonly _pieceLedgerPath?: string | undefined
 
   constructor(
     private readonly ctx: Context,
     private readonly wallet: string,
-    opts: { rpcUrl: string; networkMode?: 'calibration' | 'mainnet' | undefined; withCDN?: boolean | undefined; copies?: number; excludeProviderIds?: number[]; providerIds?: number[] },
+    opts: { rpcUrl: string; networkMode?: 'calibration' | 'mainnet' | undefined; withCDN?: boolean | undefined; copies?: number; excludeProviderIds?: number[]; providerIds?: number[]; pieceLedgerPath?: string },
   ) {
     if (!opts.rpcUrl) {
       throw new Error('dsh-storage-synapse: rpcUrl required (Filecoin-only, no Kubo fallback)')
@@ -120,6 +128,7 @@ export class SynapseRuntime {
     this._copies = opts.copies ?? 1
     this._excludeProviderIds = opts.excludeProviderIds?.length ? opts.excludeProviderIds.map(n => BigInt(n)) : undefined
     this._providerIds = opts.providerIds?.length ? opts.providerIds.map(n => BigInt(n)) : undefined
+    this._pieceLedgerPath = opts.pieceLedgerPath
   }
 
   /** Build a viem Account delegating signing to ctx.wallet (OWS vault) — treasury-aware. */
@@ -183,12 +192,21 @@ export class SynapseRuntime {
       },
       async signTypedData(typedData: any): Promise<`0x${string}`> {
         // Filecoin Synapse EIP-712: CreateDataSet / AddPieces / SchedulePieceRemovals / TerminateService / Permit (synapse-core typed-data)
-        // Single path: hash via viem hashTypedData then sign digest via ctx.wallet (OWS) — no JSON fallback.
+        // The digest must be signed RAW (secp256k1 over the 32 bytes, like viem's
+        // privateKeyToAccount). OWS signMessage applies the EIP-191 prefix, which
+        // recovers to a garbage address on-chain — InvalidSignature AFTER the
+        // bytes are already stored. Same seam haven-aol uses for gate signing;
+        // fail loud here rather than produce a doomed upload.
+        if (typeof walletSeam.signDigest !== 'function') {
+          throw new Error(
+            'dsh-storage-synapse: ctx.wallet lacks signDigest (needs dsh-wallet-ethereum with raw digest signing) — '
+            + 'refusing to EIP-191-sign an EIP-712 digest',
+          )
+        }
         const { hashTypedData } = await import('viem')
         const digest = hashTypedData(typedData as any) as `0x${string}`
-        // viem's privateKeyToAccount signs the digest directly (secp256k1 sign of hash, no personal prefix).
-        // Delegate to OWS wallet as raw hash: OWS signMessage with hex digest (encoding handled by viem's hash).
-        const { signature } = await walletSeam.signMessage(walletName, digest)
+        const res = await walletSeam.signDigest(walletName, digest)
+        const signature = typeof res === 'string' ? res : (res as { signature: string }).signature
         void ctx
         return signature as `0x${string}`
       },
@@ -207,6 +225,7 @@ export class SynapseRuntime {
       copies: this._copies,
       excludeProviderIds: this._excludeProviderIds,
       providerIds: this._providerIds,
+      pieceLedgerPath: this._pieceLedgerPath,
     })
     return this.filecoin
   }
@@ -374,6 +393,7 @@ export function apply(ctx: Context, config: Config): void {
     copies: (config as any).copies,
     excludeProviderIds: (config as any).excludeProviderIds?.length ? (config as any).excludeProviderIds : undefined,
     providerIds: (config as any).providerIds?.length ? (config as any).providerIds : undefined,
+    pieceLedgerPath: (config as any).pieceLedgerPath,
   })
   ctx.provide('synapse', synapse)
 

@@ -22,7 +22,7 @@ import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import * as storageSynapse from '../src/index.ts'
-import { FilecoinBackend, isProviderSelectionError } from '../src/synapse.ts'
+import { FilecoinBackend, isProviderSelectionError, preview } from '../src/synapse.ts'
 import type { SynapsePinnedEvent } from '../src/types.ts'
 import { MemoryCredentials } from '../../dsh-wallet/tests/helpers/memory-credentials.ts'
 
@@ -37,6 +37,10 @@ const pinMocks = vi.hoisted(() => ({
   executeUpload: vi.fn(),
   buildCar: vi.fn(),
   cleanup: vi.fn(),
+  findPiece: vi.fn(),
+  getApprovedPDPProviders: vi.fn(),
+  createPublicClient: vi.fn(),
+  httpTransport: vi.fn(),
 }))
 vi.mock('filecoin-pin/core/synapse', () => ({
   initializeSynapse: vi.fn(async () => ({})),
@@ -49,6 +53,24 @@ vi.mock('filecoin-pin/core/upload', () => ({
 }))
 vi.mock('multiformats/cid', () => ({
   CID: { parse: (s: string) => s },
+}))
+vi.mock('@filoz/synapse-core/sp', () => ({
+  findPiece: pinMocks.findPiece,
+}))
+vi.mock('@filoz/synapse-core/piece', () => ({
+  Piece: { from: (s: string) => s },
+}))
+vi.mock('@filoz/synapse-core/sp-registry', () => ({
+  getApprovedPDPProviders: pinMocks.getApprovedPDPProviders,
+}))
+vi.mock('@filoz/synapse-core/chains', () => ({
+  calibration: { id: 314159 },
+  mainnet: { id: 314 },
+}))
+vi.mock('viem', async importOriginal => ({
+  ...(await importOriginal<typeof import('viem')>()),
+  createPublicClient: pinMocks.createPublicClient,
+  http: pinMocks.httpTransport,
 }))
 
 /** Mount credentials (gated HAVEN_PRIVATE_KEY) + wallet + synapse plugin. */
@@ -322,11 +344,17 @@ describe('provider selection: no default exclusions, one loud fallback', () => {
   })
 
   /** Backend with mocked filecoin-pin: CAR bytes come from a real temp file, selection from the mock. */
-  async function backendHarness(opts: { excludeProviderIds?: bigint[]; providerIds?: bigint[] }) {
+  async function backendHarness(opts: { excludeProviderIds?: bigint[]; providerIds?: bigint[]; pieceLedgerPath?: string }) {
     const dir = await mkdtemp(join(tmpdir(), 'dsh-synapse-be-'))
     const carFile = join(dir, 'piece.car')
     await writeFile(carFile, 'car-bytes')
     pinMocks.buildCar.mockResolvedValue({ rootCid: 'bafybackend', carPath: carFile })
+    pinMocks.createPublicClient.mockReturnValue({})
+    pinMocks.httpTransport.mockReturnValue({})
+    pinMocks.getApprovedPDPProviders.mockResolvedValue([
+      { id: 9n, pdp: { serviceURL: 'https://nine.test' } },
+      { id: 4n, pdp: { serviceURL: 'https://four.test' } },
+    ])
     const backend = new FilecoinBackend({
       getAccount: async () => ({}) as any,
       rpcUrl: 'wss://api.calibration.node.glif.io/rpc/v1',
@@ -334,6 +362,12 @@ describe('provider selection: no default exclusions, one loud fallback', () => {
       ...opts,
     } as any)
     return { backend, dir }
+  }
+
+  async function storedBackend(dir: string, backend: FilecoinBackend, pieceCid = 'bafkpiece', providerId = 4n) {
+    pinMocks.executeUpload.mockResolvedValueOnce({ pieceCid, copies: [{ providerId, dataSetId: 1n }] })
+    const stored = await backend.store(new TextEncoder().encode('payload'))
+    return stored.cid
   }
 
   it('retries once without exclusions on selection failure, then succeeds', async () => {
@@ -365,6 +399,78 @@ describe('provider selection: no default exclusions, one loud fallback', () => {
     }
   })
 
+  it('a committed upload with BigInt fields resolves (logging never fails the pin)', async () => {
+    const { backend, dir } = await backendHarness({})
+    try {
+      // Real result shape: dataset ids and fees are BigInts — bare
+      // JSON.stringify throws and turns success into a thrown error.
+      pinMocks.executeUpload.mockResolvedValueOnce({ pieceCid: 'baga-piece', dataSetId: 42n, fee: 1000n })
+      const stored = await backend.store(new TextEncoder().encode('payload'))
+      expect(stored).toEqual({ cid: 'bafybackend', pieceCid: 'baga-piece' })
+      expect(preview({ dataSetId: 42n })).toContain('42n')
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('checkPin verifies the recorded piece live on its provider', async () => {
+    const { backend, dir } = await backendHarness({})
+    try {
+      const cid = await storedBackend(dir, backend)
+      pinMocks.findPiece.mockResolvedValueOnce('bafkpiece')
+      const status = await backend.checkPin(cid)
+      expect(status).toEqual({ cid, provider: 'filecoin', expiresAt: 0, redundancy: 1 })
+      // Recorded provider first: entry says 4, so four.test leads the sweep.
+      expect(pinMocks.findPiece).toHaveBeenCalledWith({ serviceURL: 'https://four.test', pieceCid: 'bafkpiece', timeout: 15000 })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('checkPin sweeps every approved provider before reporting not pinned', async () => {
+    const { backend, dir } = await backendHarness({})
+    try {
+      const cid = await storedBackend(dir, backend)
+      pinMocks.findPiece.mockRejectedValue(new Error('404 page not found'))
+      const status = await backend.checkPin(cid)
+      expect(status).toEqual({ cid, provider: 'filecoin', expiresAt: -1, redundancy: 0 })
+      expect(pinMocks.findPiece).toHaveBeenCalledTimes(2)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('checkPin answers not pinned for unknown CIDs without touching the network', async () => {
+    const { backend, dir } = await backendHarness({})
+    try {
+      const status = await backend.checkPin('bafyneverstored')
+      expect(status).toEqual({ cid: 'bafyneverstored', provider: 'filecoin', expiresAt: -1, redundancy: 0 })
+      expect(pinMocks.findPiece).not.toHaveBeenCalled()
+      expect(pinMocks.getApprovedPDPProviders).not.toHaveBeenCalled()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('piece ledger survives restarts via the configured path', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-synapse-ledger-'))
+    const ledgerPath = join(dir, 'pieces.json')
+    try {
+      const first = await backendHarness({ pieceLedgerPath: ledgerPath })
+      const cid = await storedBackend(first.dir, first.backend)
+      // A fresh backend over the same file re-learns the mapping without a new store.
+      const second = await backendHarness({ pieceLedgerPath: ledgerPath })
+      pinMocks.findPiece.mockResolvedValueOnce('bafkpiece')
+      const status = await second.backend.checkPin(cid)
+      expect(status.redundancy).toBe(1)
+      expect(pinMocks.findPiece).toHaveBeenCalledWith({ serviceURL: 'https://four.test', pieceCid: 'bafkpiece', timeout: 15000 })
+      await rm(first.dir, { recursive: true, force: true })
+      await rm(second.dir, { recursive: true, force: true })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
   it('mid-upload faults surface without a retry (the attempt may have spent)', async () => {
     const { backend, dir } = await backendHarness({ excludeProviderIds: [4n, 9n] })
     try {
@@ -374,6 +480,57 @@ describe('provider selection: no default exclusions, one loud fallback', () => {
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('synapse EIP-712 signing uses raw digests, never EIP-191', () => {
+  const typedData = {
+    domain: { name: 'Synapse', version: '1', chainId: 314159, verifyingContract: '0x0000000000000000000000000000000000000001' },
+    types: { Ping: [{ name: 'x', type: 'uint256' }] },
+    primaryType: 'Ping',
+    message: { x: 1n },
+  } as const
+
+  /** Runtime with a spy wallet seam: no plugin mount, no network. */
+  function signingHarness(wallet: Record<string, unknown>) {
+    return new storageSynapse.SynapseRuntime({ wallet } as any, 'agent', { rpcUrl: 'wss://example.com' })
+  }
+
+  it('signTypedData signs the EIP-712 digest via wallet signDigest', async () => {
+    const { hashTypedData } = await import('viem')
+    const calls: Array<{ method: string; payload: string }> = []
+    const wallet = {
+      address: async () => '0x5C32469325d4093aB142DDdC1305F91d76e45141',
+      signTransaction: async () => ({ signature: '0x' }),
+      signMessage: async (_name: string, payload: string) => {
+        calls.push({ method: 'signMessage', payload })
+        return { signature: '0xwrong' }
+      },
+      signDigest: async (_name: string, payload: string) => {
+        calls.push({ method: 'signDigest', payload })
+        return { address: '0xagent', signature: '0xrawsig' }
+      },
+    }
+    const rt = signingHarness(wallet)
+    const account = await (rt as any).createAccount()
+    const signature = await account.signTypedData(typedData)
+    // EIP-191-prefixing the digest recovers to garbage on-chain (InvalidSignature
+    // after bytes are stored) — the digest must go through raw signing only.
+    expect(signature).toBe('0xrawsig')
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.method).toBe('signDigest')
+    expect(calls[0]?.payload).toBe(hashTypedData(typedData as any))
+  })
+
+  it('fails loud without signDigest rather than producing a doomed upload', async () => {
+    const wallet = {
+      address: async () => '0x5C32469325d4093aB142DDdC1305F91d76e45141',
+      signTransaction: async () => ({ signature: '0x' }),
+      signMessage: async () => ({ signature: '0xwrong' }),
+    }
+    const rt = signingHarness(wallet)
+    const account = await (rt as any).createAccount()
+    await expect(account.signTypedData(typedData)).rejects.toThrow(/lacks signDigest/)
   })
 })
 
