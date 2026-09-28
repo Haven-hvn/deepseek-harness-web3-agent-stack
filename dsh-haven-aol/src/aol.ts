@@ -334,6 +334,30 @@ export function freshNonce(): bigint {
   return BigInt('0x' + randomBytes(32).toString('hex'))
 }
 
+/**
+ * Stage-aware unwrap: vetkeys throws bare 'Decryption failed' from three
+ * different local stages (transport unwrap inside recoverVetKey, IBE epoch-key
+ * open, file AES-GCM open). Name the stage and keep the cause, or a holder
+ * misdiagnoses crypto failures as balance denials.
+ */
+function unwrapStage<T>(stage: string, fn: () => T): T {
+  try {
+    return fn()
+  } catch (e: unknown) {
+    const cause = e instanceof Error ? e.message : String(e)
+    throw new Error(`dsh-haven-aol: ${stage} failed (${cause})`)
+  }
+}
+
+async function unwrapStageAsync<T>(stage: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn()
+  } catch (e: unknown) {
+    const cause = e instanceof Error ? e.message : String(e)
+    throw new Error(`dsh-haven-aol: ${stage} failed (${cause})`)
+  }
+}
+
 /** Chain variant → EIP-155 id (mirrors dsh-arkiv's reference table). */
 const CHAIN_VARIANT_TO_EIP155: Readonly<Record<string, number>> = {
   EthMainnet: 1,
@@ -604,10 +628,11 @@ export class AolRuntime {
         nonce, signature, eip712ChainId, eip712VerifyingContract,
       })
       if ('err' in result) throw new HavenAolError(result.err)
-      return recoverVetKey(result.ok.encryptedKey, secretKey, result.ok.verificationKey, derivationInput)
+      return unwrapStage('v1 vetKey transport unwrap', () =>
+        recoverVetKey(result.ok.encryptedKey, secretKey, result.ok.verificationKey, derivationInput))
     })
-    const aesKey = ibeDecryptAesKey(metadata.encryptedAesKey, vetKey)
-    return decryptFile(params.encryptedFileBytes, aesKey)
+    const aesKey = unwrapStage('v1 epoch-key IBE unwrap', () => ibeDecryptAesKey(metadata.encryptedAesKey, vetKey))
+    return unwrapStageAsync('v1 file AES-GCM open', () => decryptFile(params.encryptedFileBytes, aesKey))
   }
 
   /**
@@ -639,10 +664,11 @@ export class AolRuntime {
         nonce, signature, eip712ChainId, eip712VerifyingContract,
       })
       if ('err' in result) throw new HavenAolError(result.err)
-      return recoverVetKey(result.ok.encryptedKey, secretKey, result.ok.verificationKey, derivationInput)
+      return unwrapStage('v3 vetKey transport unwrap', () =>
+        recoverVetKey(result.ok.encryptedKey, secretKey, result.ok.verificationKey, derivationInput))
     })
-    const aesKey = ibeDecryptAesKey(metadata.encryptedAesKey, vetKey)
-    return decryptFile(params.encryptedFileBytes, aesKey)
+    const aesKey = unwrapStage('v3 epoch-key IBE unwrap', () => ibeDecryptAesKey(metadata.encryptedAesKey, vetKey))
+    return unwrapStageAsync('v3 file AES-GCM open', () => decryptFile(params.encryptedFileBytes, aesKey))
   }
 
   /** v4 end-to-end decrypt (market-cap drip). Fails closed client-side on non-Bond oracles; same vetKey caching as v3 (per rung). */
@@ -677,10 +703,11 @@ export class AolRuntime {
         transportPublicKey: publicKey, nonce, signature, eip712ChainId, eip712VerifyingContract,
       })
       if ('err' in result) throw new HavenAolError(result.err)
-      return recoverVetKey(result.ok.encryptedKey, secretKey, result.ok.verificationKey, derivationInput)
+      return unwrapStage('v4 vetKey transport unwrap', () =>
+        recoverVetKey(result.ok.encryptedKey, secretKey, result.ok.verificationKey, derivationInput))
     })
-    const aesKey = ibeDecryptAesKey(metadata.encryptedAesKey, vetKey)
-    return decryptFile(params.encryptedFileBytes, aesKey)
+    const aesKey = unwrapStage('v4 epoch-key IBE unwrap', () => ibeDecryptAesKey(metadata.encryptedAesKey, vetKey))
+    return unwrapStageAsync('v4 file AES-GCM open', () => decryptFile(params.encryptedFileBytes, aesKey))
   }
 
   /**

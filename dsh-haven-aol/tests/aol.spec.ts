@@ -205,6 +205,31 @@ describe('gated decrypt', () => {
     expect(seen.eip712VerifyingContract).toBe('0x0000000000000000000000000000000000000000')
   })
 
+  it('vetkeys unwrap failures name their stage (transport vs IBE vs file)', async () => {
+    // A canister ok carrying unopenable keys must surface WHICH local stage
+    // rejected them — the SDK throws bare 'Decryption failed' from all three,
+    // which a holder misreads as a balance denial.
+    internals.requestV3 = (async () => ({
+      ok: {
+        encryptedKey: new Uint8Array(192).fill(7),
+        verificationKey: new Uint8Array(96).fill(9),
+      },
+    })) as never
+    const { AolRuntime } = await import('../src/aol.ts')
+    const rt = new AolRuntime({
+      canisterId: 'gny6k-fqaaa-aaaab-ag3ra-cai',
+      icpHost: 'https://icp-api.io',
+      fetchRootKey: false,
+      signGate: async () => ('0x' + 'ab'.repeat(65)) as `0x${string}`,
+    })
+    await expect(rt.decryptV3({
+      gateMetadataJson: v3meta(),
+      encryptedFileBytes: new Uint8Array([9, 9]),
+      evmAddress: VERIFIER,
+      nonce: 1n,
+    })).rejects.toThrow(/v3 vetKey transport unwrap failed \(/)
+  })
+
   it('aol_decrypt requires exactly one of path/cid', async () => {
     const { execute } = await harness()
     const res = await execute('aol_decrypt', {
