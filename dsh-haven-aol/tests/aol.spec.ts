@@ -424,3 +424,11 @@ describe('seal (harness-native encrypt side)', () => {
     })).toThrow('cid must be')
   })
 })
+
+describe('seam declarations', () => {
+  it('injects wallet: decrypt signs the EIP-712 gate request via ctx.wallet', () => {
+    // Live failure: without the declaration Cordis throws 'cannot get
+    // property "wallet" without inject' on every decrypt.
+    expect([...havenAol.inject]).toEqual(expect.arrayContaining(['tools', 'wallet']))
+  })
+})

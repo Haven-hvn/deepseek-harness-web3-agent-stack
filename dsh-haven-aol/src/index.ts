@@ -48,7 +48,11 @@ export const name = 'haven-aol'
  * ctx.get(): reads (gate_info/epoch/market_cap) never sign, and aol_decrypt
  * fails loud with an actionable error when no wallet is mounted.
  */
-export const inject = ['tools'] as const
+// 'wallet': decrypt signs the EIP-712 gate request via requireWallet —
+// without the declaration Cordis throws 'cannot get property "wallet"
+// without inject'. ('synapse' stays undeclared: cid-decrypt degrades to
+// a friendly error via optionalSynapse instead of dormancy.)
+export const inject = ['tools', 'wallet'] as const
 
 /** Plugin configuration — public endpoints + wallet name only. No secrets. */
 export interface Config {
@@ -100,7 +104,14 @@ interface SynapseSeam {
 }
 
 function optionalSynapse(ctx: Context): SynapseSeam | undefined {
-  const s = (ctx as unknown as { synapse?: SynapseSeam }).synapse
+  // Undeclared-seam access throws in Cordis by design; absence must degrade
+  // to the friendly cid-decrypt error, never to the inject exception.
+  let s: SynapseSeam | undefined
+  try {
+    s = (ctx as unknown as { synapse?: SynapseSeam }).synapse
+  } catch {
+    return undefined
+  }
   if (!s || typeof s.retrieve !== 'function') return undefined
   return s
 }
