@@ -25,6 +25,25 @@ export interface ArkivCreateClient {
   createEntity: (data: any) => Promise<CreateEntityReturnType>;
 }
 
+/**
+ * patchEntity args for a whole-record rewrite. Attributes ride `set`:
+ * the SDK silently ignores an `attributes` key on patch (create is the
+ * only call that takes one), so passing `attributes` looks green while
+ * every attribute goes stale — live incident, three no-op rewrites.
+ * Values arrive pre-tagged (str/i32/u256/addr) from validateHavenWrite
+ * and pass through untouched.
+ */
+export function patchArgsForUpdate(params: {
+  key: Hex; payload: Uint8Array; contentType: string; attributes?: Record<string, unknown>;
+}): { entityKey: Hex; payload: Uint8Array; contentType: string; set: Record<string, unknown> } {
+  return {
+    entityKey: params.key,
+    payload: params.payload,
+    contentType: params.contentType,
+    set: params.attributes ?? {},
+  };
+}
+
 /** One create through an explicit client (the backend delegates to this). */
 export async function createEntityWithClient(
   client: ArkivCreateClient,
@@ -142,10 +161,7 @@ export class ArkivBackend {
     const { ExpirationTime } = await import('@arkiv-network/sdk');
     const expires = params.expiresIn ? ExpirationTime.fromSeconds(params.expiresIn) : undefined;
     const { txHash } = await (client as any).patchEntity({
-      entityKey: params.key,
-      payload: params.payload,
-      contentType: params.contentType,
-      attributes: params.attributes,
+      ...patchArgsForUpdate({ key: params.key, payload: params.payload, contentType: params.contentType, attributes: params.attributes }),
       expires,
     });
     return { txHash };

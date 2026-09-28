@@ -69,3 +69,21 @@ describe('arkiv output contracts', () => {
     expect([...inject]).toEqual(expect.arrayContaining(['wallet', 'tools', 'credentials']))
   })
 })
+
+describe('arkiv patch args', () => {
+  it('whole-record rewrites ride attributes on set (patch ignores attributes)', async () => {
+    // Live incident: updateEntity passed `attributes` to patchEntity,
+    // which the SDK silently ignores — three green txs, stale attrs.
+    const { patchArgsForUpdate } = await import('../src/arkiv.ts')
+    const tagged = { grp: { tag: 'str' }, gate_type: { tag: 'i32' } }
+    const args = patchArgsForUpdate({
+      key: '0xabc' as `0x${string}`,
+      payload: new TextEncoder().encode('{}'),
+      contentType: 'application/json',
+      attributes: tagged,
+    })
+    expect(args).toMatchObject({ entityKey: '0xabc', contentType: 'application/json' })
+    expect(args.set).toBe(tagged)
+    expect('attributes' in args).toBe(false)
+  })
+})
