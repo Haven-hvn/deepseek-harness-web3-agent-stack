@@ -58,7 +58,7 @@ vi.mock('@filoz/synapse-core/sp', () => ({
   findPiece: pinMocks.findPiece,
 }))
 vi.mock('@filoz/synapse-core/piece', () => ({
-  Piece: { from: (s: string) => s },
+  from: (s: string) => s,
 }))
 vi.mock('@filoz/synapse-core/sp-registry', () => ({
   getApprovedPDPProviders: pinMocks.getApprovedPDPProviders,

@@ -259,8 +259,8 @@ export class FilecoinBackend {
       const entry = this.pieces.get(cid)
       if (!entry) return notPinned
       const { findPiece } = await import('@filoz/synapse-core/sp')
-      const { Piece } = await import('@filoz/synapse-core/piece')
-      const piece = Piece.from(entry.pieceCid)
+      const { from: pieceFrom } = await import('@filoz/synapse-core/piece')
+      const piece = pieceFrom(entry.pieceCid)
       for (const serviceURL of await this.providerUrls(entry.providerId)) {
         try {
           await findPiece({ serviceURL, pieceCid: piece, timeout: 15000 })
