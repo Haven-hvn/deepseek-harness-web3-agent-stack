@@ -1,11 +1,11 @@
 /**
- * ERC-8004 transport — viem over Base Sepolia + Filecoin Pin via ctx.synapse.
+ * ERC-8004 transport — viem over Ethereum Sepolia + Filecoin Pin via ctx.synapse.
  *
  * Two planes, both gated through DSH seams (no raw key in this package):
  * 1) Filecoin Pin: delegated to ctx.synapse (dsh-storage-synapse) — PDP proofs, USDFC via its own gated credential.
- * 2) Base Sepolia: viem publicClient + wallet-gated signing via ctx.wallet.signTransaction (OWS vault), treasury-aware.
+ * 2) Ethereum Sepolia: viem publicClient + wallet-gated signing via ctx.wallet.signTransaction (OWS vault), treasury-aware.
  *
- * Spec: ERC-8004 Identity Registry 0x8004A818BFB912233c491871b3d84c89A494BD9e on Base Sepolia (84532)
+ * Spec: ERC-8004 Identity Registry 0x8004A818BFB912233c491871b3d84c89A494BD9e on Ethereum Sepolia (11155111)
  * Card: https://eips.ethereum.org/EIPS/eip-8004#registration-v1
  */
 
@@ -62,7 +62,7 @@ export function buildDefaultCard(params: {
   mcpEndpoint?: string | undefined
   chainId?: number | undefined
 }): AgentCard {
-  const chainId = params.chainId ?? 84532
+  const chainId = params.chainId ?? 11155111
   return {
     type: 'https://eips.ethereum.org/EIPS/eip-8004#registration-v1',
     name: params.name ?? 'DeepSeek Harness Agent',
@@ -103,9 +103,9 @@ export class Erc8004Backend {
 
   private async getChain(): Promise<any> {
     const { defineChain } = await import('viem')
-    if (this.opts.chainId === 84532) {
-      const { baseSepolia } = await import('viem/chains')
-      return baseSepolia
+    if (this.opts.chainId === 11155111) {
+      const { sepolia } = await import('viem/chains')
+      return sepolia
     }
     return defineChain({
       id: this.opts.chainId,

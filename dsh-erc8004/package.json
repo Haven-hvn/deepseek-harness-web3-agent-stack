@@ -1,6 +1,6 @@
 {
   "name": "dsh-erc8004",
-  "description": "ERC-8004 Identity Registry for DeepSeek Harness: ctx.erc8004 (agent card → Filecoin Pin → Base Sepolia NFT) — cryptographically-verified persistent storage via Synapse/filecoin-pin, on-chain register(string) through viem wallet client, gated per-operation credential resolution",
+  "description": "ERC-8004 Identity Registry for DeepSeek Harness: ctx.erc8004 (agent card → Filecoin Pin → Ethereum Sepolia NFT) — cryptographically-verified persistent storage via Synapse/filecoin-pin, on-chain register(string) through viem wallet client, gated per-operation credential resolution",
   "version": "0.1.0",
   "type": "module",
   "main": "lib/index.js",

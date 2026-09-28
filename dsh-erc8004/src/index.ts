@@ -3,12 +3,12 @@
  *
  * Two-plane port of the Filecoin Pin + ERC-8004 tutorial (docs.filecoin.io):
  * - Filecoin Pin: agent card JSON → IPFS CID (PDP proofs) via ctx.synapse (dsh-storage-synapse, USDFC)
- * - ERC-8004: register(string tokenURI) on Base Sepolia 0x8004A818BFB912233c491871b3d84c89A494BD9e via wallet-gated signing
+ * - ERC-8004: register(string tokenURI) on Ethereum Sepolia 0x8004A818BFB912233c491871b3d84c89A494BD9e via wallet-gated signing
  *
  * Isolated bundle, coupled at seams:
  * - Injects wallet (signer identity) + tools + optional treasury/synapse/credentials — never stores a raw key.
  * - Filecoin: delegated entirely to ctx.synapse (its own per-operation gated credential) — no privateKey in this package.
- * - Base Sepolia: viem publicClient + custom toAccount delegating signTransaction/signMessage to ctx.wallet (OWS vault), treasury authorize/recordExpense.
+ * - Ethereum Sepolia: viem publicClient + custom toAccount delegating signTransaction/signMessage to ctx.wallet (OWS vault), treasury authorize/recordExpense.
  *
  * @module dsh-erc8004
  */
@@ -106,9 +106,9 @@ export interface Config {
 
 export const Config: z<Config> = z.object({
   wallet: z.string().required(),
-  baseRpcUrl: z.string().default('https://sepolia.base.org'),
+  baseRpcUrl: z.string().default('https://ethereum-sepolia-rpc.publicnode.com'),
   identityRegistry: z.string().default('0x8004A818BFB912233c491871b3d84c89A494BD9e'),
-  chainId: z.number().default(84532),
+  chainId: z.number().default(11155111),
   agentName: z.string().default('DeepSeek Harness Agent'),
   image: z.string().default('https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png'),
   agentDescription: z.string().default('Autonomous agent on DeepSeek Harness (dsh-channel-xmtp + dsh-wallet + dsh-erc8004). Provides XMTP messaging, wallet tools, Filecoin Pin storage, and ERC-8004 verifiable identity.'),
@@ -535,7 +535,7 @@ export class Erc8004Runtime {
     return { agentId, txHash: hash, tokenUri: record.tokenUri }
   }
 
-  /** Full flow: build card → store on Filecoin (via synapse) → register on Base Sepolia (via wallet). */
+  /** Full flow: build card → store on Filecoin (via synapse) → register on Ethereum Sepolia (via wallet). */
   async registerAgent(overrides?: Partial<AgentCard> & { filename?: string | undefined }): Promise<{ card: AgentCard; cid: string; tokenUri: string; agentId: string; txHash: `0x${string}`; pieceCid?: string | undefined }> {
     this.hook()
     const walletSeam: any = (this.ctx as any).wallet
@@ -611,7 +611,7 @@ const REGISTER_RESULT_SCHEMA = {
   properties: {
     agentId: { type: 'string', required: true, description: 'ERC-721 tokenId (decimal string)' },
     tokenUri: { type: 'string', required: true, description: 'ipfs://<cid>/agent-card.json' },
-    txHash: { type: 'string', required: true, description: 'Base Sepolia registration tx hash' },
+    txHash: { type: 'string', required: true, description: 'Ethereum Sepolia registration tx hash' },
     cid: { type: 'string', required: true },
     pieceCid: { type: 'string', description: 'Filecoin piece CID when available' },
   },
@@ -684,7 +684,7 @@ export function apply(ctx: Context, config: Config): void {
       defineTool({
         name: 'erc8004_register',
         description:
-          'Register the agent on the ERC-8004 Identity Registry (Base Sepolia 0x8004...BD9e): build card → pin to Filecoin via ctx.synapse (PDP proofs) → register(string tokenURI) via ctx.wallet signTransaction + treasury (sign-only, ~0.001 ETH gas). Provide custom tokenUri to skip build+pin and register directly. Returns agentId (tokenId), tokenUri ipfs://<cid>/agent-card.json, txHash, and Filecoin CIDs.',
+          'Register the agent on the ERC-8004 Identity Registry (Ethereum Sepolia 0x8004...BD9e): build card → pin to Filecoin via ctx.synapse (PDP proofs) → register(string tokenURI) via ctx.wallet signTransaction + treasury (sign-only, ~0.001 ETH gas). Provide custom tokenUri to skip build+pin and register directly. Returns agentId (tokenId), tokenUri ipfs://<cid>/agent-card.json, txHash, and Filecoin CIDs.',
         parameters: {
           tokenUri: { type: 'string', description: 'Existing ipfs://<cid>/agent-card.json to register directly (skips build+pin)' },
           name: { type: 'string', description: 'Agent name override for the built card' },
@@ -707,7 +707,7 @@ export function apply(ctx: Context, config: Config): void {
           const res = await runtime.registerAgent(overrides)
           return { agentId: res.agentId, tokenUri: res.tokenUri, txHash: res.txHash, cid: res.cid, ...(res.pieceCid !== undefined ? { pieceCid: res.pieceCid } : {}) }
         },
-        presentCall: args => ({ card: 'generic', title: args.tokenUri ? `Register ERC-8004 ${args.tokenUri}` : 'Register ERC-8004 agent (Filecoin Pin + Base Sepolia)', kind: 'execute' }),
+        presentCall: args => ({ card: 'generic', title: args.tokenUri ? `Register ERC-8004 ${args.tokenUri}` : 'Register ERC-8004 agent (Filecoin Pin + Ethereum Sepolia)', kind: 'execute' }),
       }),
     ),
   )
@@ -716,7 +716,7 @@ export function apply(ctx: Context, config: Config): void {
     ctx.tools.register(
       defineTool({
         name: 'erc8004_token_uri',
-        description: 'Read the ERC-8004 tokenURI for an agentId (tokenId) via Base Sepolia call tokenURI(uint256). Verifies on-chain registration.',
+        description: 'Read the ERC-8004 tokenURI for an agentId (tokenId) via Ethereum Sepolia call tokenURI(uint256). Verifies on-chain registration.',
         parameters: {
           agentId: { type: 'string', required: true, description: 'Agent tokenId decimal string (from erc8004_register)' },
         },
@@ -733,7 +733,7 @@ export function apply(ctx: Context, config: Config): void {
     ctx.tools.register(
       defineTool({
         name: 'erc8004_owner_of',
-        description: 'Read ownerOf for an ERC-8004 agentId on Base Sepolia.',
+        description: 'Read ownerOf for an ERC-8004 agentId on Ethereum Sepolia.',
         parameters: {
           agentId: { type: 'string', required: true, description: 'Agent tokenId decimal string' },
         },

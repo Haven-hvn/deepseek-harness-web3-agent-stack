@@ -8,6 +8,7 @@ import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import * as erc8004 from '../src/index.ts'
+import { buildDefaultCard, Erc8004Backend } from '../src/erc8004.ts'
 import { MemoryCredentials } from '../../dsh-wallet/tests/helpers/memory-credentials.ts'
 
 async function harness() {
@@ -26,9 +27,9 @@ async function harness() {
   ;(ctx as any).synapse = mockSynapse
   await ctx.plugin(erc8004 as any, {
     wallet: 'agent',
-    baseRpcUrl: 'https://sepolia.base.org',
+    baseRpcUrl: 'https://ethereum-sepolia-rpc.publicnode.com',
     identityRegistry: '0x8004A818BFB912233c491871b3d84c89A494BD9e',
-    chainId: 84532,
+    chainId: 11155111,
   })
   // Stub wallet adapter — avoid needing real OWS/evm provider in unit tests
   const FIXED_ADDR = '0x44896a716F7b5Ed343C6962b3D56FaA5377Cd052'
@@ -50,7 +51,7 @@ async function harness() {
   // Stub network-dependent methods — keep credential gating and event logic real where possible
   const rt: any = ctx.erc8004
   // Keep storeCard going through synapse (real path) but also stub to avoid real upload — already via mockSynapse
-  // Stub register to avoid real Base Sepolia RPC, but keep wallet gate call path
+  // Stub register to avoid real Ethereum Sepolia RPC, but keep wallet gate call path
   const originalRegister = rt.register.bind(rt)
   rt.register = vi.fn(async (tokenUri: string) => {
     // Simulate wallet-gated register without hitting publicClient — still goes through authorize
@@ -256,9 +257,9 @@ describe('exactly-once: timeout-after-broadcast + read-back (real register path)
     ;(ctx as any).synapse = mockSynapse
     await ctx.plugin(erc8004 as any, {
       wallet: 'agent',
-      baseRpcUrl: 'https://sepolia.base.org',
+      baseRpcUrl: 'https://ethereum-sepolia-rpc.publicnode.com',
       identityRegistry: '0x8004A818BFB912233c491871b3d84c89A494BD9e',
-      chainId: 84532,
+      chainId: 11155111,
     })
     const FIXED_ADDR = '0x44896a716F7b5Ed343C6962b3D56FaA5377Cd052'
     // @ts-ignore mock
@@ -468,5 +469,32 @@ describe('persona onboarding', () => {
     expect(yml).toContain('Filecoin')
     expect(yml).toContain('erc8004_register')
     expect(yml).toContain('FIRST MESSAGE')
+  })
+})
+
+describe('sepolia chain default', () => {
+  it('builds the agentWallet endpoint on Ethereum Sepolia by default', () => {
+    const card = buildDefaultCard({ ownerAddress: '0x44896a716F7b5Ed343C6962b3D56FaA5377Cd052' })
+    const wallet = card.endpoints.find(e => e.name === 'agentWallet')
+    expect(wallet?.endpoint).toBe('eip155:11155111:0x44896a716F7b5Ed343C6962b3D56FaA5377Cd052')
+  })
+
+  it('resolves viem canonical sepolia chain for 11155111', async () => {
+    const backend = new Erc8004Backend({
+      baseRpcUrl: 'https://ethereum-sepolia-rpc.publicnode.com',
+      identityRegistry: '0x8004A818BFB912233c491871b3d84c89A494BD9e',
+      chainId: 11155111,
+    })
+    const client = await backend.getPublicClient()
+    expect(client.chain.id).toBe(11155111)
+    expect(client.chain.name).toBe('Sepolia')
+  })
+
+  it('bundle patch points at Ethereum Sepolia', async () => {
+    const { readFile } = await import('node:fs/promises')
+    const yml = await readFile('./dsh-erc8004/cordis.patch.yml', 'utf8')
+    expect(yml).toContain('chainId: 11155111')
+    expect(yml).toContain('https://ethereum-sepolia-rpc.publicnode.com')
+    expect(yml).not.toContain('84532')
   })
 })

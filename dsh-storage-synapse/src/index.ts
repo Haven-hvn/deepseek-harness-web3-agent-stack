@@ -20,7 +20,7 @@
  *   delegate to `ctx.wallet` (OWS vault, filecoin-pin 1.3.0 AccountConfig).
  *   No private key, no credential reference in config — the wallet seam
  *   resolves → loads → signs → drops per operation via the signing gate and
- *   treasury, exactly like `dsh-erc8004` on Base Sepolia.
+ *   treasury, exactly like `dsh-erc8004` on Ethereum Sepolia.
  *
  * @module dsh-storage-synapse
  */
