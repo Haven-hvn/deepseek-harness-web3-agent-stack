@@ -272,6 +272,8 @@ describe('registered tools', () => {
     const text = textOf(result)
     expect(text).toContain('1. Paper 1')
     expect(text).toContain('https://arxiv.org/abs/2609.00001')
+    // The model must see the fetchable link (key stripped) — the info URL alone is not downloadable.
+    expect(text).toContain('downloadUrl: http://localhost:9696/1/download?link=abc&file=Paper')
     expect(text).toContain('untrusted data')
     expect(JSON.stringify(result.value) + text).not.toContain(KEY)
   })

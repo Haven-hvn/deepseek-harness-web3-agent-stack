@@ -416,7 +416,7 @@ export function createTools(service: AcquireService, config: ResolvedConfig, hoo
     parameters: {
       magnet: { type: 'string', description: 'Magnet URI (exactly one source per call)' },
       url: { type: 'string', description: 'Direct http(s) URL (exactly one source per call)' },
-      downloadUrl: { type: 'string', description: 'Prowlarr download link from prowlarr_search (redacted form is fine)' },
+      downloadUrl: { type: 'string', description: 'Prowlarr download link from prowlarr_search (the downloadUrl: line; redacted form is fine — never the info page URL, which fails)' },
       magnetUrl: { type: 'string', description: 'Prowlarr magnet link from prowlarr_search' },
       title: { type: 'string', description: 'Display title for the acquisition' },
       waitMs: { type: 'integer', description: `Inline wait budget in ms (default ${config.defaultWaitMs}, max ${config.maxWaitMs}; 0 returns after submit)` },

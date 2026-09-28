@@ -207,6 +207,11 @@ export function formatSearch(value: { query: string; type: string; total: number
     lines.push(`   ${facts.join(' · ')}`)
     const link = release.infoUrl ?? release.commentUrl
     if (link !== undefined) lines.push(`   ${link}`)
+    // The fetchable links (API key already stripped): an info page alone
+    // cannot be downloaded — private indexers answer it with a login gate —
+    // so the model must see these to pass one to a download tool.
+    if (release.downloadUrl !== undefined) lines.push(`   downloadUrl: ${release.downloadUrl}`)
+    if (release.magnetUrl !== undefined) lines.push(`   magnetUrl: ${release.magnetUrl}`)
   })
   lines.push('', UNTRUSTED_NOTE)
   return lines.join('\n')
@@ -278,7 +283,7 @@ export function createTools(client: ProwlarrClient, config: ResolvedConfig): [To
       'Search the indexers configured in Prowlarr and return matching releases (title, indexer, publish date, size, categories, info URL, download/magnet links).',
       'Searches every enabled indexer unless indexerIds is given; call',
       `${config.toolPrefix}_indexers first to discover ids, supported search types, and category ids.`,
-      'Results are metadata only; nothing is downloaded. Pass a hit\'s downloadUrl or magnetUrl to a download tool to fetch it.',
+      'Results are metadata only; nothing is downloaded. Each hit lists its fetchable downloadUrl/magnetUrl links below the info URL — pass one of those to a download tool; the info URL itself is a details page, not a download.',
     ].join(' '),
     parameters: {
       query: { type: 'string', required: true, description: 'Search terms, passed to each indexer as-is' },

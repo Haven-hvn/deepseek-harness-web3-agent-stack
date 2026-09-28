@@ -140,6 +140,24 @@ export function isDefinitePreQueue(error: AcquisitionError): boolean {
   return false
 }
 
+/**
+ * A Prowlarr release reference must resolve to bytes, never a login/info
+ * page: when the model passes an indexer's details-page URL as
+ * `downloadUrl`, the tracker answers with HTML (often a login gate) and
+ * importing that as a completed acquisition is a silent wrong answer.
+ * Fail loud with the correction instead.
+ */
+function rejectInfoPage(file: FetchedFile, link: string): void {
+  const sniffed = file.mime.split(';', 1)[0]?.trim().toLowerCase() ?? ''
+  const declared = file.contentType.split(';', 1)[0]?.trim().toLowerCase() ?? ''
+  if (sniffed !== 'text/html' && declared !== 'text/html') return
+  throw new AcquisitionError(
+    `Prowlarr reference resolved to an HTML page, not downloadable bytes — this is usually an indexer info/details page (often a login gate), not the release link. Pass the downloadUrl/magnetUrl link from prowlarr_search, not the info URL: ${describeUrl(link)}`,
+    'ACQUIRE_INVALID_REQUEST',
+    { permanent: true },
+  )
+}
+
 /** Submits downloads and polls them to completion. */
 export class AcquireService {
   private readonly store: HandleStore
@@ -246,8 +264,10 @@ export class AcquireService {
       if (outcome.kind === 'magnet') {
         return await this.submitTorrent(id, { magnet: outcome.magnet }, title, waitMs, signal, refKey)
       }
+      rejectInfoPage(outcome.file, link)
       return await this.branchFetchedFile(id, outcome.file, title, waitMs, signal, refKey)
     }
+    rejectInfoPage(resolved.file, link)
     return await this.branchFetchedFile(id, resolved.file, title, waitMs, signal, refKey)
   }
 

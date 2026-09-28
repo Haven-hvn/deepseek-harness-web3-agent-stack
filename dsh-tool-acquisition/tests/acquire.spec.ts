@@ -384,6 +384,26 @@ describe('AcquireService', () => {
     expect(qbAdds).toHaveLength(0)
     expect(trAdds).toHaveLength(0)
   })
+  it('rejects an indexer info page served behind a Prowlarr download link', async () => {
+    routes['/7/download'] = { status: 200, headers: { 'content-type': 'text/html' }, body: '<html><body>login required</body></html>' }
+    const dir = tmpRoot()
+    const service = new AcquireService(serviceOptions(dir))
+    const error = await service.submit({ downloadUrl: `${filesUrl}/7/download`, title: 'Gate' }).catch(error => error)
+    expect(error).toMatchObject({ code: 'ACQUIRE_INVALID_REQUEST', permanent: true })
+    expect(String(error.message)).toContain('info/details page')
+    expect(qbAdds).toHaveLength(0)
+    expect(trAdds).toHaveLength(0)
+  })
+  it('rejects an info page reached through a Prowlarr redirect', async () => {
+    routes['/9/download'] = { status: 302, headers: { location: '/gate' }, body: '' }
+    routes['/gate'] = { status: 200, headers: { 'content-type': 'text/html' }, body: '<html><body>login</body></html>' }
+    const dir = tmpRoot()
+    const service = new AcquireService(serviceOptions(dir))
+    await expect(service.submit({ downloadUrl: `${filesUrl}/9/download`, title: 'Gate' }))
+      .rejects.toMatchObject({ code: 'ACQUIRE_INVALID_REQUEST', permanent: true })
+    expect(qbAdds).toHaveLength(0)
+    expect(trAdds).toHaveLength(0)
+  })
   it('fails over to the next backend on transient errors', async () => {
     trTorrents = [{ hashString: 'abcdef0123456789', status: 4, percentDone: 0.1, error: 0, leftUntilDone: 10 }]
     const dir = tmpRoot()
