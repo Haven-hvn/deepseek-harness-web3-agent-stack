@@ -6,7 +6,7 @@
  * attach, settled replay, failed retry), the attribute-query restart
  * cover, and lazy hook registration against a fake guard.
  *
- * Every write here is a valid Haven record (ARKIV_FORMAT v2.1.0): the
+ * Every write here is a valid Haven record (ARKIV_FORMAT v2.2.0): the
  * runtime validates before ledgering, so the fixtures carry the real
  * shape — a clear `haven.video.full` with `fcid` payload.
  */

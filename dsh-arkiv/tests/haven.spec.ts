@@ -1,7 +1,7 @@
 /**
  * Haven application-protocol proofs for dsh-arkiv writes.
  *
- * The runtime validates every create/update against ARKIV_FORMAT v2.1.0
+ * The runtime validates every create/update against ARKIV_FORMAT v2.2.0
  * BEFORE signing (see ../src/haven.ts, ported from
  * the reference services/arkiv_sync.py). These specs pin the per-group record
  * shapes, the attr↔gate cross-checks, the reference-compatible wire
@@ -155,6 +155,28 @@ function genericCtFile() {
   };
 }
 
+function audioFlac() {
+  return {
+    payload: new TextEncoder().encode(JSON.stringify({
+      piece: 'bafkzcibaudio',
+      gate: JSON.stringify(gateV1()),
+      name: 'album.flac',
+      ct: 'audio/flac',
+      size: 175501000,
+    })),
+    contentType: 'application/json',
+    attributes: {
+      grp: 'haven.audio.full',
+      title: 'Master of Reality (1971) [FLAC]',
+      gate_type: 1,
+      gate_token: TOKEN,
+      gate_chain: 8453,
+      gate_threshold: 1,
+      sha256_ct: SHA,
+    },
+  };
+}
+
 function dripSeries() {
   return {
     payload: new TextEncoder().encode(JSON.stringify({ targets: [100, 500, 1000], creator: '@herald', mime: 1 })),
@@ -195,11 +217,27 @@ describe('haven writes: valid records pass', () => {
     ['clear full', fullClear],
     ['generic image', genericImage],
     ['generic ct file', genericCtFile],
+    ['audio flac', audioFlac],
     ['drip series', dripSeries],
     ['drip part', dripPart],
   ])('%s validates', (_name, build) => {
     const write = validateHavenWrite(build());
     expect(write.contentType).toBe('application/json');
+  });
+
+  it('validates haven.audio.full as the generic-file record (name + ct, full BTL)', () => {
+    const write = validateHavenWrite(audioFlac());
+    expect(write.grp).toBe('haven.audio.full');
+    expect(write.grpClass).toBe('generic');
+    expect(write.expiresIn).toBe(HAVEN_BTL_FULL_S);
+    const nameless = audioFlac();
+    nameless.payload = new TextEncoder().encode(JSON.stringify({
+      piece: 'bafkzcibaudio',
+      gate: JSON.stringify(gateV1()),
+      ct: 'audio/flac',
+      size: 1,
+    }));
+    expect(() => validateHavenWrite(nameless)).toThrow(/payload name is required/);
   });
 
   it('custom grp overrides follow the generic-file record', () => {
@@ -254,7 +292,6 @@ describe('haven writes: fail-closed rejections', () => {
     ['missing grp', () => { const r = fullV1(); const { grp: _d, ...rest } = r.attributes; return { ...r, attributes: rest }; }, /grp is required/],
     ['malformed grp', () => { const r = fullV1(); return { ...r, attributes: { ...r.attributes, grp: 'Haven.Video' } }; }, /invalid grp/],
     ['single-label grp', () => { const r = fullV1(); return { ...r, attributes: { ...r.attributes, grp: 'single' } }; }, /invalid grp/],
-    ['reserved audio grp', () => { const r = fullV1(); return { ...r, attributes: { ...r.attributes, grp: 'haven.audio.full' } }; }, /reserved/],
     ['reserved meta grp', () => { const r = fullV1(); return { ...r, attributes: { ...r.attributes, grp: 'haven.meta.gate' } }; }, /reserved/],
     ['string gate_type', () => { const r = fullV1(); return { ...r, attributes: { ...r.attributes, gate_type: '1' } }; }, /i32 number/],
     ['bool gate_type', () => { const r = fullV1(); return { ...r, attributes: { ...r.attributes, gate_type: true } }; }, /boolean/],

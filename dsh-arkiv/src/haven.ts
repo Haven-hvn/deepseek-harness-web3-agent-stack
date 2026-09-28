@@ -1,5 +1,5 @@
 /**
- * Haven application-protocol enforcement for Arkiv entities (ARKIV_FORMAT v2.1.0).
+ * Haven application-protocol enforcement for Arkiv entities (ARKIV_FORMAT v2.2.0).
  *
  * This harness is Haven-specific: every entity written through
  * `arkiv_create_entity` / `arkiv_update_entity` must conform to the Haven
@@ -30,7 +30,7 @@
 import { addr, bytes32, i32, key, str } from '@arkiv-network/sdk/attr';
 
 /** Spec version this module enforces (bump with ARKIV_FORMAT.md). */
-export const HAVEN_FORMAT_VERSION = '2.1.0';
+export const HAVEN_FORMAT_VERSION = '2.2.0';
 
 /** Usenet-style group taxonomy (spec §Taxonomy). */
 export const HAVEN_GROUPS = {
@@ -46,7 +46,8 @@ export const HAVEN_GROUPS = {
 
 /** Groups the harness refuses to write (reserved, no reader contract yet). */
 export const HAVEN_RESERVED_GROUPS: ReadonlySet<string> = new Set([
-  HAVEN_GROUPS.audioFull, // audio writes haven.video.full, exactly like the reference implementation
+  // haven.audio.full was reserved through v2.1.0 (audio rode haven.video.full);
+  // v2.2.0 gives audio its own group, validated as the generic-file record.
   HAVEN_GROUPS.metaGate, // future shared gate-corpus records
 ]);
 
@@ -249,13 +250,13 @@ function validateAttrName(name: string): void {
 }
 
 function classifyGroup(grp: unknown): { grp: string; grpClass: HavenGroupClass } {
-  if (typeof grp !== 'string' || grp.length === 0) fail(`grp is required (one of haven.video.full, haven.image.full, haven.text.full, haven.file.full, haven.video.drip.series, haven.video.drip.part, or a custom lowercase dot hierarchy)`);
+  if (typeof grp !== 'string' || grp.length === 0) fail(`grp is required (one of haven.video.full, haven.audio.full, haven.image.full, haven.text.full, haven.file.full, haven.video.drip.series, haven.video.drip.part, or a custom lowercase dot hierarchy)`);
   if (HAVEN_RESERVED_GROUPS.has(grp)) {
-    const hint = grp === HAVEN_GROUPS.audioFull ? 'audio writes haven.video.full' : 'no writer contract exists yet';
-    fail(`${grp} is reserved (${hint})`);
+    fail(`${grp} is reserved (no writer contract exists yet)`);
   }
   switch (grp) {
     case HAVEN_GROUPS.videoFull: return { grp, grpClass: 'video' };
+    case HAVEN_GROUPS.audioFull:
     case HAVEN_GROUPS.imageFull:
     case HAVEN_GROUPS.textFull:
     case HAVEN_GROUPS.fileFull: return { grp, grpClass: 'generic' };
@@ -348,7 +349,7 @@ function defaultExpiresIn(grpClass: HavenGroupClass): number {
 
 /**
  * Validate one Haven entity write and normalize it to its wire encoding.
- * Fail-closed: any deviation from ARKIV_FORMAT v2.1.0 throws before anything
+ * Fail-closed: any deviation from ARKIV_FORMAT v2.2.0 throws before anything
  * is signed. Normalization is what makes retries identical: hex lowercased,
  * `0x` stripped where the reference wire is bare, drip facts wrapped in their
  * spec-tagged SDK values.

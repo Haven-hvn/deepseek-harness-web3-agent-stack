@@ -32,7 +32,8 @@ reason written in the conversation.
    signing, never silently stored): payload carries `fcid`/`piece`
    (Filecoin locator, exactly one), `gate` (gate-metadata JSON),
    `vlm` (analysis CID when present); attributes carry `grp`
-   (`haven.video.full`, or the generic-file / drip group),
+   (`haven.video.full` for video, `haven.audio.full` for audio,
+   or the generic-file / drip group),
    `title`, the gate corpus (`gate_type` = the gate version —
    1, 3, or 4, numeric, no `gate_version` key — plus
    for v3), `sha256_ct`, and `mime`. Multi-record releases (a
