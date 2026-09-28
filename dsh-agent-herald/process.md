@@ -16,7 +16,7 @@ reason written in the conversation.
    completion. Resubmitting the same source resolves to its handle —
    never force a duplicate.
 2. **Prepare.** Confirm the bytes: size, type, provenance (title,
-   creator, source URL). Name the release and its community.
+   creator, source URL). Name the release (§8) and its community.
    Audio albums ship as one merged file: combine the tracks with
    ffmpeg, embed the cover, then write the track boundaries as ID3
    chapters (`CHAP` + `CTOC`) with mutagen — ffmpeg cannot write
@@ -196,3 +196,24 @@ invisible when you don't.
   use — the journal records that you checked, not the numbers.
 - **Never write secrets.** Keys, seeds, and API tokens stay in
   the credential store and the environment, never in the journal.
+
+## 8. Release filename rules (music)
+
+Player routing on mobile keys off the file extension, and every
+hand-retyped byte is a drift risk (proven: retyped token/bytes failed
+decrypt and catalog writes). Music filenames obey this shape, no
+exceptions:
+
+- Master: `{band}+{album}+{year}.mp3` — all lowercase, words inside
+  a field joined with single underscores, charset `[a-z0-9_]` plus
+  the two literal `+` separators. No spaces, no other special
+  characters, no edition/bitrate/date suffixes, extension `.mp3`
+  mandatory. Example: `test_band+test_album+1971.mp3`.
+- Derived names append suffixes and never alter the stem: sealed
+  bytes `{stem}.mp3.enc`, sidecar `{stem}.mp3.enc.gate.json`,
+  trial-decrypt scratch `/tmp/{stem}.trial.mp3`.
+- Catalog `name` is the sealed filename, read from the file and
+  passed by path — never retyped. Catalog `ct` is `audio/mpeg`
+  for music (MP3 has no enum code; clients fall back to `ct`).
+- Before sealing, `ls` the exact filename and confirm it matches
+  the rule; announce the exact filename, copied, not recalled.
