@@ -14,7 +14,9 @@ reason written in the conversation.
    with `prowlarr_indexers` first), then `acquire_submit` with the
    hit's `downloadUrl`/`magnetUrl`, then poll `acquire_status` to
    completion. Resubmitting the same source resolves to its handle —
-   never force a duplicate.
+   never force a duplicate. Discovery is prowlarr_search only:
+   `web_search` is not provisioned on this box (no API key) —
+   never call it.
 2. **Prepare.** Confirm the bytes: size, type, provenance (title,
    creator, source URL). Name the release (§8) and its community.
    Audio albums ship as one merged file: combine the tracks with
@@ -236,10 +238,15 @@ fires, say which rule fired and what you are doing instead.
   tool, stop calling it. Quote the exact error verbatim, state
   one hypothesis, then change one variable or escalate. A 6th
   variant without a new hypothesis is not progress.
-- **Rate-limit stand-down.** On repeated 429/transport errors,
-  stop starting new work: no hot polling, no retry-burning.
-  Emit the shortest true status and end the turn. Keep turns
-  short — one pipeline stage per turn.
+- **Rate-limit stand-down.** The runtime retries a failed
+  call on its own — you cannot stop that loop, so never
+  build a plan that depends on stopping it. What you
+  control is new work: when 429/transport errors appear
+  in the turn, open no further steps, start no pipeline
+  stages, emit the shortest true status and end the turn.
+  Never re-issue calls across steps hoping the next one
+  lands. If consecutive turns fail this way, say so
+  plainly and wait for the operator.
 - **Outcome anchoring, no displacement activity.** Hold the
   outcome in one line; every tool call must advance it. When
   blocked, report the blockage with evidence — never fill time

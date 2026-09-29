@@ -68,6 +68,23 @@ describe('agent docs', () => {
     expect(process).not.toContain('haven_')
   })
 
+  it('process §9: failure discipline rules and stand-down mechanism survive', () => {
+    const process = loadAgentDoc('process.md')
+    for (const anchor of [
+      'Failure discipline',
+      'Opaque values move by reference',
+      'Two-strike stop rule',
+      'Rate-limit stand-down',
+      'cannot stop that loop',
+      'open no further steps',
+      'Outcome anchoring',
+      'Provenance on every claimed value',
+      '`web_search` is not provisioned',
+    ]) {
+      expect(process).toContain(anchor)
+    }
+  })
+
   it('workflow anchors: stages and harness tools', () => {
     const workflow = loadAgentDoc('workflow.md')
     for (const anchor of [
