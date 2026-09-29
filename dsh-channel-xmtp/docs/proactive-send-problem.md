@@ -5,11 +5,15 @@ Date: 2026-09-28. Component: `dsh-channel-xmtp`. Status: observed in production 
 ## The incident
 
 On 2026-09-28 ~20:56 EDT, the operator sent `Go` over XMTP/Convos, authorizing
-Herald's merged-album pipeline. The turn ran **~48 minutes** (torrent download
-+ ffmpeg stitch of Black Sabbath *Master of Reality* FLACs into a 165MB MP3).
+Herald's merged-album pipeline. The turn ran **~48 minutes** (deliver start
+21:00:41 → reply echo 21:49:09), ending with Herald confirming a merged 165MB
+MP3. The per-minute decomposition of that window (ffmpeg vs. LLM roundtrips
+vs. status polling) was not traced — note the sampled torrent record predates
+the turn, so download time *within* those 48 minutes is unverified.
 At 21:33 the operator asked "Ok did you download and stitch the album
-together?" and got silence until 21:49, when both the pipeline result and the
-queued answer delivered at once.
+together?" and got silence until 21:49:09, when the pipeline result delivered
+and the queued question's turn *started* (its reply followed after; the exact
+second was not pinned).
 
 Log evidence (`journalctl -u herald-agent`):
 
