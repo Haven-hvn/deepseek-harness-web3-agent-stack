@@ -23,11 +23,15 @@
         baseURL: !!js process.env.MODEL_BASE_URL
         api: !!js process.env.MODEL_API_PROTOCOL || 'openai-completions'
         retryPolicy:
+          # Gentler under quota exhaustion: fewer strikes per step,
+          # longer backoff so sliding windows can drain; persistent
+          # failure surfaces fast so process §9 stand-down ends the
+          # turn instead of grinding.
           mode: normal
-          maxRetries: 8
+          maxRetries: 4
           backoff:
-            initialDelayMs: 2000
-            maxDelayMs: 60000
+            initialDelayMs: 10000
+            maxDelayMs: 180000
         models:
           - id: !!js process.env.MODEL_ID
             compat:
