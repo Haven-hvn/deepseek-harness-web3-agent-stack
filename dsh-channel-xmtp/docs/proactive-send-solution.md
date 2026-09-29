@@ -56,14 +56,14 @@ touched file) from spamming chat while letting real results through.
 
 If an inbound message arrives while a `deliver()` is mid-flight for that
 conversation, immediately `sendText` a short acknowledgment
-("Still on the merge — I'll answer this next.") before chaining. Small,
+("Still working on it — I'll answer this next.") before chaining. Small,
 contained, kills the "is he dead?" failure mode while A is built. Rate-limit
 to one ack per in-flight turn so duplicate prompts don't spam.
 
 ## Proposal C (doctrine, no code): background long pipelines
 
 Add to Herald's process: anything expected to run past a few minutes goes to
-`run_in_background` (bash/ffmpeg) or a subagent child; the chat turn replies
+`run_in_background` (bash) or a subagent child; the chat turn replies
 "started, I'll report back" and ends, freeing the conversation slot. The
 completion wake turn (delivered by A) carries the result. This converts the
 48-minute serial block into an async job with two short chat turns. Depends
@@ -96,5 +96,5 @@ not more.
 2. Land A + tests; verify criterion 1 against the live Herald convo with a
    trivial `sleep` job before trusting it with pipelines.
 3. Add the C process note to `dsh-agent-herald/process.md`; verify with a
-   real backgrounded acquire+stitch.
+   real long-running background job.
 4. Rebuild + republish the Docker image (CI does this on push to `main`).

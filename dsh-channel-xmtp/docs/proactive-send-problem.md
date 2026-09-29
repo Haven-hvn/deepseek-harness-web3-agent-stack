@@ -5,21 +5,20 @@ Date: 2026-09-28. Component: `dsh-channel-xmtp`. Status: observed in production 
 ## The incident
 
 On 2026-09-28 ~20:56 EDT, the operator sent `Go` over XMTP/Convos, authorizing
-Herald's merged-album pipeline. The turn ran **~48 minutes** (deliver start
-21:00:41 → reply echo 21:49:09), ending with Herald confirming a merged 165MB
-MP3. The per-minute decomposition of that window (ffmpeg vs. LLM roundtrips
-vs. status polling) was not traced — note the sampled torrent record predates
-the turn, so download time *within* those 48 minutes is unverified.
-At 21:33 the operator asked "Ok did you download and stitch the album
-together?" and got silence until 21:49:09, when the pipeline result delivered
-and the queued question's turn *started* (its reply followed after; the exact
-second was not pinned).
+a long task. The turn ran **~48 minutes** (deliver start 21:00:41 → reply echo
+21:49:09), ending with Herald confirming the completed result. The per-minute
+decomposition of that window (tool calls vs. LLM roundtrips vs. status
+polling) was not traced.
+At 21:33 the operator sent a follow-up asking for a status update and got
+silence until 21:49:09, when the long turn's result delivered and the queued
+question's turn *started* (its reply followed after; the exact second was not
+pinned).
 
 Log evidence (`journalctl -u herald-agent`):
 
 - `20:56:26 onMessage "Go"` → `deliver start` only at `21:00:41`
   (chained behind the previous turn).
-- `21:33:30 onMessage "did you download and stitch…"` → **no**
+- `21:33:30 onMessage "<status follow-up>"` → **no**
   `deliver start` until `21:49:09`.
 - Between those timestamps: only `sweep 1 convos` heartbeats. No errors.
   The agent was healthy and working; the operator saw a dead channel.
