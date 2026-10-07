@@ -51,7 +51,7 @@ COPY docker/keys.mjs docker/entrypoint.sh docker/convos-qr.sh \
 RUN chmod +x /opt/agent/entrypoint.sh /opt/agent/convos-qr.sh
 
 # Web3 agent stack workspace root (for in-image install + build).
-COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json /opt/stack/
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json .npmrc /opt/stack/
 # Web3 agent stack source (node_modules/lib excluded via .dockerignore).
 # One COPY per package: multi-source COPY merges directory contents.
 COPY dsh-wallet/ /opt/stack/dsh-wallet/

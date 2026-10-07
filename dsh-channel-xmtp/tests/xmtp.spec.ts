@@ -11,6 +11,9 @@
  *    records it) and the assistant's reply lands back in the SAME
  *    conversation via `sendText`.
  * 4. Consent auto-allow sweep and the bounded reconnect policy.
+ * 5. WEDGED TURNS FAIL LOUD — a stuck delivery rejects after the deliver
+ *    bound (late sends dropped), and rejections clear the per-conversation
+ *    chain so later messages still run instead of wedging behind a corpse.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -26,6 +29,7 @@ import ToolRuntime from '@deepseek-ai/dsh-tools'
 import WalletRuntime from 'dsh-wallet'
 import type { CryptoAdapter, WalletKeySource } from 'dsh-wallet'
 import * as channelXmtp from '../src/index.ts'
+import { deliveryPolicy, DELIVER_TIMEOUT_MS } from '../src/index.ts'
 import { internals } from '../src/xmtp.ts'
 import type {
   XmtpClient,
@@ -213,6 +217,7 @@ async function harness(config: Partial<channelXmtp.Config> = {}) {
 
 afterEach(() => {
   internals.sdk = undefined
+  deliveryPolicy.timeoutMs = DELIVER_TIMEOUT_MS
 })
 
 // ── 1. Identity through the wallet seam ───────────────────────────────────────
@@ -275,7 +280,12 @@ describe('reply outbox (exactly-once delivery)', () => {
     expect(llm.requests).toHaveLength(1)
     expect(conversation.sent).toEqual(['agent reply'])
     } finally {
-      await rm(dir, { recursive: true, force: true })
+      for (let i = 0; i < 5; i++) {
+        try { await rm(dir, { recursive: true, force: true }); break } catch (e) {
+          if (i === 4) throw e
+          await new Promise(r => setTimeout(r, 100))
+        }
+      }
     }
   })
 
@@ -424,5 +434,68 @@ describe('reconnect policy', () => {
       expect(last?.status).toBe('disconnected')
       expect(last?.reason).toContain('reconnect attempts exhausted')
     })
+  })
+})
+
+// ── 5. Wedged turns fail loud, never silent ─────────────────────────────────
+
+/** A conversation whose first send hangs forever, then behaves. */
+class HangingOnceConversation extends FakeConversation {
+  private hung = false
+
+  override async sendText(text: string): Promise<void> {
+    if (!this.hung) {
+      this.hung = true
+      await new Promise<never>(() => {})
+    }
+    return super.sendText(text)
+  }
+}
+
+/** A conversation whose first send throws, then behaves. */
+class FlakyOnceConversation extends FakeConversation {
+  private failed = false
+
+  override async sendText(text: string): Promise<void> {
+    if (!this.failed) {
+      this.failed = true
+      throw new Error('scripted send failure')
+    }
+    return super.sendText(text)
+  }
+}
+
+describe('deliver timeout (a stuck turn must not wedge its conversation)', () => {
+  it('a hung send rejects after the bound and the next message still runs', async () => {
+    deliveryPolicy.timeoutMs = 200
+    try {
+      const { world } = await harness()
+      const conversation = new HangingOnceConversation(ALLOWED)
+      world.conversations.set('conv-1', conversation)
+
+      world.onValue!(inbound({ id: 'msg-a' }))
+      // Wait for the 200ms timeout to fire and the delivery chain to clear
+      await new Promise(resolve => setTimeout(resolve, 500))
+      // The hung first send never completed; this second message's reply is the only one
+      world.onValue!(inbound({ id: 'msg-b', content: 'second' }))
+      await vi.waitFor(() => { expect(conversation.sent).toHaveLength(1) }, { timeout: 10_000 })
+      expect(conversation.sent).toEqual(['agent reply'])
+    } finally {
+      deliveryPolicy.timeoutMs = DELIVER_TIMEOUT_MS
+    }
+  })
+
+  it('a rejected deliver clears the chain so later messages run', async () => {
+    const { world } = await harness()
+    const conversation = new FlakyOnceConversation(ALLOWED)
+    world.conversations.set('conv-1', conversation)
+
+    world.onValue!(inbound({ id: 'msg-a' }))
+    world.onValue!(inbound({ id: 'msg-b', content: 'second' }))
+
+    // Without map cleanup on rejection, msg-b would fail fast against the
+    // stale msg-a error and nothing would ever send.
+    await vi.waitFor(() => { expect(conversation.sent).toHaveLength(1) }, { timeout: 10_000 })
+    expect(conversation.sent).toEqual(['agent reply'])
   })
 })

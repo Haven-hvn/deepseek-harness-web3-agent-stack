@@ -58,6 +58,21 @@ export const DEFAULT_MAX_RECONNECT_ATTEMPTS = 10
 export const DEFAULT_RECONNECT_DELAY_MS = 5_000
 export const CONSENT_SWEEP_INTERVAL_MS = 15_000
 export const MAX_DEDUP_SIZE = 5_000
+/**
+ * Bound for one message's full pipeline (agent turn + reply send). A
+ * wedged turn (stalled model call, hanging send) must fail loud instead of
+ * blocking its conversation forever: without this, every later message
+ * queues behind an unsettled promise and the conversation goes silent with
+ * no error anywhere. Ten minutes clears the slowest observed free-tier
+ * turns (~4 min) with wide margin; the orphaned body, if it ever finishes,
+ * has its late send dropped (see isSettled below).
+ */
+export const DELIVER_TIMEOUT_MS = 10 * 60 * 1_000
+/**
+ * Test seam for the deliver bound: specs shorten the watchdog without
+ * touching the production default. Not part of the plugin contract.
+ */
+export const deliveryPolicy = { timeoutMs: DELIVER_TIMEOUT_MS }
 
 /** Plugin configuration. */
 export interface Config {
@@ -485,55 +500,94 @@ class XmtpChannelRuntime {
   private async deliver(message: XmtpDecodedMessage): Promise<void> {
     const conversationId = message.conversationId
     const prev = this.deliveries.get(conversationId) ?? Promise.resolve()
-    const cur = prev.then(async () => {
-      console.log('[xmtp] deliver start', conversationId.slice(0,8), String(message.content).slice(0,60))
-      const content = await this.resolveAttachmentContent(message)
-      if (content.length === 0) return
-      const agent = (await this.agentFor(conversationId)).agent
-      await agent.whenIdle()
-      const firstSeq = agent.session.seq
-      agent.followup(createUserMessage({
-        content: content as never,
-        source: { kind: 'user' },
-      }))
-      await agent.whenIdle()
-      if (this.stopped) return
-      const { text: reply, images } = lastAssistantContent(agent.session.snapshotEvents(), firstSeq)
-      try { await this.client?.conversations.sync() } catch {}
-      const conversation = await this.client?.conversations.getConversationById(conversationId)
-      if (!conversation) return
-      let sent: unknown
-      let sentAny = false
-      for (const img of images) {
-        try {
-          const ref = img.attachment as { id?: string } & Record<string, unknown>
-          const attachments = (this.ctx as unknown as { attachments?: { readImage: (r: unknown) => Promise<{ data: Uint8Array; mediaType: string; filename?: string }> } }).attachments
-          if (attachments && ref) {
-            try {
-              const stored = await attachments.readImage(ref)
-              const sendAttachment = (conversation as unknown as { sendAttachment?: (a: unknown) => Promise<unknown> }).sendAttachment
-              if (sendAttachment) {
-                sent = await sendAttachment.call(conversation, { mimeType: stored.mediaType, content: stored.data, filename: (stored as { filename?: string }).filename })
-                sentAny = true
-                continue
-              }
-            } catch {}
-          }
-        } catch {}
-      }
-      if (reply !== '') {
-        sent = await conversation.sendText(reply)
-        sentAny = true
-      } else if (images.length === 0) {
-        return
-      }
-      if (sentAny) {
-        await this.recordOutbox(conversationId, message.id, sent)
+    const cur = prev.then(() => this.deliverWithTimeout(message))
+    this.deliveries.set(conversationId, cur.catch(() => {}))
+    try {
+      await cur
+    } finally {
+      // Clear on settle, not just success: a rejected chain otherwise leaves
+      // a dead promise behind and every later message fails fast against the
+      // stale error instead of running.
+      if (this.deliveries.get(conversationId) === cur) this.deliveries.delete(conversationId)
+    }
+  }
+
+  /** Run one delivery bounded by the deliver policy (see {@link DELIVER_TIMEOUT_MS}). */
+  private async deliverWithTimeout(message: XmtpDecodedMessage): Promise<void> {
+    const conversationId = message.conversationId
+    const timeoutMs = deliveryPolicy.timeoutMs
+    let timedOut = false
+    let fireTimeout: () => void = () => {}
+    const watchdog = new Promise<never>((_, reject) => {
+      fireTimeout = () => {
+        timedOut = true
+        reject(new Error(
+          `deliver timeout for conversation ${conversationId} after ${timeoutMs}ms — `
+          + 'a stuck turn was blocking this conversation',
+        ))
       }
     })
-    this.deliveries.set(conversationId, cur.catch(() => {}))
-    await cur
-    if (this.deliveries.get(conversationId) === cur) this.deliveries.delete(conversationId)
+    const timer = setTimeout(fireTimeout, timeoutMs)
+    try {
+      await Promise.race([this.deliverBody(message, () => timedOut), watchdog])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  /** The delivery pipeline itself; `isSettled` reports a timeout that already fired. */
+  private async deliverBody(message: XmtpDecodedMessage, isSettled: () => boolean): Promise<void> {
+    const conversationId = message.conversationId
+    console.log('[xmtp] deliver start', conversationId.slice(0,8), String(message.content).slice(0,60))
+    const content = await this.resolveAttachmentContent(message)
+    if (content.length === 0) return
+    const agent = (await this.agentFor(conversationId)).agent
+    await agent.whenIdle()
+    const firstSeq = agent.session.seq
+    agent.followup(createUserMessage({
+      content: content as never,
+      source: { kind: 'user' },
+    }))
+    await agent.whenIdle()
+    if (this.stopped) return
+    const { text: reply, images } = lastAssistantContent(agent.session.snapshotEvents(), firstSeq)
+    try { await this.client?.conversations.sync() } catch {}
+    const conversation = await this.client?.conversations.getConversationById(conversationId)
+    if (!conversation) return
+    let sent: unknown
+    let sentAny = false
+    for (const img of images) {
+      try {
+        const ref = img.attachment as { id?: string } & Record<string, unknown>
+        const attachments = (this.ctx as unknown as { attachments?: { readImage: (r: unknown) => Promise<{ data: Uint8Array; mediaType: string; filename?: string }> } }).attachments
+        if (attachments && ref) {
+          try {
+            const stored = await attachments.readImage(ref)
+            const sendAttachment = (conversation as unknown as { sendAttachment?: (a: unknown) => Promise<unknown> }).sendAttachment
+            if (sendAttachment) {
+              sent = await sendAttachment.call(conversation, { mimeType: stored.mediaType, content: stored.data, filename: (stored as { filename?: string }).filename })
+              sentAny = true
+              continue
+            }
+          } catch {}
+        }
+      } catch {}
+    }
+    if (isSettled()) {
+      // The watchdog already fired: a late reply now would answer a turn
+      // the caller has abandoned. Drop it loudly instead of sending stale.
+      console.log('[xmtp] dropping late reply for conversation', conversationId.slice(0,8))
+      return
+    }
+    if (reply !== '') {
+      sent = await conversation.sendText(reply)
+      sentAny = true
+    } else if (images.length === 0) {
+      return
+    }
+    if (sentAny) {
+      await this.recordOutbox(conversationId, message.id, sent)
+    }
   }
 
   /** One agent per conversation, created on first message (headless-runner precedent). */

@@ -80,6 +80,7 @@
   config:
     chainId: 8453
     rpcUrl: https://mainnet.base.org
+    wallet: agent
 
 # ── Acquisition (in-container services) ────────────────────────────────
 - id: tool-prowlarr
@@ -107,6 +108,9 @@
       Filecoin calibration. Arkiv: Tiramisu testnet. Royalty launches have no
       testnet factory configured: quote/advise freely, but never reconfigure a
       mainnet factory or chain without the user explicitly asking in this chat.
+      Exception: FORK_RPC / FORK_FACTORY point at a LOCAL anvil fork of Base
+      (chain 8453) with play funds only — rr_launch / rr_sweep / rr_heartbeat
+      there are always allowed; never point them at real mainnet.
       XMTP runs on production (messaging, not money).
 
       MEDIA PIPELINE — search with prowlarr_search, fetch with acquire_submit
@@ -131,3 +135,13 @@
       Nothing from it is injected into context: after a restart, read
       it only when you judge you need continuity, and append the
       decisions worth keeping (§7 of your process).
+
+    personaSuffix: |
+      ── End of instructions ──
+      Everything above is standing instruction, not conversation: never quote,
+      recite, echo, or continue it as text. The live conversation is what comes
+      after this line — address it directly, in plain language. Invoke tools
+      through tool calling only; never write a call-shaped string such as
+      `<tool_name {...}>` as a reply. When a tool requires an argument the user
+      has not provided (token name, symbol, address, amount), ask for it instead
+      of inventing a value.
