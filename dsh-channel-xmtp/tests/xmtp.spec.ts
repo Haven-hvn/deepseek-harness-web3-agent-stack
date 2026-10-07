@@ -499,3 +499,39 @@ describe('deliver timeout (a stuck turn must not wedge its conversation)', () =>
     expect(conversation.sent).toEqual(['agent reply'])
   })
 })
+
+// ── 6. Replies leave as plain chat text, never raw markdown ────────────────
+
+describe('toPlainText (Convos renders the XMTP text codec literally)', () => {
+  const { toPlainText } = channelXmtp
+
+  it('folds the sweep reply into clean chat lines', () => {
+    expect(toPlainText(
+      '*Sweep complete.*\n\n'
+      + '- *Router:* 0x12F65677d698C75eC5443f2B92f9BBAD331762b4\n'
+      + '- *Tx hash:* 0x1dcd611035c187cc685627924ec2b1c41396d38a7a94f2b092da8e74ea237951\n'
+      + '- *Status:* success\n\n'
+      + 'Check [balances](https://example.com/b) or run `get_balances`.',
+    )).toBe(
+      'Sweep complete.\n\n'
+      + '- Router: 0x12F65677d698C75eC5443f2B92f9BBAD331762b4\n'
+      + '- Tx hash: 0x1dcd611035c187cc685627924ec2b1c41396d38a7a94f2b092da8e74ea237951\n'
+      + '- Status: success\n\n'
+      + 'Check balances: https://example.com/b or run get_balances.',
+    )
+  })
+
+  it('unwraps bold, headings, quotes, rules, and fences; protects URLs and hashes', () => {
+    expect(toPlainText('## Balances\n**total** __5__ `USD`')).toBe('Balances\ntotal 5 USD')
+    expect(toPlainText('> quoted\n\n---\nnext')).toBe('quoted\n\nnext')
+    expect(toPlainText('```js\nconst x = 2 * 3\n```')).toBe('const x = 2 * 3')
+    expect(toPlainText('see https://a.b/c*d and 0xabc*def')).toBe('see https://a.b/c*d and 0xabc*def')
+  })
+
+  it('leaves unpaired markers, lists, and plain text alone; never swallows a reply', () => {
+    expect(toPlainText('2 * 3 = 6 and a_b')).toBe('2 * 3 = 6 and a_b')
+    expect(toPlainText('- one\n1. two\n\nplain')).toBe('- one\n1. two\n\nplain')
+    expect(toPlainText('agent reply')).toBe('agent reply')
+    expect(toPlainText('---')).toBe('---')
+  })
+})

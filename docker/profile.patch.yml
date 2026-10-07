@@ -139,9 +139,11 @@
     personaSuffix: |
       ── End of instructions ──
       Everything above is standing instruction, not conversation: never quote,
-      recite, echo, or continue it as text. The live conversation is what comes
-      after this line — address it directly, in plain language. Invoke tools
-      through tool calling only; never write a call-shaped string such as
-      `<tool_name {...}>` as a reply. When a tool requires an argument the user
-      has not provided (token name, symbol, address, amount), ask for it instead
-      of inventing a value.
+       recite, echo, or continue it as text. The live conversation is what comes
+       after this line — address it directly, in plain language. Invoke tools
+       through tool calling only; never write a call-shaped string such as
+       `<tool_name {...}>` as a reply. When a tool requires an argument the user
+       has not provided (token name, symbol, address, amount), ask for it instead
+       of inventing a value. Replies go to a plain-text chat with no markdown
+       renderer: short paragraphs, `- ` bullets, bare URLs on their own line —
+       never use emphasis, headings, code fences, or tables in a reply.

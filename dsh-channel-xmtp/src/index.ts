@@ -172,6 +172,51 @@ function lastAssistantContent(events: readonly SessionEvent[], firstSeq: number)
   return { text, images }
 }
 
+/**
+ * Fold the assistant's markdown into chat-shaped plain text. Replies leave
+ * over the XMTP text codec, which has no markdown renderer, so `*emphasis*`
+ * would arrive literally. Idempotent on already-plain input; URLs, `0x…`
+ * hashes, `- ` bullets, and numbered lists pass through untouched.
+ */
+export function toPlainText(reply: string): string {
+  // Fold markdown links first: protecting their URLs would split the pattern.
+  const linked = reply.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1: $2')
+  // Split on protected spans (URLs, hex hashes) so folding never touches them.
+  const parts = linked.split(/(https?:\/\/[^\s)>\]]+|0x[0-9a-fA-F]+)/g)
+  for (let i = 0; i < parts.length; i += 2) {
+    parts[i] = foldMarkdown(parts[i] ?? '')
+  }
+  const lines = parts.join('').split('\n').map((line) => line.replace(/[ \t]+$/g, ''))
+  const out: string[] = []
+  let blanks = 0
+  for (const line of lines) {
+    if (line.trim() === '') {
+      blanks += 1
+      if (blanks <= 1) out.push('')
+      continue
+    }
+    blanks = 0
+    out.push(line)
+  }
+  const folded = out.join('\n').trim()
+  return folded === '' ? reply : folded
+}
+
+/** Strip markdown syntax from one unprotected span, keeping its text. */
+function foldMarkdown(text: string): string {
+  return text
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1: $2')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^>\s?/gm, '')
+    .replace(/^[*-]{3,}\s*$/gm, '')
+    .replace(/```[\s\S]*?```/g, (block) => block.replace(/```[a-z]*\n?/gi, ''))
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,!?;:]|$)/gm, '$1$2')
+    .replace(/(^|[\s(])_([^_\n]+)_(?=[\s).,!?;:]|$)/gm, '$1$2')
+    .replace(/`([^`\n]+)`/g, '$1')
+}
+
 /** The channel: one XMTP client, its stream lifecycle, and the conversation→agent map. */
 class XmtpChannelRuntime {
   private status: XmtpChannelStatus = 'disconnected'
@@ -580,7 +625,7 @@ class XmtpChannelRuntime {
       return
     }
     if (reply !== '') {
-      sent = await conversation.sendText(reply)
+      sent = await conversation.sendText(toPlainText(reply))
       sentAny = true
     } else if (images.length === 0) {
       return
