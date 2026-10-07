@@ -42,8 +42,54 @@ Transmission stay on localhost. Do not `-p` them.
    `podman exec agent /opt/agent/convos-qr.sh`.
 
 Delete the volume to start over (new wallets): `podman rm agent`,
-`podman volume rm agent-data`. An existing volume does not pick up a newly
-added plugin; delete it or `dsh plugin add` the observatory into `/data/dsh`.
+`podman volume rm agent-data`. Plugins added into `/data/dsh` by hand are
+dropped on the next image upgrade (see below); bake them into the image.
+
+## Upgrading an existing volume
+
+Stack code always comes from the image (`/opt/stack`, linked into the
+profile). The profile's **install** (`package.json`, lockfile, `node_modules`
+under `/data/dsh/profiles/agent`) and its **user layer** (`cordis.patch.yml`)
+are copies made at first boot, so every boot reconciles both with the image:
+
+1. **Install refresh** (`PROFILE_INSTALL_POLICY`, default `auto`). The image
+   carries a skeleton id (dsh CLI version + stack lockfile + skeleton
+   manifest, `/opt/dsh-skel/.skel-id`). When it differs from
+   `/data/.profile-skel-id` — any image upgrade that moves dsh or stack
+   versions — the install is replaced from the skeleton. `cordis.patch.yml`
+   and `compatibility.json` carry over; sessions, credentials, storages, and
+   keys live outside the profile and are untouched. The previous install is
+   kept at `/data/dsh/profiles/.agent.bak-<timestamp>` (only the latest).
+   Plugins added to the volume by hand are dropped and named in the log.
+   `keep` skips the refresh (a dsh upgrade will then likely deny the stale
+   bundles).
+2. **User-layer refresh** (`PROFILE_PATCH_POLICY`):
+
+| Value | Behavior |
+|---|---|
+| `auto` (default) | Replace when the installed layer is unmodified since its last install (or predates the stamp file); keep a `.bak-<timestamp>`. An edited layer is left alone with a warning. |
+| `keep` | Never touch the installed layer. |
+| `replace` | Always replace (with `.bak`). |
+
+A refreshed layer must pass `dsh --dump-config`; otherwise the previous one
+is restored and the boot continues. After an install refresh, the combined
+result must pass `dsh --dump-config` too; otherwise the previous install is
+restored and the container exits (code 3) instead of starting a broken
+agent. The image hash last installed is in `/data/.profile-patch.sha256`.
+
+The XMTP channel's outbox (`/data/xmtp/outbox.json`) upgrades in place:
+version-1 files load as-is and gain outbound cursors on first write. The
+agent gets `stopwaitsecs = 30` so in-flight sends finish and cursors
+persist on `podman stop` (use `podman stop -t 35` or more).
+
+## Chat behavior
+
+One conversation runs one agent turn at a time. A message that arrives
+mid-turn gets a one-line "still working" ack and its own turn afterwards.
+Long jobs run in the background (`run_in_background`) and their results
+arrive as unprompted messages when they finish; `tool-jobs` caps
+consecutive self-wakes at 3 per conversation (`maxConsecutiveWakes` in
+`profile.patch.yml`).
 
 ## Testnet defaults
 
@@ -58,7 +104,7 @@ reads are free).
 | Path | Contents |
 |---|---|
 | `docker/Dockerfile` | fat image build (pinned everything) |
-| `docker/entrypoint.sh` | risk gate → keys → profile → validate → supervisord |
+| `docker/entrypoint.sh` | risk gate → keys → profile → validate → profile install + layer refresh → supervisord |
 | `docker/keys.mjs` | EVM (viem) + ICP ed25519/principal + XMTP inbox derivation |
 | `docker/profile.patch.yml` | user patch layer: model, wallets, testnets, services |
 | `docker/supervisord.conf` | prowlarr, qbittorrent, transmission, setup, agent, QR |

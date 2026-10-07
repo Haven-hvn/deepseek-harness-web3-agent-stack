@@ -178,6 +178,33 @@ describe('seam mechanics', () => {
     expect(JSON.stringify(events)).not.toContain('s3cret')
   })
 
+  // Former `dsh-wallet/invariant` companion (dsh 0.2.1 removed the invariant
+  // service): every wallet/signed event agrees with the configured-wallet table.
+  it('every wallet/signed event names a configured wallet on its configured chain', async () => {
+    const { ctx } = await harness({
+      seed: { A: 'pa', B: 'pb' },
+      wallets: {
+        hot: { chain: 'evm', wallet: 'w-hot', keyRef: 'A' },
+        cold: { chain: 'evm', wallet: 'w-cold', keyRef: 'B' },
+      },
+    })
+    const events: WalletSignedEvent[] = []
+    ctx.on('wallet/signed', (event) => { events.push(event) })
+
+    await ctx.wallet.signMessage('hot', 'm1')
+    await ctx.wallet.signTransaction('cold', '02f8')
+    await ctx.wallet.address('hot')
+    await expect(ctx.wallet.signMessage('missing', 'x')).rejects.toMatchObject({ code: 'wallet-not-found' })
+
+    expect(events.length).toBeGreaterThanOrEqual(2)
+    const configured = ctx.wallet.list()
+    for (const event of events) {
+      const info = configured.find(wallet => wallet.name === event.wallet)
+      expect(info, `wallet/signed for unconfigured "${event.wallet}"`).toBeDefined()
+      expect(event.chain).toBe(info!.chain)
+    }
+  })
+
   it('address() runs the same per-operation pipeline', async () => {
     const { ctx, adapter } = await harness({ seed: { HAVEN_WALLET_PASSPHRASE: 'pw' } })
     await expect(ctx.wallet.address('treasury')).resolves.toBe('0xaddr-agent-treasury')

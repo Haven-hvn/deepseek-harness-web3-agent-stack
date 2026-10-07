@@ -23,32 +23,29 @@ sleep 10
 export CONVOS_HOME=/data/convos
 mkdir -p /data/convos
 INBOX=$(cat /data/keys/inbox.id)
-# Messaging env must match the agent channel (production everywhere in this
-# stack): an invite minted on dev is invisible to the production app
-# ("no convos here"). Override per-call with CONVOS_ENV if ever needed.
-CONVOS_ENV="${CONVOS_ENV:-production}"
-# NOTE: `conversations create` takes no members positional (it creates an MLS
-# group in this install's inbox; identity is auto-created if missing) —
-# members join via add-members + invite below. An earlier revision passed
-# "$SELF/$INBOX" positionally, which the CLI rejects as an unknown command.
+
+if ! SELF=$(convos identity show --inbox-id 2>/dev/null || convos identity 2>/dev/null); then
+  fallback "convos identity unavailable."
+fi
+SELF=$(printf '%s' "$SELF" | grep -oE '[0-9a-f]{64}' | head -n 1)
+[ -n "$SELF" ] || fallback "could not read this install's inbox id."
 
 if [ ! -f /data/convos/convo.id ]; then
-  log "creating group conversation (env $CONVOS_ENV)..."
-  CREATE_OUT=$(convos conversations create --name "Agent Chat" --env "$CONVOS_ENV" 2>&1) || fallback "create failed: $CREATE_OUT"
+  log "creating group conversation with agent inbox $INBOX..."
+  CREATE_OUT=$(convos conversations create "$SELF/$INBOX" 2>&1) || fallback "create failed: $CREATE_OUT"
   CONVO=$(printf '%s' "$CREATE_OUT" | grep -oE "conversation[^']*'[^']*'" | head -n 1 | sed "s/.*'//;s/'//")
   [ -z "$CONVO" ] && CONVO=$(printf '%s' "$CREATE_OUT" | grep -oE '[0-9a-f]{8}-[0-9a-f-]{27,}' | head -n 1)
-  [ -z "$CONVO" ] && CONVO=$(printf '%s' "$CREATE_OUT" | grep -oE 'conversationId[[:space:]]+[0-9a-f]{32}' | grep -oE '[0-9a-f]{32}$' | head -n 1)
   [ -z "$CONVO" ] && fallback "could not parse conversation id from: $CREATE_OUT"
   printf '%s' "$CONVO" > /data/convos/convo.id
   log "conversation $CONVO"
-  convos conversation add-members "$CONVO" "$INBOX" --env "$CONVOS_ENV" >/dev/null 2>&1 \
+  convos conversation add-members --conversation-id "$CONVO" --inbox-ids "$INBOX" --as-admin >/dev/null 2>&1 \
     || log "add-members warning (continuing)"
 else
   CONVO=$(cat /data/convos/convo.id)
   log "reusing conversation $CONVO"
 fi
 
-INVITE_OUT=$(convos conversation invite "$CONVO" --env "$CONVOS_ENV" 2>/tmp/invite.err; echo "rc=$?") || true
+INVITE_OUT=$(convos conversation invite --conversation-id "$CONVO" 2>/tmp/invite.err; echo "rc=$?") || true
 URL=$(printf '%s' "$INVITE_OUT" | grep -oE 'https://[^ ]*' | head -n 1)
 [ -z "$URL" ] && fallback "invite minting failed; see logs."
 echo ""

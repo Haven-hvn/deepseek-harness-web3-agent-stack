@@ -24,3 +24,7 @@
         wallet: agent
         env: production
         channelName: xmtp
+        # replyMode: turn          # turn (one reply per turn) | message (every assistant message, live)
+        # busyInbound: queue       # queue (own turn after the running one) | steer (joins the running turn)
+        # busyAck: "..."           # sent once when an inbound queues behind a running turn; '' disables
+        # outboxPath: /var/lib/dsh/xmtp-outbox.json   # exactly-once across restarts (inbound + outbound cursor)

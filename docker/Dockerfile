@@ -2,7 +2,7 @@
 # All state lives in /data (keys, profile, service data). First boot runs
 # instantiation (keys, testnet profile, indexers); every boot starts the
 # supervisor tree. See README.md for run instructions.
-FROM node:22-bookworm-slim
+FROM node:22.23-bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
     DSH_TELEMETRY_DISABLED=1 \
@@ -34,8 +34,10 @@ RUN curl -fsSL -o /tmp/prowlarr.tar.gz \
     && mkdir -p /opt/prowlarr && tar -xzf /tmp/prowlarr.tar.gz -C /opt/prowlarr \
     && rm /tmp/prowlarr.tar.gz
 
-# Published CLIs (pinned) + pnpm for profile assembly.
-RUN npm i -g @deepseek-ai/dsh@0.1.7-rc.2 @xmtp/convos-cli@0.10.23 pnpm@11.7.0 \
+# Published CLIs (pinned) + pnpm for profile assembly. dsh gates every
+# plugin's @deepseek-ai/dsh-* peers against this runtime version at
+# `dsh plugin add` and profile boot, so this pin must equal the stack's peers.
+RUN npm i -g @deepseek-ai/dsh@0.2.1-alpha.1 @xmtp/convos-cli@0.10.23 pnpm@11.7.0 \
     && npm cache clean --force
 
 # Agent helper runtime: keys.mjs resolves these from sibling node_modules
@@ -51,7 +53,7 @@ COPY docker/keys.mjs docker/entrypoint.sh docker/convos-qr.sh \
 RUN chmod +x /opt/agent/entrypoint.sh /opt/agent/convos-qr.sh
 
 # Web3 agent stack workspace root (for in-image install + build).
-COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json .npmrc /opt/stack/
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json /opt/stack/
 # Web3 agent stack source (node_modules/lib excluded via .dockerignore).
 # One COPY per package: multi-source COPY merges directory contents.
 COPY dsh-wallet/ /opt/stack/dsh-wallet/
@@ -104,7 +106,10 @@ RUN cd /opt/stack && pnpm install --frozen-lockfile --ignore-scripts \
     && pnpm -r build
 
 # Profile skeleton: base bundles + all stack packages + xmtp runtime dep.
-# Built once here; first boot copies it into /data (never rebuilt at runtime).
+# Built once here; first boot copies it into /data, and a later image whose
+# skeleton id differs (new dsh CLI, stack lockfile, or profile manifest)
+# replaces the volume's install artifacts on boot (entrypoint.sh,
+# refresh_profile_install). Never rebuilt with pnpm at runtime.
 # Do not `pnpm store prune` here. With no project in cwd it drops the store
 # packages /opt/stack/node_modules still links.
 ENV DSH_HOME=/opt/dsh-skel
@@ -122,7 +127,12 @@ RUN dsh plugin --profile agent add \
       /opt/stack/dsh-agent-herald \
     && dsh plugin --profile agent add @xmtp/node-sdk \
     && dsh --profile agent --dump-default-config > /dev/null \
-    && node --input-type=module -e "await import('/opt/stack/dsh-wallet/lib/index.js'); await import('/opt/stack/dsh-tool-acquisition/lib/index.js'); await import('/opt/stack/dsh-observatory/lib/index.js'); await import('/opt/stack/dsh-exactly-once/lib/index.js'); await import('/opt/stack/dsh-agent-herald/lib/index.js'); console.log('stack import gate: OK')"
+    && node --input-type=module -e "await import('/opt/stack/dsh-wallet/lib/index.js'); await import('/opt/stack/dsh-channel-xmtp/lib/index.js'); await import('/opt/stack/dsh-tool-acquisition/lib/index.js'); await import('/opt/stack/dsh-observatory/lib/index.js'); await import('/opt/stack/dsh-exactly-once/lib/index.js'); await import('/opt/stack/dsh-agent-herald/lib/index.js'); console.log('stack import gate: OK')" \
+    && { dsh --version; \
+         sha256sum /opt/dsh-skel/profiles/agent/package.json /opt/stack/pnpm-lock.yaml; \
+         [ ! -f /opt/dsh-skel/profiles/agent/pnpm-lock.yaml ] || sha256sum /opt/dsh-skel/profiles/agent/pnpm-lock.yaml; \
+       } | sha256sum | cut -d' ' -f1 > /opt/dsh-skel/.skel-id \
+    && echo "profile skeleton id: $(cat /opt/dsh-skel/.skel-id)"
 
 EXPOSE 8787
 VOLUME /data

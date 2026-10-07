@@ -39,7 +39,7 @@ binding (`aol_gate_info`), and trial-decrypts before announcing.
 
 `dsh-persona/cordis.patch.yml` and `docker/profile.patch.yml` set
 `system-prompt.config.persona`, which the installed
-`dsh-system-prompt@0.1.7-rc.2` never reads — its schema declares
+`dsh-system-prompt` (0.1.7-rc.2 and 0.2.1-alpha.1 alike) never reads — its schema declares
 `personaPrefix`/`personaSuffix` (`Config({persona: ...})` parses but
 the constructor ignores the key). Until this package, the deployment
 ran with an empty persona. Herald's sections are the live identity

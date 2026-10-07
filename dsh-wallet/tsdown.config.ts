@@ -7,7 +7,7 @@ import { defineConfig } from 'tsdown'
  * src/ to lib/ with declarations; no project references, no type-check pass.
  */
 export default defineConfig({
-  entry: ['src/index.ts', 'src/types.ts', 'src/invariant.ts'],
+  entry: ['src/index.ts', 'src/types.ts'],
   outDir: 'lib',
   format: ['esm'],
   platform: 'node',

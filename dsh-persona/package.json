@@ -1,6 +1,6 @@
 {
   "name": "dsh-persona",
-  "description": "Persona bundle for xmtp-prod: provides dsh-system-prompt persona via harness seam \u2014 proper bundle, not profile patch",
+  "description": "Persona bundle for xmtp-prod: provides dsh-system-prompt persona via harness seam — proper bundle, not profile patch",
   "version": "0.1.0",
   "type": "module",
   "main": "lib/index.js",
@@ -31,6 +31,6 @@
   },
   "dependencies": {},
   "peerDependencies": {
-    "@deepseek-ai/cordis": "4.0.4"
+    "@deepseek-ai/cordis": "~4.0.5-alpha.1"
   }
 }

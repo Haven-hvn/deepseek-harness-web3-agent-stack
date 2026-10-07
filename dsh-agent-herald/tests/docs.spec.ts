@@ -85,6 +85,21 @@ describe('agent docs', () => {
     }
   })
 
+  it('process §10: long work runs in the background and silence is a valid answer', () => {
+    const process = loadAgentDoc('process.md')
+    for (const anchor of [
+      'Long work and the chat channel',
+      'run_in_background: true',
+      'The completion wakes you',
+      'job_output',
+      'Silence is a valid answer',
+      'an empty turn sends nothing',
+      'Wake budget',
+    ]) {
+      expect(process).toContain(anchor)
+    }
+  })
+
   it('workflow anchors: stages and harness tools', () => {
     const workflow = loadAgentDoc('workflow.md')
     for (const anchor of [

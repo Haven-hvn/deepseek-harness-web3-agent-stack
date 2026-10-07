@@ -1,6 +1,6 @@
 # Proactive send gap: problem space
 
-Date: 2026-09-28. Component: `dsh-channel-xmtp`. Status: observed in production (Herald, native systemd install).
+Date: 2026-09-28. Component: `dsh-channel-xmtp`. Status: observed in production (Herald, native systemd install). Resolved by the session-observer redesign — see `proactive-send-solution.md`.
 
 ## The incident
 
@@ -25,15 +25,18 @@ Log evidence (`journalctl -u herald-agent`):
 
 ## Root cause 1: serial per-conversation delivery (by design)
 
-`deliver()` (`src/index.ts`) chains one promise per conversation id:
+`deliver()` (`src/index.ts`, pre-redesign) chained one promise per conversation id:
 each inbound message waits for the previous turn's full completion
 (`followup` → `whenIdle` → snapshot → `sendText`) before it even starts.
 Cross-conversation delivery is concurrent, but within one conversation it is
 strictly one turn at a time. A 48-minute pipeline turn therefore holds the
 slot for 48 minutes, and follow-ups queue with **no acknowledgment**.
 
-This ordering is deliberate — concurrent turns on one session would cross
-replies and interleave tool calls — but the queue is mute.
+Nothing blocked the Node event loop (the stream kept receiving and sweeps
+kept firing); the *continuation* of each queued message waited. The
+one-turn-at-a-time ordering is a real session constraint — concurrent turns
+would cross replies and interleave tool calls — but the channel enforced it
+itself, by awaiting turns, and the queue was mute.
 
 ## Root cause 2: reactive-only send (the design fault)
 
@@ -58,19 +61,36 @@ the pipeline ran *inside* a chat turn — but any move to background pipelines
 
 ## Why the harness didn't catch it
 
-This is a web3-channel fault, but the harness invited it:
+This is a web3-channel fault. The harness did not invite it — the
+channel copied the wrong upstream precedent:
 
-- dsh has **no transport / proactive-outbound concept**. Its native clients
-  (web, desktop, CLI) are session observers that render session events live,
-  so woken turns are visible with no send step. Nothing named "proactive"
-  exists in the subsystem docs as a messaging pattern.
-- The channel followed the harness's headless-runner precedent
-  (followup → whenIdle → read result), correct for headless, wrong for a
-  bidirectional chat transport on a self-waking session.
-- The harness *does* emit everything a transport needs
-  (`agent/status` idle/running transitions, `agent/inbox/*` events, session
-  snapshots) — there was just no contract telling a bridge author to observe
-  them.
+- The harness's two-way transport bridge, `dsh-acp`, already implements
+  the pattern a chat channel needs: inbound `followup` without awaiting
+  the turn, every committed `assistant/message` streamed from
+  `session/event` through one ordered output tail regardless of who
+  started the turn, and prompt↔turn correlation through
+  `agent/inbox/claimed` (its `turns.spec.ts` covers an autonomous turn
+  racing a client turn). The native clients (web, desktop, CLI) are
+  session observers the same way.
+- The channel instead followed the headless runner
+  (followup → whenIdle → read result). That runner is only correct
+  because it owns its agent *exclusively*; its own source refuses to adopt
+  a live agent because "`whenIdle` is not a single-message signal" and
+  would fold another owner's turns — even their final answer — into the
+  run. Herald's conversation agents are not exclusive: `tool-jobs`,
+  subagents, and schedules all `followup` them.
+- Upstream primitives behave exactly as documented: `followup()` is
+  enqueue-and-wake and safe while running; `whenIdle()` is whole-agent
+  quiescence; `agent/status`, `agent/inbox/claimed`, and `session/event`
+  publish everything a transport needs. Nothing upstream needs to change.
+
+## A second, latent bug in the same code
+
+Because `deliver()` read "the last assistant text since `firstSeq` after
+`whenIdle()`", any woken turn queued behind a user turn ran inside the
+same idle interval, and its text **replaced** the user's reply. The
+per-conversation delivery chain existed partly to stop two inbound
+messages from collapsing into one interval the same way.
 
 ## Scope of the gap
 

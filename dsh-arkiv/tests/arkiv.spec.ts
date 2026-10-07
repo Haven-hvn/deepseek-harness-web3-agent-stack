@@ -2,7 +2,7 @@
  * Output-contract proofs for dsh-arkiv tools.
  *
  * The registry validates every tool result against its declared output
- * schema (dsh-tools ≥0.1.7-rc.2 rejects mismatches as tool errors), so these
+ * schema (dsh-tools ≥0.1.7-rc.2, including 0.2.1-alpha.1, rejects mismatches as tool errors), so these
  * specs pin each schema against representative values using the registry's
  * own validator — no chain, no network.
  */

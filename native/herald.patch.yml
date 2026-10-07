@@ -76,14 +76,31 @@
     tokens: []
 
 # ── Messaging ────────────────────────────────────────────────────────
+# The channel observes each conversation's session: replies to inbound,
+# and output of turns it did not start (background-job completion wakes,
+# subagent returns) are both sent. Inbound never waits on a turn; a
+# message arriving mid-turn is acked once and queued as its own turn.
 - id: channel-xmtp
   config:
     wallet: agent
     env: production
     dbPath: /var/lib/herald/xmtp/agent.db
     dbEncryptionKeyRef: XMTP_DB_KEY
+    # Inbound outbox + outbound session cursors (exactly-once across restarts).
     outboxPath: /var/lib/herald/xmtp/outbox.json
     convos: true
+    replyMode: turn
+    busyInbound: queue
+    busyAck: "Still working on the previous request — I'll answer this next."
+
+# Background-job completions wake an idle conversation agent, and that
+# turn's output now reaches XMTP. Cap the self-exciting chain (a woken
+# turn starting the job that wakes it again): past 3 consecutive wakes
+# without operator input, notices wait silently for the next message.
+- id: tool-jobs
+  config:
+    completionDelivery: wakeup
+    maxConsecutiveWakes: 3
 
 # ── Storage / chain ──────────────────────────────────────────────────
 - id: storage-arkiv

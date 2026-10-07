@@ -11,6 +11,9 @@ EnvironmentFile=/etc/herald/agent.env
 Environment=DSH_HOME=/root/.dsh DSH_PERMISSION_MODE=danger-full-access HOME=/root DSH_TELEMETRY_DISABLED=1
 Restart=always
 RestartSec=15
+# Let the XMTP channel drain in-flight sends and persist its outbound cursors.
+KillSignal=SIGTERM
+TimeoutStopSec=30
 
 [Install]
 WantedBy=multi-user.target

@@ -132,6 +132,13 @@ describe('balances and derived state', () => {
     // Each event carries the committed report it was derived from.
     expect(changes[2]?.report.runwayDays).toBe(5)
     expect(changes[2]?.report.state).toBe('critical')
+    // Former `dsh-treasury/invariant` companion (dsh 0.2.1 removed the invariant
+    // service): every event agrees with the pure derivation and is a real transition.
+    for (const change of changes) {
+      expect(change.current).toBe(computeTreasuryState(change.report.runwayDays))
+      expect(change.report.state).toBe(change.current)
+      expect(change.previous).not.toBe(change.current)
+    }
   })
 })
 

@@ -256,3 +256,34 @@ fires, say which rule fired and what you are doing instead.
   timestamp, or file path plus byte check). "Correct" means
   compared, not eyeballed. Announcements quote the read-back
   record, never memory.
+
+## 10. Long work and the chat channel
+
+The chat channel is one conversation, one turn at a time: while a
+turn runs, every new operator message waits behind it (they get an
+automatic "still working" note, not an answer). A turn that runs a
+long pipeline holds the conversation hostage. Background the work
+instead, and let the completion bring you back.
+
+- **Background anything that runs past a few minutes.** Long
+  downloads, encodes, merges, polling loops, multi-stage pipelines:
+  start them with `run_in_background: true` on your bash tool,
+  reply in one or two lines with what started and the job id, and
+  end the turn. The conversation stays free for the operator.
+- **The completion wakes you.** When a background job finishes you
+  get a new turn carrying its completion notice — collect the result
+  with `job_output`, take the next pipeline step (backgrounding it
+  again if it is long), and tell the operator what changed. Whatever
+  text you end that turn with is sent to the chat.
+- **Silence is a valid answer.** In a turn woken by a completion,
+  speak only if the operator needs to know: a stage finished, a
+  decision is needed, something failed. A routine or intermediate
+  completion the operator does not care about ends the turn with no
+  text — an empty turn sends nothing.
+- **Wake budget.** A few consecutive wakes without operator input
+  are allowed; past that, completion notices wait silently until the
+  operator writes again. Never chain background jobs just to keep
+  yourself awake — finish the step, report, and wait.
+- **Status questions get live answers.** When the operator asks
+  "status?" mid-pipeline, answer from `job_list` / `job_output`
+  reads, not from memory of what you started.

@@ -1,6 +1,6 @@
 {
   "name": "dsh-channel-xmtp",
-  "description": "XMTP channel for DeepSeek Harness: direct agent\u2194user messaging over the XMTP network \u2014 Ethereum identity signed per-operation through dsh-wallet, one dsh agent per conversation, assistant replies sent back to the conversation",
+  "description": "XMTP channel for DeepSeek Harness: direct agent↔user messaging over the XMTP network — Ethereum identity signed per-operation through dsh-wallet, one dsh agent per conversation observed as a session, assistant output (replies and background-turn results) sent back to the conversation",
   "version": "0.1.0",
   "type": "module",
   "main": "lib/index.js",
@@ -13,10 +13,6 @@
     "./types": {
       "types": "./lib/types.d.ts",
       "default": "./lib/types.js"
-    },
-    "./invariant": {
-      "types": "./lib/invariant.d.ts",
-      "default": "./lib/invariant.js"
     },
     "./xmtp": {
       "types": "./lib/xmtp.d.ts",
@@ -42,16 +38,15 @@
     "prepare": "tsdown"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "=3.18.4"
+    "@deepseek-ai/schemastery": "~3.18.5-alpha.1"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "4.0.4",
-    "@deepseek-ai/dsh-agent": "0.1.7-rc.2",
-    "@deepseek-ai/dsh-agent-default-model": "0.1.7-rc.2",
-    "@deepseek-ai/dsh-credentials": "0.1.7-rc.2",
-    "@deepseek-ai/dsh-invariants": "0.1.7-rc.2",
-    "@deepseek-ai/dsh-llm": "0.1.7-rc.2",
-    "@deepseek-ai/dsh-session": "0.1.7-rc.2",
+    "@deepseek-ai/cordis": "~4.0.5-alpha.1",
+    "@deepseek-ai/dsh-agent": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-agent-default-model": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-credentials": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-llm": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-session": "0.2.1-alpha.1",
     "@xmtp/node-sdk": "6.1.0",
     "dsh-wallet": "workspace:*"
   },
@@ -61,17 +56,16 @@
     }
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "=4.0.4",
-    "@deepseek-ai/dsh-agent": "=0.1.7-rc.2",
-    "@deepseek-ai/dsh-agent-default-model": "=0.1.7-rc.2",
-    "@deepseek-ai/dsh-agent-loop": "=0.1.7-rc.2",
-    "@deepseek-ai/dsh-credentials": "=0.1.7-rc.2",
-    "@deepseek-ai/dsh-invariants": "=0.1.7-rc.2",
-    "@deepseek-ai/dsh-llm": "=0.1.7-rc.2",
-    "@deepseek-ai/dsh-session": "=0.1.7-rc.2",
-    "@deepseek-ai/dsh-session-projection": "=0.1.7-rc.2",
-    "@deepseek-ai/dsh-system-prompt": "=0.1.7-rc.2",
-    "@deepseek-ai/dsh-tools": "=0.1.7-rc.2",
+    "@deepseek-ai/cordis": "~4.0.5-alpha.1",
+    "@deepseek-ai/dsh-agent": "=0.2.1-alpha.1",
+    "@deepseek-ai/dsh-agent-default-model": "=0.2.1-alpha.1",
+    "@deepseek-ai/dsh-agent-loop": "=0.2.1-alpha.1",
+    "@deepseek-ai/dsh-credentials": "=0.2.1-alpha.1",
+    "@deepseek-ai/dsh-llm": "=0.2.1-alpha.1",
+    "@deepseek-ai/dsh-session": "=0.2.1-alpha.1",
+    "@deepseek-ai/dsh-session-projection": "=0.2.1-alpha.1",
+    "@deepseek-ai/dsh-system-prompt": "=0.2.1-alpha.1",
+    "@deepseek-ai/dsh-tools": "=0.2.1-alpha.1",
     "dsh-wallet": "workspace:=0.1.0",
     "tsdown": "=0.23.0",
     "typescript": "=7.0.2",

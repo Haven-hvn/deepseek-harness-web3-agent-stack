@@ -1,100 +1,125 @@
-# Proactive send: proposed solution
+# Proactive send: solution (implemented)
 
 Companion to `proactive-send-problem.md`. Goal: session-initiated turns on a
 conversation agent reach XMTP, and long pipelines stop holding chat hostage.
 
-## Proposal A (core fix): session watcher with proactive send
+The earlier draft proposed a watcher *beside* the old `deliver()` (two send
+paths, an "is a channel turn mid-flight?" check, a seeded-from-now
+`lastSentSeq`). That kept two colors — channel-started turns and everything
+else — and would have needed coordination to avoid double sends and lost
+output. The implemented design removes the distinction instead, porting the
+upstream `dsh-acp` bridge pattern: the channel is a **session observer**,
+not a turn caller.
 
-Teach `XmtpChannelRuntime` to **observe** its conversation agents, not just
-drive them.
+## Design
 
-### Mechanism
+### Inbound: enqueue only
 
-1. When the channel creates/resumes a conversation agent (`agentFor`), also
-   subscribe to `agent/status` for that agent's session
-   (`packages/core/agent`: payload `{ agent, status }`, `idle`/`running`,
-   emitted on every transition).
-2. Track per-conversation `lastSentSeq` (session seq of the last assistant
-   content sent to XMTP).
-3. On `running → idle` where the finished turn was **not** channel-initiated
-   (i.e. no `deliver()` is mid-flight for that conversation):
-   snapshot session events after `lastSentSeq`, extract assistant
-   text/images with the existing `lastAssistantContent` helper, and
-   `sendText`/send attachments exactly as `deliver()` does, then advance
-   `lastSentSeq` and `recordOutbox` as today.
-4. `deliver()` keeps its current behavior for channel-initiated turns and
-   advances `lastSentSeq` past what it sends, so the watcher never
-   double-sends. Guard the watcher callback with the same per-conversation
-   chain (`this.deliveries`) so a woken turn racing an inbound message
-   serializes instead of interleaving.
+`onMessage` keeps Haven's filters (text/attachment → own → active
+conversation → outbox → dedup), then `admit()` on a short per-conversation
+admission chain that waits only on attachment resolution and agent
+creation — **never on a turn**:
 
-### Silence convention
+1. Resolve content; get or resume the conversation agent.
+2. If the agent is `running`, send the busy ack (once per running interval;
+   reset on `agent/status` idle).
+3. `agent.followup(message)` (or `agent.steer` under `busyInbound: steer`).
+   `source.kind` stays `'user'`: `tool-jobs` refills its
+   `maxConsecutiveWakes` budget only on user-sourced inbox claims.
+4. Record `dshMessageId → inboundMessageId`; flush the session; mark the
+   inbound `accepted` in the outbox so redelivery never re-enters the agent.
 
-An empty assistant reply sends nothing (the rule `deliver()` already uses).
-Pair the watcher with a persona/process instruction: *"In turns woken by
-background completions, speak only if the operator needs to know; otherwise
-end the turn with no text."* This keeps routine completions (a cron probe, a
-touched file) from spamming chat while letting real results through.
+The harness inbox owns the one-turn-at-a-time ordering. The channel no
+longer enforces it by awaiting.
 
-### Edge cases
+### Outbound: one path for every turn
 
-- **Flapping / self-exciting chains.** A woken turn may start the job whose
-  completion wakes it again. Honor `tool-jobs`' `maxConsecutiveWakes`
-  semantics implicitly (past-budget notices wait silently; nothing wakes,
-  nothing sends). Do not add a second budget in the channel.
-- **Restart during a woken turn.** Jobs are process-local (`jobs-local`):
-  they die with the process, so no orphan wake survives a restart. Sessions
-  persist, but `lastSentSeq` is memory-only; on restart, seed it from the
-  session's current seq so pre-restart content is never re-sent.
-- **Outbox/dedup.** Reuse `recordOutbox(conversationId, …)` for proactive
-  sends so the existing exactly-once accounting sees them. The send path is
-  not a tool call, so `dsh-exactly-once`'s execute wrapper is uninvolved.
-- **Non-text content.** Reuse the image/attachment branch of `deliver()`;
-  woken turns can yield images the same way.
+- `agent/inbox/claimed` maps the dsh message id to its `turn`, giving
+  `(conversation, turn) → inboundMessageId` for turns XMTP started.
+- `session/event` (`turn/end`, plus `assistant/message` under
+  `replyMode: message`) and `agent/status` idle schedule a **flush** on the
+  conversation's send tail (coalesced, strictly ordered with acks).
+- A flush reads the committed range after the conversation's **persisted
+  cursor** — output events buffered from `session/event`, plus a one-time
+  `ctx.sessionQuery.observeSession` read for any pre-restart gap — and per
+  closed turn sends its final assistant text plus every image it produced.
+  Turns with an inbound id record a reply in the outbox; others are
+  `proactive`. Empty turns send nothing (silence convention). The cursor
+  advances per closed turn (or per message in `message` mode) and persists
+  after each send, so a crash re-sends at most one turn's output and never
+  skips one.
+- Sends that cannot happen (disconnected) leave the cursor in place; the
+  next event, idle transition, the 15 s sweep, or reconnect retries.
+- On connect, every conversation with a persisted cursor is resumed and
+  flushed, so output committed before a restart or while offline goes out
+  without waiting for the next inbound.
+- Live agents are always looked up via `ctx.agents.get(sessionId)` and
+  events are accepted only from that agent's current `Session`, so an agent
+  replacement (compaction/clear) is followed and impostors are ignored. A
+  cursor beyond a replaced session's log end resets to "now".
 
-## Proposal B (quick win, ship first): acknowledge queued messages
+### Config additions
 
-If an inbound message arrives while a `deliver()` is mid-flight for that
-conversation, immediately `sendText` a short acknowledgment
-("Still working on it — I'll answer this next.") before chaining. Small,
-contained, kills the "is he dead?" failure mode while A is built. Rate-limit
-to one ack per in-flight turn so duplicate prompts don't spam.
+| Key | Default | Meaning |
+|---|---|---|
+| `replyMode` | `turn` | `turn`: one reply per turn (final text + images). `message`: every assistant message as it commits. |
+| `busyAck` | short notice | Sent once when an inbound queues behind a running turn; `''` disables. |
+| `busyInbound` | `queue` | `queue`: own follow-up turn. `steer`: joins the running turn at its next step. |
+| `outboxPath` | — | Now also persists outbound cursors (file version 2; version 1 files load, cursors seed from the session end). |
 
-## Proposal C (doctrine, no code): background long pipelines
+New event: `xmtp/outbound { conversationId, kind: reply | proactive | ack, turn?, inboundMessageId? }`.
 
-Add to Herald's process: anything expected to run past a few minutes goes to
-`run_in_background` (bash) or a subagent child; the chat turn replies
-"started, I'll report back" and ends, freeing the conversation slot. The
-completion wake turn (delivered by A) carries the result. This converts the
-48-minute serial block into an async job with two short chat turns. Depends
-on A — without proactive send, backgrounding makes results *less* visible,
-not more.
+### Deployment (both native and docker profiles)
 
-## Out of scope (considered, rejected for now)
+- `tool-jobs.maxConsecutiveWakes: 3` — bounds the self-exciting chain the
+  harness otherwise leaves unbounded; past the budget notices are injected
+  silently until the operator writes. The channel adds no second budget.
+- `dsh-agent-herald/process.md` §10 — background anything past a few
+  minutes (`run_in_background: true`), reply briefly and end the turn;
+  speak in woken turns only when the operator needs to know.
+
+## Edge cases
+
+- **Woken turn queued behind a user turn.** Each turn is sent at its own
+  `turn/end`; the user's reply is no longer replaced (test: "a woken turn
+  queued behind a user turn does not replace the user reply").
+- **Restart during or after a turn.** Persisted cursor: already-sent output
+  never repeats, committed-but-unsent output is sent on reconnect.
+- **Restart before a queued inbound runs.** The inbox splice is flushed
+  before the inbound is marked `accepted`; the resumed session restores the
+  inbox. Correlation (`dshMessageId → inbound`) is memory-only, so such a
+  reply is sent as `proactive` without a reply outbox entry — harmless,
+  because the inbound is already marked accepted.
+- **Jobs are process-local** (`jobs-local`): they die with the process, so
+  no orphan wake survives a restart.
+- **Scope.** Channel listeners are untagged, so scope-filtered agent and
+  session events reach them for every agent; handlers filter to served
+  conversations.
+
+## Out of scope (considered, rejected)
 
 - **Parallel turns per conversation.** Breaks reply ordering and session
-  coherence; the harness session model is one-turn-at-a-time. Not worth it.
-- **Mounting `dsh-schedule`.** Useful later for cron reminders; orthogonal,
-  and reminder turns are covered by A once mounted.
-- **Harness-side transport contract.** Upstreaming a "proactive send" pattern
-  to dsh would help future bridges, but nothing we need is blocked on it.
+  coherence; the harness session model is one-turn-at-a-time.
+- **MCP Tasks / a networked job seam.** Same "someone must observe the
+  completion" requirement; adds polling without closing the gap. Revisit
+  only for jobs that must survive restarts.
+- **Upstream changes.** None needed; `dsh-acp` is the precedent.
 
-## Acceptance criteria
+## Acceptance criteria → tests (`tests/xmtp.spec.ts`)
 
-1. A background bash job (`run_in_background: true`, e.g. `sleep 20 && echo
-   done`) completing on an idle conversation agent produces an XMTP message
-   without any new inbound message. (Needs A + silence-convention prompt.)
-2. An inbound message arriving mid-turn gets an ack within seconds, then its
-   normal reply after the turn completes. (Needs B.)
-3. No double-send: existing tests plus a new test driving a channel turn
-   followed by a woken turn assert exactly one send per assistant segment.
-4. Restart safety: restart mid-idle never re-sends old content.
+1. Background completion on an idle agent produces an XMTP message with no
+   inbound — "sends output of a turn the channel did not start".
+2. Mid-turn inbound is acked within the turn, then answered in its own turn
+   — "acks a mid-turn inbound immediately, once…".
+3. No double send — round-trip, `message`-mode, and restart tests assert
+   exact send lists after idle settles.
+4. Restart safety — "a restart never re-sends output already sent" and
+   "a restart sends output committed but not sent before the crash".
 
 ## Rollout
 
-1. Land B + tests; deploy to Herald native (`systemctl restart herald-agent`).
-2. Land A + tests; verify criterion 1 against the live Herald convo with a
-   trivial `sleep` job before trusting it with pipelines.
-3. Add the C process note to `dsh-agent-herald/process.md`; verify with a
-   real long-running background job.
-4. Rebuild + republish the Docker image (CI does this on push to `main`).
+1. Build + test the stack (`pnpm -r build`, `pnpm test`).
+2. Native: deploy, `systemctl restart herald-agent`; verify criterion 1
+   live with a trivial `sleep 20 && echo done` background job.
+3. Docker: CI rebuilds on push to `main`; existing `/data` volumes pick up
+   the new profile layer per `docker/README.md` (profile patch refresh).

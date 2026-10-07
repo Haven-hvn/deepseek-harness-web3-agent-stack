@@ -20,6 +20,28 @@ export interface XmtpInboundEvent {
   readonly sentAtMs: number
 }
 
+/**
+ * Why one outbound XMTP send happened:
+ * - `reply` — the assistant output of a turn an XMTP inbound started;
+ * - `proactive` — assistant output of a turn something else started (a
+ *   background-job wake, a schedule, a subagent return, …);
+ * - `ack` — the busy acknowledgment sent when an inbound queues behind a
+ *   running turn.
+ */
+export type XmtpOutboundKind = 'reply' | 'proactive' | 'ack'
+
+/** One message sent to an XMTP conversation. */
+export interface XmtpOutboundEvent {
+  /** XMTP conversation (group) id. */
+  readonly conversationId: string
+  /** What triggered the send. */
+  readonly kind: XmtpOutboundKind
+  /** Agent turn whose output was sent (absent for `ack`). */
+  readonly turn?: number
+  /** The inbound XMTP message this answers, when known. */
+  readonly inboundMessageId?: string
+}
+
 /** One connection-state transition. */
 export interface XmtpStatusEvent {
   /** New status. */
@@ -37,6 +59,14 @@ declare module '@deepseek-ai/cordis' {
      * @mode emit
      */
     'xmtp/inbound'(event: XmtpInboundEvent): void
+
+    /**
+     * The channel sent one message to a conversation (reply, proactive
+     * turn output, or busy ack). Fires after the send succeeded.
+     * @param event - conversation, trigger kind, and turn/inbound correlation; never content.
+     * @mode emit
+     */
+    'xmtp/outbound'(event: XmtpOutboundEvent): void
 
     /**
      * The channel's connection state changed.

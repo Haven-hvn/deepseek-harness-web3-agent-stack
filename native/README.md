@@ -38,7 +38,22 @@ rides Base mainnet config for quotes (no factory deployed — advise only).
 
 ```sh
 # after pulling stack changes:
+# The CLI must match the stack's @deepseek-ai/dsh-* peers exactly: dsh
+# denies a bundle whose peers don't satisfy the running version.
+npm i -g @deepseek-ai/dsh@0.2.1-alpha.1
 pnpm install --frozen-lockfile && pnpm -r build
+# After a dsh version change, re-resolve the profile install so it carries no
+# packages from the previous version (same set as the Dockerfile; STACK is
+# this checkout). Idempotent; profile sessions and cordis.patch.yml are kept.
+STACK=$PWD
+dsh plugin --profile herald add \
+  "$STACK/dsh-exactly-once" "$STACK/dsh-wallet" "$STACK/dsh-wallet-ethereum" \
+  "$STACK/dsh-wallet-tools" "$STACK/dsh-treasury" "$STACK/dsh-channel-xmtp" \
+  "$STACK/dsh-storage-synapse" "$STACK/dsh-arkiv" "$STACK/dsh-erc8004" \
+  "$STACK/dsh-royalty-router" "$STACK/dsh-haven-aol" "$STACK/dsh-persona" \
+  "$STACK/dsh-tool-prowlarr" "$STACK/dsh-tool-acquisition" \
+  "$STACK/dsh-observatory" "$STACK/dsh-agent-herald"
+dsh plugin --profile herald add @xmtp/node-sdk
 pip3 install 'mutagen==1.48.1' # ID3 chapters for merged MP3s (process.md §1 step 2)
 cp native/herald.patch.yml /root/.dsh/profiles/herald/cordis.patch.yml
 cp native/*.sh native/*.mjs native/*.md /opt/herald/
@@ -49,6 +64,20 @@ dsh --profile herald --dump-config > /dev/null && systemctl restart herald-agent
 
 Secrets are never in this repo: to re-create them see the journal
 (`journalctl -u herald-agent`) — the agent prints its address, never keys.
+
+The XMTP outbox (`/var/lib/herald/xmtp/outbox.json`) upgrades in place:
+version-1 files load and gain per-conversation outbound cursors on first
+write. Restarting `herald-agent` no longer loses or repeats replies: output
+committed before the restart is sent on reconnect, output already sent is
+sends to drain (`systemd/herald-agent.service` sets `TimeoutStopSec=30`).
+
+## Chat behavior
+
+One conversation runs one agent turn at a time. A message that arrives
+mid-turn gets a one-line "still working" ack and its own turn afterwards
+(`busyAck` / `busyInbound` in `herald.patch.yml`). Long jobs go to the
+background (`process.md` §10) and their results arrive as unprompted
+messages; `tool-jobs.maxConsecutiveWakes: 3` bounds self-waking chains.
 
 ## Gotchas (learned live)
 
