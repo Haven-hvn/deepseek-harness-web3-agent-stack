@@ -88,7 +88,7 @@ export const Config: z<Config> = z.object({
   wallet: z.string().required(),
   rpcUrl: z.string().required(),
   networkMode: z.union(['calibration', 'mainnet']).default('calibration'),
-  withCDN: z.boolean().default(false),
+  withCDN: z.boolean().default(true),
   copies: z.number().step(1).min(1).max(3).default(1),
   excludeProviderIds: z.array(z.number().step(1).min(0)).default([]),
   providerIds: z.array(z.number().step(1).min(0)),
