@@ -444,14 +444,13 @@ describe('seal (harness-native encrypt side)', () => {
     expect(Buffer.from(dA).equals(Buffer.from(dB))).toBe(true)
   })
 
-  it('threshold-zero v3 seals at the eternal epoch', async () => {
+  it('threshold-zero seals are refused (free ships clear, never sealed)', async () => {
     stubDpk()
     const rt = await sealRuntime()
-    const sealed = await rt.seal({
+    await expect(rt.seal({
       version: 3, cid: 'sha256:abc', chain: 'BaseMainnet', tokenAddress: TOKEN,
       threshold: 0n, epoch: currentEpoch(), plaintext: new TextEncoder().encode('free'),
-    })
-    expect(JSON.parse(sealed.gateMetadataJson).epoch).toBe(0)
+    })).rejects.toThrow(/must be > 0/)
   })
 
   it('fails closed: bad version, chain, token, threshold, v4 oracle/target', async () => {

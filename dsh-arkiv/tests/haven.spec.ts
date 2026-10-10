@@ -41,7 +41,7 @@ const gateV3 = () => ({
   cid: 'bafkzcibsealed',
   chain: 'BaseMainnet',
   tokenAddress: TOKEN,
-  threshold: '0',
+  threshold: '1',
   epoch: 12,
   encryptedAesKey: 'YmFzZTY0',
 });
@@ -104,7 +104,7 @@ function fullV3() {
       gate_type: 3,
       gate_token: TOKEN,
       gate_chain: 8453,
-      gate_threshold: 0,
+      gate_threshold: 1,
       gate_epoch: 12,
       sha256_ct: SHA,
       mime: 2,
@@ -331,7 +331,25 @@ describe('haven writes: fail-closed rejections', () => {
     ['threshold mismatch', () => { const r = fullV1(); return { ...r, attributes: { ...r.attributes, gate_threshold: 5 } }; }, /!= gate.threshold/],
     ['threshold beyond u256', () => { const r = fullV1(); return { ...r, attributes: { ...r.attributes, gate_threshold: `${2n ** 256n}` } }; }, /exceeds u256/],
     ['unsafe-number threshold', () => { const r = fullV1(); return { ...r, attributes: { ...r.attributes, gate_threshold: 2 ** 53 + 1 } }; }, /safe integer/],
-    ['negative threshold', () => { const r = fullV1(); return { ...r, attributes: { ...r.attributes, gate_threshold: -1 } }; }, />= 0/],
+    ['negative threshold', () => { const r = fullV1(); return { ...r, attributes: { ...r.attributes, gate_threshold: -1 } }; }, /must be > 0/],
+    ['gated threshold zero', () => {
+      const r = fullV1();
+      const gate = { ...gateV1(), threshold: '0' };
+      return {
+        ...r,
+        payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibpiece', gate: JSON.stringify(gate) })),
+        attributes: { ...r.attributes, gate_threshold: 0 },
+      };
+    }, /must be > 0/],
+    ['gate JSON threshold zero', () => {
+      const r = fullV3();
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibpiece3', gate: JSON.stringify({ ...gateV3(), threshold: 0 }) })) };
+    }, /positive integer/],
+    ['series threshold zero', () => { const r = dripSeries(); return { ...r, attributes: { ...r.attributes, gate_threshold: 0 } }; }, /must be > 0/],
+    ['part gate threshold zero', () => {
+      const r = dripPart();
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibpart', gate: JSON.stringify({ ...gateV4(), threshold: '0' }) })) };
+    }, /positive integer/],
     ['bool threshold', () => { const r = fullV1(); return { ...r, attributes: { ...r.attributes, gate_threshold: true } }; }, /boolean/],
     ['v3 without epoch', () => { const r = fullV3(); const { gate_epoch: _d, ...rest } = r.attributes; return { ...r, attributes: rest }; }, /gate_epoch is required/],
     ['v3 epoch mismatch', () => { const r = fullV3(); return { ...r, attributes: { ...r.attributes, gate_epoch: 13 } }; }, /!= gate.epoch/],

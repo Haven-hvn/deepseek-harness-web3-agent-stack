@@ -325,16 +325,16 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'aol_seal',
     description:
-      'Seal a file under a new Haven-AOL token gate (v1 per-file, v3 epoch corpus, v4 market-cap drip): wraps an AES-256-GCM content key (shared per epoch bucket for v3, fresh per seal for v1/v4, fresh IV per seal always) under the canister verification key, and builds gate metadata JSON. Writes sealed bytes to outputPath plus a gate sidecar (<outputPath>.gate.json, the durable gateMetadataJson — restarts lose in-turn results, never this file) and returns paths + byte count + gateMetadataJson + key commitment. Fails closed on non-Bond v4 oracles.',
+      'Seal a file under a new Haven-AOL token gate (v1 per-file, v3 epoch corpus, v4 market-cap drip): wraps an AES-256-GCM content key (shared per epoch bucket for v3, fresh per seal for v1/v4, fresh IV per seal always) under the canister verification key, and builds gate metadata JSON. Writes sealed bytes to outputPath plus a gate sidecar (<outputPath>.gate.json, the durable gateMetadataJson — restarts lose in-turn results, never this file) and returns paths + byte count + gateMetadataJson + key commitment. Threshold must be > 0 (the canister rejects 0); free content ships clear — no seal, no gate, no canister call. Fails closed on non-Bond v4 oracles.',
     parameters: {
       path: { type: 'string', required: true, description: 'Local file to seal.' },
       outputPath: { type: 'string', required: true, description: 'Where to write the sealed bytes.' },
       version: { type: 'number', required: true, description: 'Gate version: 1 (per-file), 3 (epoch corpus), or 4 (market-cap drip).' },
       chain: { type: 'string', required: true, description: 'SDK chain name (EthMainnet, BaseMainnet, ArbitrumOne, OptimismMainnet, EthSepolia).' },
       tokenAddress: { type: 'string', required: true, description: 'Gate token contract address (0x...).' },
-      threshold: { type: 'string', required: true, description: 'Minimum balance in smallest token units (raw integer string). 0 seals free-tier at the eternal epoch (v3/v4).' },
+      threshold: { type: 'string', required: true, description: 'Minimum balance in smallest token units (raw integer string). Must be > 0 — the canister rejects 0; free content ships clear (pin plaintext, catalog fcid), never sealed.' },
       cid: { type: 'string', description: 'Gate CID the seal binds to. Default: sha256:<hex-of-plaintext> (for pre-upload seals).' },
-      epoch: { type: 'number', description: 'v3/v4 epoch (default: current from aol_epoch; forced 0 when threshold is 0).' },
+      epoch: { type: 'number', description: 'v3/v4 epoch (default: current from aol_epoch).' },
       marketCapTarget: { type: 'string', description: 'v4 unlock rung in whole reserve units (required for v4).' },
       oracleAddress: { type: 'string', description: 'v4 oracle (required for v4; must be the chain Bond contract).' },
     },

@@ -41,9 +41,9 @@ you wind down that line and say so plainly.
   epoch, or a market-cap rung, those terms are immutable — the
   derivation preimage makes them so, and you will not pretend
   otherwise to squeeze holders.
-- Free means free. Threshold-zero releases collapse to the eternal
-  epoch and stay open forever; you never convert a free release into
-  a paid one later.
+- Free means free. Free releases ship clear — no seal, no gate,
+  no threshold, no canister roundtrip — and stay free forever;
+  you never convert a free release into a paid one later.
 - Unlocks are monotonic. A v4 drip rung, once passed, stays passed.
   You announce unlocks; you never un-announce them.
 - Denials are explained, never shrugged at. `InsufficientBalance`

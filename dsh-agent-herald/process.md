@@ -25,28 +25,35 @@ reason written in the conversation.
    chapters into MP3, so `-map_metadata` is not the path.
    `ffprobe -show_chapters` must list every track before anything
    is sealed: never ship a chapterless file.
-3. **Choose the gate** (§2). Write down version, pattern, token,
-   threshold, epoch or rungs — before anything is sealed.
-4. **Seal.** `aol_seal` with the §2 parameters: plaintext path in,
-   sealed bytes plus gate metadata JSON out. v3 shares one key
-   per community epoch; every seal's bytes are unique either
-   way, so seal once per release. Verify the binding with
-   `aol_gate_info` before moving on.
-5. **Pin.** `synapse_pin` the sealed bytes (by path; by CID only for
+3. **Decide free vs gated, then choose the gate** (§2). Free
+   releases skip sealing entirely — no `aol_*` call at all
+   (a seal or gate roundtrip on free bytes burns canister
+   cycles for nothing). Gated releases: write down version,
+   pattern, token, threshold (always > 0), epoch or rungs —
+   before anything is sealed.
+4. **Seal (gated only).** `aol_seal` with the §2 parameters:
+   plaintext path in, sealed bytes plus gate metadata JSON out.
+   v3 shares one key per community epoch; every seal's bytes are
+   unique either way, so seal once per release. Verify the
+   binding with `aol_gate_info` before moving on. Free releases
+   skip this step: the plaintext IS the payload.
+5. **Pin.** `synapse_pin` the release bytes — sealed bytes when
+   gated, plaintext when free — (by path; by CID only for
    re-pins), then confirm with `synapse_pin_status`. The CID is the
    release's permanent address — record it.
 6. **Catalog.** `arkiv_create_entity` with the Haven entity format
    (enforced by the tool — malformed records are rejected before
    signing, never silently stored): payload carries `fcid`/`piece`
-   (Filecoin locator, exactly one), `gate` (gate-metadata JSON),
-   `vlm` (analysis CID when present); on gated records `piece` is
-   the CommP piece CID (`bafk…`) from the `synapse_pin` result —
-   never the UnixFS root (players fetch playback bytes by CommP).
-   Attributes carry `grp`
+   (Filecoin locator, exactly one — `piece` + `gate` when gated,
+   `fcid` with no `gate` key when free), `gate` (gate-metadata
+   JSON, gated only), `vlm` (analysis CID when present); on gated
+   records `piece` is the CommP piece CID (`bafk…`) from the
+   `synapse_pin` result — never the UnixFS root (players fetch
+   playback bytes by CommP). Attributes carry `grp`
    (`haven.video.full` for video, `haven.audio.full` for audio,
    or the generic-file / drip group),
-   `title`, the gate corpus (`gate_type` = the gate version —
-   1, 3, or 4, numeric, no `gate_version` key — plus
+   `title`, the gate corpus when gated (`gate_type` = the gate
+   version — 1, 3, or 4, numeric, no `gate_version` key — plus
    for v3), `sha256_ct`, and `mime`. Multi-record releases (a
    drip series plus its parts) go in one `arkiv_create_entities`
    call — one transaction, all-or-nothing. Urgency decides
@@ -58,9 +65,12 @@ reason written in the conversation.
    first sweep path is clear.
 8. **Announce.** Over XMTP, to the community: what released, where
    (CID, Arkiv key), what it costs to open (threshold / rung /
-   epoch), and how to verify. Then **trial-decrypt** your own
-   release (`aol_gate_info`, then `aol_decrypt` to a scratch path)
-   and report the byte count as proof it opens.
+   epoch — or free), and how to verify. Then prove it opens:
+   gated releases get a **trial-decrypt** (`aol_gate_info`, then
+   `aol_decrypt` to a scratch path); free releases get a
+   **trial-fetch** (fetch the `fcid` bytes back and byte-compare) —
+   never a decrypt roundtrip on clear bytes. Report the byte
+   count as proof.
 
 ## 2. Choosing the gate
 
@@ -74,8 +84,11 @@ releases you seal, files you decrypt, it makes no difference.
   community releases in a 30-day epoch opens under one key. Use it
   for all recurring community publishing. Check `aol_epoch` when
   planning near a rollover; never promise an epoch you have not
-  read. Threshold zero means free forever (eternal epoch) — use it
-  for teasers and public goods, never as a bait-and-switch.
+  read. Free content never seals: teasers and public goods ship
+  clear (the §1 free path — `fcid`, no gate), never as
+  threshold-zero gates. The canister rejects threshold 0 outright,
+  and every seal/decrypt roundtrip on free bytes burns cycles
+  for nothing.
 - **v4 — the drip.** A release split into chunks, each with a
   market-cap rung in whole reserve units. Use it for public DAO
   drops where hype should unlock content progressively. Design
@@ -85,8 +98,8 @@ releases you seal, files you decrypt, it makes no difference.
 - **Patterns.** `token_gated` (hold ≥ threshold of the community
   token) is the default. `nft_gated` for holder communities with an
   NFT. `owner_only` for commissions and pre-release review.
-  `public` only for genuinely free content (pair with threshold
-  zero, not with security theater).
+  `public` means the §1 free path (clear `fcid` record, no seal,
+  no gate, no canister call) — never a threshold-zero seal.
 
 Seal parameter map (`aol_seal` takes these directly; all three
 versions seal in-container, nothing is handed off):
@@ -96,13 +109,15 @@ versions seal in-container, nothing is handed off):
 | `version` | 1 | 3 | 4 |
 | `chain` | e.g. BaseMainnet | e.g. BaseMainnet | e.g. BaseMainnet |
 | `tokenAddress` | community/release token | community token | community token |
-| `threshold` | min balance, raw units | min balance, raw units (`0` = free forever) | min balance, raw units |
+| `threshold` | min balance, raw units (> 0) | min balance, raw units (> 0) | min balance, raw units (> 0) |
 | `epoch` | — | current unless rolling over | — |
 | `marketCapTarget` + `oracleAddress` | — | — | per-chunk rung in whole reserve units, Bond oracle only |
 
 `threshold` is raw token units (decimals included), not whole
-tokens. Get this wrong and the gate prices out the community or
-lets in the world — confirm the token's decimals first.
+tokens, and always > 0 — the canister rejects 0. Get this wrong
+and the gate prices out the community or lets in the world —
+confirm the token's decimals first. Free content ships clear
+instead of sealing.
 `marketCapTarget` is whole reserve units instead — the one
 parameter in human-scale numbers. Rungs strictly below the
 curve ceiling, always.
@@ -173,7 +188,8 @@ curve ceiling, always.
   records. Re-verify with `erc8004_token_uri` whenever anyone asks
   who you are.
 - Every release leaves three records that must agree: the Filecoin
-  CID, the Arkiv entity (with `gate` + `gate_type`), and your
+  CID, the Arkiv entity (with `gate` + `gate_type` when gated,
+  `fcid` with neither when free), and your
   announcement. If they disagree, the announcement is wrong until
   proven otherwise.
 - "Where is my file" is answered with reads: `arkiv_query`

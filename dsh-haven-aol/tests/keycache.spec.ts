@@ -204,15 +204,17 @@ describe('seal-side epoch sharing (real IBE/AES, stub DPK)', () => {
     expect(rt.epochKeys.size).toBe(0)
   })
 
-  it('threshold-zero seals from any wall epoch share the eternal slot', async () => {
-    stubDpk()
+  it('legacy threshold-zero buckets still slot at the eternal epoch (decrypt-side compat)', async () => {
+    // Seals no longer accept threshold 0 — free ships clear, never sealed.
+    // The cache slot survives so rows sealed before this rule still open.
     const rt = plainRuntime()
-    const bytes = new TextEncoder().encode('free')
-    const a = await v3seal(rt, bytes, { threshold: 0n, epoch: currentEpoch() })
-    const b = await v3seal(rt, bytes, { threshold: 0n, epoch: currentEpoch() + 7 })
-    expect(JSON.parse(a.gateMetadataJson).epoch).toBe(0)
-    expect(a.keySha256).toBe(b.keySha256)
+    const fill = async () => ({ rawKey: new Uint8Array(32).fill(7), wrappedB64: 'eA==' })
+    const bucket = { chain: 'BaseMainnet', tokenAddress: TOKEN, threshold: 0n, epoch: 0 }
+    const a = await rt.epochKeys.getOrCreate(bucket, fill)
+    const b = await rt.epochKeys.getOrCreate(bucket, fill)
+    expect(a.wrappedB64).toBe(b.wrappedB64)
     expect(rt.epochKeys.size).toBe(1)
+    await expect(rt.epochKeys.getOrCreate({ ...bucket, epoch: 9 }, fill)).rejects.toThrow('epoch==0')
   })
 
   it('a failed wrap poisons nothing (next seal retries the fill)', async () => {

@@ -215,21 +215,25 @@ function requireNonNegativeI32(name: string, value: unknown): number {
  * always compared and stored as bigint (u256 cell). Plain JSON numbers lose
  * precision past 2**53, so callers with wei-scale thresholds SHOULD pass
  * strings — but 1e18-scale safe values keep working as numbers.
+ * Always > 0: the canister rejects threshold 0 (#InvalidThreshold), so a
+ * gated record carrying 0 is free content burned through encryption —
+ * free content ships as a clear fcid record instead.
  */
 function requireThreshold(name: string, value: unknown): bigint {
-  if (typeof value === 'boolean') fail(`${name} must be a u256 token amount (safe-integer number or decimal string), got boolean`);
+  if (typeof value === 'boolean') fail(`${name} must be a u256 token amount > 0 (safe-integer number or decimal string), got boolean`);
   if (typeof value === 'number') {
     if (!Number.isInteger(value)) fail(`${name} must be an integer, got ${value}`);
-    if (value < 0) fail(`${name} must be >= 0, got ${value}`);
+    if (value <= 0) fail(`${name} must be > 0, got ${value} (free content ships clear: fcid record, no gate)`);
     if (!Number.isSafeInteger(value)) fail(`${name}=${value} is not a safe integer — pass a decimal string for exact u256`);
     return BigInt(value);
   }
   if (typeof value === 'string' && /^\d+$/.test(value)) {
     const parsed = BigInt(value);
+    if (parsed === 0n) fail(`${name} must be > 0, got "0" (free content ships clear: fcid record, no gate)`);
     if (parsed > U256_MAX) fail(`${name} exceeds u256`);
     return parsed;
   }
-  fail(`${name} must be a u256 token amount (safe-integer number or decimal string), got ${JSON.stringify(value)}`);
+  fail(`${name} must be a u256 token amount > 0 (safe-integer number or decimal string), got ${JSON.stringify(value)}`);
 }
 
 function requireStr128(name: string, value: unknown): string {
@@ -357,11 +361,14 @@ function parseGateJson(field: string, raw: unknown): GateJson {
 /** Numeric threshold out of the frozen verbose spelling (string) or a bare int. */
 function gateThresholdValue(field: string, threshold: unknown): bigint {
   if (typeof threshold === 'number') {
-    if (!Number.isInteger(threshold) || threshold < 0) fail(`${field}.threshold must be a non-negative integer, got ${threshold}`);
+    if (!Number.isInteger(threshold) || threshold <= 0) fail(`${field}.threshold must be a positive integer (free content ships clear — gates carry threshold > 0), got ${threshold}`);
     return BigInt(threshold);
   }
-  if (typeof threshold === 'string' && /^\d+$/.test(threshold)) return BigInt(threshold);
-  fail(`${field}.threshold must be a non-negative integer (frozen spelling is a string), got ${JSON.stringify(threshold)}`);
+  if (typeof threshold === 'string' && /^\d+$/.test(threshold)) {
+    if (BigInt(threshold) === 0n) fail(`${field}.threshold must be a positive integer (free content ships clear — gates carry threshold > 0), got "0"`);
+    return BigInt(threshold);
+  }
+  fail(`${field}.threshold must be a positive integer (frozen spelling is a string), got ${JSON.stringify(threshold)}`);
 }
 
 function defaultExpiresIn(grpClass: HavenGroupClass): number {
@@ -696,6 +703,9 @@ function finishPart(args: {
   if (payload.gate === undefined) fail('part payload requires the v4 gate JSON string');
   const gate = parseGateJson('payload gate', payload.gate);
   if (gate.version !== 4) fail(`part gate.version must be 4, got ${gate.version}`);
+  // Parts are always gated bytes: a threshold-0 part gate is free content
+  // burned through encryption, which the canister rejects.
+  gateThresholdValue('payload gate', gate.threshold);
 
   for (const name of Object.keys(attributes)) {
     if (!(PART_ATTRS as readonly string[]).includes(name)) {

@@ -413,9 +413,9 @@ export interface SealParams {
   cid: string
   chain: Chain
   tokenAddress: string
-  /** Minimum balance in smallest token units. */
+  /** Minimum balance in smallest token units. Always > 0 (the canister rejects 0). */
   threshold: bigint
-  /** v3/v4 epoch (default: current; forced 0 when threshold is 0). */
+  /** v3/v4 epoch (default: current). */
   epoch?: number
   /** v4 unlock rung in whole reserve units (required for v4). */
   marketCapTarget?: bigint
@@ -728,8 +728,8 @@ export class AolRuntime {
     if (params.version !== 1 && params.version !== 3 && params.version !== 4) {
       throw new Error(`dsh-haven-aol: unsupported seal version ${String(params.version)} (want 1, 3, or 4)`)
     }
-    if (params.threshold < 0n) {
-      throw new Error('dsh-haven-aol: threshold must be a non-negative integer')
+    if (params.threshold <= 0n) {
+      throw new Error('dsh-haven-aol: seal threshold must be > 0 (the canister rejects threshold 0 with #InvalidThreshold). Free content ships clear: pin the plaintext and catalog an fcid record — no seal, no gate, no canister call.')
     }
     // Canonicalize the token BEFORE wrap+metadata: the derivation preimage
     // hashes tokenAddress VERBATIM (spec: casing preserved on all three
@@ -741,9 +741,7 @@ export class AolRuntime {
     // balance-check normalization. Decrypt stays verbatim: third-party
     // seals keep whatever case they were wrapped under.
     const tokenAddress = params.tokenAddress.toLowerCase()
-    // Threshold-zero collapse (canister rule): free content seals at the
-    // eternal epoch, matching what the decrypt side derives.
-    const epoch = params.threshold === 0n ? 0 : (params.epoch ?? currentEpoch())
+    const epoch = params.epoch ?? currentEpoch()
     if (params.version === 4) {
       if (params.marketCapTarget === undefined) {
         throw new Error('dsh-haven-aol: v4 seals require marketCapTarget (whole reserve units)')

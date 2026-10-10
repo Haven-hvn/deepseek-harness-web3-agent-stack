@@ -35,9 +35,11 @@ metadata; on Arkiv the same number rides as the `gate_type` attribute
 - Preimage: `SHA-256("accessol_v3:" + chain + ":" + tokenAddress +
   ":" + threshold + ":" + effectiveEpoch)`. Context: `accessol_v3`
   (distinct master key from v1).
-- **Threshold-zero collapse:** `threshold == 0` forces
-  `effectiveEpoch = 0` — free-tier content shares one eternal key
-  across all epochs. Uploader metadata must say epoch 0 to match.
+- **No threshold-zero seals:** the canister rejects `threshold == 0`
+  (`#InvalidThreshold`), so free content ships clear and never
+  touches a seal/decrypt roundtrip. The `threshold == 0 →
+  effectiveEpoch = 0` collapse survives only on the decrypt side,
+  for opening legacy rows sealed before this rule.
 - **Approval cache:** balance results cache per `(chain, token,
   threshold, epoch, wallet)` for 30 days; hot-path decrypts skip
   the EVM `eth_call`. Entries die on epoch rotation or TTL.

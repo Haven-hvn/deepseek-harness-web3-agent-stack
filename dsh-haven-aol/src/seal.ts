@@ -55,7 +55,7 @@ function requireTokenAddress(tokenAddress: string): void {
 
 function requireThreshold(threshold: bigint | number): bigint {
   const value = typeof threshold === 'bigint' ? threshold : BigInt(Math.trunc(threshold))
-  if (value < 0n) throw new Error(`dsh-haven-aol: threshold must be a non-negative integer, got ${String(threshold)}`)
+  if (value <= 0n) throw new Error(`dsh-haven-aol: threshold must be > 0, got ${String(threshold)} (free content ships clear — never sealed)`)
   return value
 }
 

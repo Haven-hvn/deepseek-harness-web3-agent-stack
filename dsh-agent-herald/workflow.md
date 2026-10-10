@@ -41,12 +41,12 @@ release notes a buyer deserves: what it is, timestamps or
 sections that matter, content tags, anything mispriced or
 mislabeled at the source. These notes ride along as Arkiv
 attributes at stage 5, and the teaser portion may publish
-free (threshold-zero, `process.md` §2). Evidence: the notes.
+free (clear `fcid`, `process.md` §2). Evidence: the notes.
 
-## 3. Seal — `aol_seal`, nothing else
+## 3. Seal — `aol_seal`, nothing else (gated releases only — free releases skip this stage: no seal, no gate, no canister call)
 
 Gate choice is `process.md` §2 — version, pattern, token,
-threshold, epoch or rungs, written down before this stage
+threshold (always > 0), epoch or rungs, written down before this stage
 starts. Then seal with `aol_seal`: plaintext path in, sealed
 bytes plus `gateMetadataJson` out. v3 seals share one key per
 community epoch (every file in the epoch carries the same
@@ -59,9 +59,10 @@ binding immediately
 with `aol_gate_info`: version, token, threshold, and CID must
 match what §2 decided. Evidence: sealed path, metadata JSON.
 
-## 4. Upload — pin the sealed bytes
+## 4. Upload — pin the release bytes
 
-`synapse_pin` by path (by CID only for re-pins), then
+`synapse_pin` by path (sealed bytes when gated, plaintext when
+free; by CID only for re-pins), then
 `synapse_pin_status` until the pin is confirmed. The returned
 CID is the release's permanent address — record it exactly;
 every downstream record points at it. A pin that errors may
@@ -84,11 +85,12 @@ waits for the session's natural batch point when it is
 routine. Never hold a release past the conversation for a
 fuller batch — no timer exists to flush it, and a held v3
 record's epoch goes stale while it waits. Payload
-carries `fcid`/`piece` (the stage-4 CID, exactly one),
-`gate` (the stage-3 metadata JSON), and the stage-2 notes;
-attributes carry `grp`, `title`, the gate corpus
-(`gate_token`/`gate_chain`/`gate_threshold`, numeric
-`gate_type` of 1, 3, or 4), `sha256_ct`, and `mime` —
+carries `fcid`/`piece` (the stage-4 CID, exactly one —
+`piece` + `gate` when gated, `fcid` with no `gate` key when
+free), `gate` (the stage-3 metadata JSON, gated only), and
+the stage-2 notes; attributes carry `grp`, `title`, the gate
+corpus when gated (`gate_token`/`gate_chain`/`gate_threshold`,
+numeric `gate_type` of 1, 3, or 4), `sha256_ct`, and `mime` —
 the tool rejects anything outside the Haven record shape,
 so a rejected write means fix the record, not the tool.
 Query the entity back before announcing — the catalog entry
@@ -98,18 +100,21 @@ is what buyers will actually read. Evidence: the Arkiv key.
 
 Delete nothing. Originals, sealed bytes, and metadata stay
 until the release is verified end to end (pin status green,
-entity queried back, trial decrypt passed) — and the metadata
-JSON stays permanently, because re-announcing or debugging a
-release without it means re-deriving the gate from scratch.
+entity queried back, trial open passed) — and the gate
+metadata JSON (gated releases) stays permanently, because
+re-announcing or debugging a release without it means
+re-deriving the gate from scratch.
 Disk is cheap; unreproducible releases are not.
 
 ## The access path (answering "where is my file")
 
 Consumption mirrors release in reverse, all reads until the
-final decrypt: locate via `arkiv_query` (attributes) and
-`synapse_pin_status` (liveness), fetch the sealed bytes,
-inspect with `aol_gate_info`, then `aol_decrypt` to a scratch
-path and verify the byte count. No download manager, no job
+final open: locate via `arkiv_query` (attributes) and
+`synapse_pin_status` (liveness), fetch the bytes (sealed when
+gated, plaintext when free). Gated bytes go through inspect
+with `aol_gate_info`, then `aol_decrypt` to a scratch path;
+free bytes are byte-compared, never decrypted. Verify the
+byte count either way. No download manager, no job
 queue — the daemon-job concept has no harness equivalent and
 needs none: each access is one conversation, fully evidenced.
 
