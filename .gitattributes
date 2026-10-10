@@ -1,0 +1,17 @@
+# Shell scripts and config parsed by POSIX tools must keep LF endings.
+# A CRLF checkout breaks shebangs ("exec entrypoint.sh: no such file" —
+# the kernel looks for /bin/sh\r) and breaks here-docs and YAML/JSON parsers.
+# The Dockerfile also normalises with `sed -i 's/\r$//'`; both are deliberate,
+# because a build host is not always the machine that authored the file.
+*.sh    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.json  text eol=lf
+*.mjs   text eol=lf
+Dockerfile text eol=lf
+
+# Leave binaries alone.
+*.png   binary
+*.jpg   binary
+*.mp3   binary
+*.mp4   binary

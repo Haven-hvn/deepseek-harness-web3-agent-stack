@@ -53,10 +53,17 @@ RUN cd /opt/agent && npm i --omit=dev --no-audit --no-fund \
     && npm cache clean --force
 
 # Agent scripts + profile user layer + supervisor tree.
+# Strip CR from shell scripts: a Windows checkout (core.autocrlf / OneDrive)
+# rewrites them to CRLF, which makes the shebang `#!/bin/sh\r` unresolvable
+# and the container fail with "exec /opt/agent/entrypoint.sh: no such file".
+# Normalising here keeps the build correct regardless of host git settings.
 COPY docker/keys.mjs docker/entrypoint.sh docker/convos-qr.sh \
      docker/setup-indexers.mjs docker/profile.patch.yml \
      docker/supervisord.conf /opt/agent/
-RUN chmod +x /opt/agent/entrypoint.sh /opt/agent/convos-qr.sh
+RUN sed -i 's/\r$//' /opt/agent/entrypoint.sh /opt/agent/convos-qr.sh \
+    && chmod +x /opt/agent/entrypoint.sh /opt/agent/convos-qr.sh \
+    && sh -n /opt/agent/entrypoint.sh \
+    && sh -n /opt/agent/convos-qr.sh
 
 # Web3 agent stack workspace root (for in-image install + build).
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json .npmrc /opt/stack/
