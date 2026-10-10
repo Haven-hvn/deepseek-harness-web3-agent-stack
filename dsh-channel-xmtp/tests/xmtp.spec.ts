@@ -16,6 +16,9 @@
  *    that produced it; empty turns stay silent; nothing sends twice.
  * 5. Exactly-once across restarts: inbound outbox + outbound cursor.
  * 6. Consent auto-allow sweep and the bounded reconnect policy.
+ * 7. WEDGED SENDS FAIL LOUD — a stuck send-tail task rejects after the
+ *    deliver bound, and rejections clear the per-conversation tail so later
+ *    flushes still run instead of wedging behind a corpse.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -32,6 +35,7 @@ import ToolRuntime from '@deepseek-ai/dsh-tools'
 import WalletRuntime from 'dsh-wallet'
 import type { CryptoAdapter, WalletKeySource } from 'dsh-wallet'
 import * as channelXmtp from '../src/index.ts'
+import { deliveryPolicy, DELIVER_TIMEOUT_MS } from '../src/index.ts'
 import { internals } from '../src/xmtp.ts'
 import type {
   XmtpClient,
@@ -721,5 +725,106 @@ describe('reconnect policy', () => {
     channel.client = client // back online; the sweep/idle/event triggers retry
     channel.scheduleFlush('conv-1')
     await vi.waitFor(() => { expect(conversation.sent).toEqual(['agent reply', 'agent reply']) })
+  })
+})
+
+// ── Replies leave as plain chat text, never raw markdown ────────────────
+
+describe('toPlainText (Convos renders the XMTP text codec literally)', () => {
+  const { toPlainText } = channelXmtp
+
+  it('folds the sweep reply into clean chat lines', () => {
+    expect(toPlainText(
+      '*Sweep complete.*\n\n'
+      + '- *Router:* 0x12F65677d698C75eC5443f2B92f9BBAD331762b4\n'
+      + '- *Tx hash:* 0x1dcd611035c187cc685627924ec2b1c41396d38a7a94f2b092da8e74ea237951\n'
+      + '- *Status:* success\n\n'
+      + 'Check [balances](https://example.com/b) or run `get_balances`.',
+    )).toBe(
+      'Sweep complete.\n\n'
+      + '- Router: 0x12F65677d698C75eC5443f2B92f9BBAD331762b4\n'
+      + '- Tx hash: 0x1dcd611035c187cc685627924ec2b1c41396d38a7a94f2b092da8e74ea237951\n'
+      + '- Status: success\n\n'
+      + 'Check balances: https://example.com/b or run get_balances.',
+    )
+  })
+
+  it('unwraps bold, headings, quotes, rules, and fences; protects URLs and hashes', () => {
+    expect(toPlainText('## Balances\n**total** __5__ `USD`')).toBe('Balances\ntotal 5 USD')
+    expect(toPlainText('> quoted\n\n---\nnext')).toBe('quoted\n\nnext')
+    expect(toPlainText('```js\nconst x = 2 * 3\n```')).toBe('const x = 2 * 3')
+    expect(toPlainText('see https://a.b/c*d and 0xabc*def')).toBe('see https://a.b/c*d and 0xabc*def')
+  })
+
+  it('leaves unpaired markers, lists, and plain text alone; never swallows a reply', () => {
+    expect(toPlainText('2 * 3 = 6 and a_b')).toBe('2 * 3 = 6 and a_b')
+    expect(toPlainText('- one\n1. two\n\nplain')).toBe('- one\n1. two\n\nplain')
+    expect(toPlainText('agent reply')).toBe('agent reply')
+    expect(toPlainText('---')).toBe('---')
+  })
+})
+
+// ── 7. Wedged sends fail loud, never silent ─────────────────────────────────
+
+/** A conversation whose first send hangs forever, then behaves. */
+class HangingOnceConversation extends FakeConversation {
+  private hung = false
+
+  override async sendText(text: string): Promise<string> {
+    if (!this.hung) {
+      this.hung = true
+      await new Promise<never>(() => {})
+    }
+    return super.sendText(text)
+  }
+}
+
+/** A conversation whose first send throws, then behaves. */
+class FlakyOnceConversation extends FakeConversation {
+  private failed = false
+
+  override async sendText(text: string): Promise<string> {
+    if (!this.failed) {
+      this.failed = true
+      throw new Error('scripted send failure')
+    }
+    return super.sendText(text)
+  }
+}
+
+describe('deliver timeout (a stuck send must not wedge its conversation)', () => {
+  it('a hung send rejects after the bound and the next message still runs', async () => {
+    deliveryPolicy.timeoutMs = 200
+    try {
+      const { world } = await harness()
+      const conversation = new HangingOnceConversation(ALLOWED)
+      world.conversations.set('conv-1', conversation)
+
+      world.onValue!(inbound({ id: 'msg-a' }))
+      // Wait for the 200ms timeout to fire and the send tail to clear.
+      await new Promise(resolve => setTimeout(resolve, 500))
+      // The hung first send never completed; this second message's reply is the only one.
+      world.onValue!(inbound({ id: 'msg-b', content: 'second' }))
+      await vi.waitFor(() => { expect(conversation.sent).toHaveLength(1) }, { timeout: 10_000 })
+      expect(conversation.sent).toEqual(['agent reply'])
+    } finally {
+      deliveryPolicy.timeoutMs = DELIVER_TIMEOUT_MS
+    }
+  })
+
+  it('a rejected send clears the tail so later messages run', async () => {
+    const { world } = await harness()
+    const conversation = new FlakyOnceConversation(ALLOWED)
+    world.conversations.set('conv-1', conversation)
+
+    world.onValue!(inbound({ id: 'msg-a' }))
+    world.onValue!(inbound({ id: 'msg-b', content: 'second' }))
+
+    // Without tail cleanup on rejection, msg-b would stall behind the
+    // failed msg-a send and nothing would ever arrive. The failed flush
+    // retries from its cursor (at-least-once), so msg-a's reply lands on
+    // retry and msg-b's follows: both arrive, nothing wedges.
+    await vi.waitFor(() => { expect(conversation.sent).toHaveLength(2) }, { timeout: 10_000 })
+    expect(conversation.sent).toEqual(['agent reply', 'agent reply'])
   })
 })

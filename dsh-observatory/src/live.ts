@@ -64,6 +64,9 @@ async function ping(origin: string, path: string): Promise<boolean> {
 async function qbitDownloads(origin: string): Promise<{ up: boolean; rows: DownloadRow[] }> {
   try {
     const response = await fetch(`${origin}/api/v2/torrents/info`, { signal: AbortSignal.timeout(4000) })
+    // qBittorrent requires login for this endpoint: 403 means the WebUI is
+    // up but the anonymous probe is unauthenticated, not that it is down.
+    if (response.status === 403) return { up: true, rows: [] }
     if (!response.ok) return { up: false, rows: [] }
     const items = await response.json() as Array<Record<string, unknown>>
     return {

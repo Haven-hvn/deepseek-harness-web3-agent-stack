@@ -75,6 +75,19 @@ export const MAX_DEDUP_SIZE = 5_000
 export const DEFAULT_BUSY_ACK = "Still working on the previous request — I'll get to this next."
 /** Outbox value for an inbound admitted to its agent but not yet answered. */
 export const OUTBOX_ACCEPTED = 'accepted'
+/**
+ * Bound for one send-tail task (flush + sends). A stuck send (wedged turn,
+ * hanging transport) must fail loud instead of blocking its conversation
+ * forever: without this, every later flush queues behind an unsettled
+ * promise and the conversation goes silent with no error anywhere. Ten
+ * minutes clears the slowest observed turns with wide margin.
+ */
+export const DELIVER_TIMEOUT_MS = 10 * 60 * 1_000
+/**
+ * Test seam for the deliver bound: specs shorten the watchdog without
+ * touching the production default. Not part of the plugin contract.
+ */
+export const deliveryPolicy = { timeoutMs: DELIVER_TIMEOUT_MS }
 
 /** Plugin configuration. */
 export interface Config {
@@ -178,6 +191,51 @@ function assistantContent(event: SessionEvent): { text: string; images: ImageBlo
     .join('')
   const images = blocks.filter((block): block is ImageBlock => block.type === 'image' && block.attachment !== undefined)
   return { text, images }
+}
+
+/**
+ * Fold the assistant's markdown into chat-shaped plain text. Replies leave
+ * over the XMTP text codec, which has no markdown renderer, so `*emphasis*`
+ * would arrive literally. Idempotent on already-plain input; URLs, `0x…`
+ * hashes, `- ` bullets, and numbered lists pass through untouched.
+ */
+export function toPlainText(reply: string): string {
+  // Fold markdown links first: protecting their URLs would split the pattern.
+  const linked = reply.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1: $2')
+  // Split on protected spans (URLs, hex hashes) so folding never touches them.
+  const parts = linked.split(/(https?:\/\/[^\s)>\]]+|0x[0-9a-fA-F]+)/g)
+  for (let i = 0; i < parts.length; i += 2) {
+    parts[i] = foldMarkdown(parts[i] ?? '')
+  }
+  const lines = parts.join('').split('\n').map((line) => line.replace(/[ \t]+$/g, ''))
+  const out: string[] = []
+  let blanks = 0
+  for (const line of lines) {
+    if (line.trim() === '') {
+      blanks += 1
+      if (blanks <= 1) out.push('')
+      continue
+    }
+    blanks = 0
+    out.push(line)
+  }
+  const folded = out.join('\n').trim()
+  return folded === '' ? reply : folded
+}
+
+/** Strip markdown syntax from one unprotected span, keeping its text. */
+function foldMarkdown(text: string): string {
+  return text
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1: $2')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^>\s?/gm, '')
+    .replace(/^[*-]{3,}\s*$/gm, '')
+    .replace(/```[\s\S]*?```/g, (block) => block.replace(/```[a-z]*\n?/gi, ''))
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,!?;:]|$)/gm, '$1$2')
+    .replace(/(^|[\s(])_([^_\n]+)_(?=[\s).,!?;:]|$)/gm, '$1$2')
+    .replace(/`([^`\n]+)`/g, '$1')
 }
 
 /** Assistant output accumulated for one turn under `replyMode: turn`. */
@@ -652,13 +710,38 @@ class XmtpChannelRuntime {
   /** Append one task to a conversation's send tail; failures are logged, never thrown. */
   private enqueueSend(conversationId: string, task: () => Promise<void>): Promise<void> {
     const prev = this.sendTails.get(conversationId) ?? Promise.resolve()
-    const cur = prev.then(task).catch((error: unknown) => {
+    const cur = prev.then(() => this.runBounded(conversationId, task)).catch((error: unknown) => {
       if (error instanceof NotConnectedError) return
       console.log(`[xmtp] send failed ${conversationId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`)
     })
     this.sendTails.set(conversationId, cur)
     void cur.then(() => { if (this.sendTails.get(conversationId) === cur) this.sendTails.delete(conversationId) })
     return cur
+  }
+
+  /**
+   * Run one send-tail task bounded by the deliver policy (see
+   * {@link DELIVER_TIMEOUT_MS}). A rejection clears the tail through the
+   * normal `enqueueSend` cleanup, so later flushes still run instead of
+   * wedging behind a corpse.
+   */
+  private async runBounded(conversationId: string, task: () => Promise<void>): Promise<void> {
+    const timeoutMs = deliveryPolicy.timeoutMs
+    let fireTimeout: () => void = () => {}
+    const watchdog = new Promise<never>((_, reject) => {
+      fireTimeout = () => {
+        reject(new Error(
+          `deliver timeout for conversation ${conversationId.slice(0, 8)} after ${timeoutMs}ms — `
+          + 'a stuck send was blocking this conversation',
+        ))
+      }
+    })
+    const timer = setTimeout(fireTimeout, timeoutMs)
+    try {
+      await Promise.race([task(), watchdog])
+    } finally {
+      clearTimeout(timer)
+    }
   }
 
   /**
@@ -759,7 +842,7 @@ class XmtpChannelRuntime {
       if (result !== undefined) { sent = result; sentAny = true }
     }
     if (text !== '') {
-      sent = await conversation.sendText(text)
+      sent = await conversation.sendText(toPlainText(text))
       sentAny = true
     }
     const key = `${conversationId}\n${turn}`
