@@ -17,20 +17,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libicu72 \
       qbittorrent-nox transmission-daemon \
       ffmpeg qrencode supervisor \
-      python3-mutagen \
+      python3 python3-pip python3-mutagen \
     && rm -rf /var/lib/apt/lists/*
 
-# yt-dlp standalone binary (pinned).
+# yt-dlp (pinned, pure Python — works on ARM64 and x64).
 ARG YTDLP_VERSION=2026.08.19
-RUN curl -fsSL -o /usr/local/bin/yt-dlp \
-      "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp_linux" \
-    && chmod +x /usr/local/bin/yt-dlp \
+RUN pip3 install --no-cache-dir --break-system-packages "yt-dlp==${YTDLP_VERSION}" \
     && yt-dlp --version
 
 # Prowlarr self-contained build (pinned, no dotnet needed).
+# TARGETARCH is set automatically by BuildKit (amd64/arm64).
+# Prowlarr uses x64 instead of amd64 in their release URLs.
 ARG PROWLARR_VERSION=2.6.5.5623
-RUN curl -fsSL -o /tmp/prowlarr.tar.gz \
-      "https://github.com/Prowlarr/Prowlarr/releases/download/v${PROWLARR_VERSION}/Prowlarr.master.${PROWLARR_VERSION}.linux-core-x64.tar.gz" \
+ARG TARGETARCH
+RUN case "${TARGETARCH}" in \
+      amd64) PROWLARR_ARCH=x64 ;; \
+      arm64) PROWLARR_ARCH=arm64 ;; \
+      *) echo "Unsupported architecture: ${TARGETARCH}" && exit 1 ;; \
+    esac \
+    && curl -fsSL -o /tmp/prowlarr.tar.gz \
+      "https://github.com/Prowlarr/Prowlarr/releases/download/v${PROWLARR_VERSION}/Prowlarr.master.${PROWLARR_VERSION}.linux-core-${PROWLARR_ARCH}.tar.gz" \
     && mkdir -p /opt/prowlarr && tar -xzf /tmp/prowlarr.tar.gz -C /opt/prowlarr \
     && rm /tmp/prowlarr.tar.gz
 
