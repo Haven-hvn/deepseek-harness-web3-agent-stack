@@ -16,13 +16,19 @@
  *
  * Usage: node keys.mjs <outdir>
  * Requires: viem, @xmtp/node-sdk (installed globally in the image).
+ *
+ * Bring-your-own key: when $AGENT_EVM_KEY holds a 0x-prefixed 32-byte
+ * secp256k1 private key, it is used as-is (address and inbox id derive
+ * from it) instead of generating a fresh one. Blank counts as unset.
+ * Anything else fails loud before writing anything.
  */
 
 import { createHash, generateKeyPairSync } from 'node:crypto';
 import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
+// viem stays a runtime (dynamic) import so the pure helpers below remain
+// importable without the agent dependency tree (unit tests, lint probes).
 
 const CRC_TABLE = (() => {
   const table = new Uint32Array(256);
@@ -72,6 +78,18 @@ export function principalFromDerPubkey(der) {
   return base32Encode(Buffer.concat([checksum, bytes])).toLowerCase().replace(/(.{5})(?=.)/g, '$1-');
 }
 
+/**
+ * Validate a user-supplied EVM private key and return its canonical form
+ * (lowercase 0x hex). Throws on anything else, before any file is written.
+ */
+export function normalizeEvmKey(input) {
+  const key = String(input ?? '').trim().toLowerCase();
+  if (!/^0x[0-9a-f]{64}$/.test(key)) {
+    throw new Error('AGENT_EVM_KEY must be a 0x-prefixed 32-byte hex private key');
+  }
+  return key;
+}
+
 function writeSecret(path, data) {
   writeFileSync(path, data, { mode: 0o600 });
   chmodSync(path, 0o600);
@@ -91,7 +109,9 @@ async function main() {
   try { chmodSync(outdir, 0o700); } catch { /* best effort on odd filesystems */ }
 
   // ── EVM (secp256k1) ──────────────────────────────────────────────
-  const evmKey = generatePrivateKey();
+  const { generatePrivateKey, privateKeyToAccount } = await import('viem/accounts');
+  const provided = (process.env.AGENT_EVM_KEY ?? '').trim();
+  const evmKey = provided === '' ? generatePrivateKey() : normalizeEvmKey(provided);
   const evmAddress = privateKeyToAccount(evmKey).address;
   if (!/^0x[0-9a-fA-F]{40}$/.test(evmAddress)) throw new Error('derived invalid EVM address');
   writeSecret(join(outdir, 'evm.key'), `${evmKey}\n`);

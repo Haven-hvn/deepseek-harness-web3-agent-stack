@@ -33,7 +33,11 @@ Transmission stay on localhost. Do not `-p` them.
 1. Risk gate: refuses to start without `ACCEPT_HOT_WALLET_RISK=yes`.
 2. Generates `evm.key` (+ address), `icp.pem`/`icp.seed` (+ principal),
    and the XMTP `inbox.id` into `/data/keys` (0600 secrets). Never rotated,
-   never printed.
+   never printed. To bring your own EVM key instead, pass
+   `-e AGENT_EVM_KEY=0x...` (32-byte hex): it is used as-is, with the
+   address and inbox id derived from it; anything else fails the boot
+   before writing anything. Ephemeral `-e` only, and clear shell history
+   afterwards — env is visible to host inspectors.
 3. Writes `/data/dsh/.credentials.yaml` (generated secrets), installs the
    profile from the image skeleton + `profile.patch.yml` user layer, and
    validates it with `dsh --dump-config` before anything starts.
