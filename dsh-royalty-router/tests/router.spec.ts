@@ -264,3 +264,11 @@ describe('docker profile chain', () => {
     expect(yml).toMatch(/- id: royalty-router\n {2}config:\n {4}chainId: 8453\n {4}rpcUrl: https:\/\/mainnet\.base\.org/)
   })
 })
+
+describe('native profile chain', () => {
+  it('royalty-router row carries the agent wallet (mirrors docker)', async () => {
+    const { readFile } = await import('node:fs/promises')
+    const yml = await readFile('./native/herald.patch.yml', 'utf8')
+    expect(yml).toMatch(/- id: royalty-router\n {2}config:\n {4}chainId: 8453\n {4}rpcUrl: https:\/\/mainnet\.base\.org\n {4}wallet: agent/)
+  })
+})
