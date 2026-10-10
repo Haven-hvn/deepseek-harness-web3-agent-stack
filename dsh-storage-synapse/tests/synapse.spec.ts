@@ -126,6 +126,7 @@ describe('gated filecoin requests (OWS wallet seam)', () => {
     expect(Object.keys(validated).sort()).toEqual(['copies', 'excludeProviderIds', 'networkMode', 'providerIds', 'rpcUrl', 'wallet', 'withCDN'])
     expect(validated.wallet).toBe('agent')
     expect(validated.rpcUrl).toBe('wss://api.calibration.node.glif.io/rpc/v1')
+    expect(validated.withCDN).toBe(true)
     expect((validated as any).privateKey).toBeUndefined()
     await ctx.synapse.pin('bafytest')
     // Gate was used — pin went through stub which called resolvePrivateKey (per-operation, like xmtp)
@@ -166,6 +167,18 @@ describe('synapse_pin through the executor (the harness natively pins)', () => {
     expect(result.isError).toBe(false)
     expect(result.content).toEqual([{ type: 'text', text: 'bafyexisting: pinned (provider filecoin)' }])
     expect(pinned).toEqual([{ cid: 'bafyexisting' }])
+  })
+
+  it('pin result carries the CommP piece CID for gated-record writers', async () => {
+    const { ctx, execute } = await harness()
+    const synapse: any = ctx.synapse
+    synapse.pin = vi.fn(async (cid: string) => {
+      ctx.emit('synapse/pinned', { cid } as any)
+      return { cid, provider: 'filecoin', expiresAt: 0, redundancy: 1, pieceCid: 'bafkzcibtestpiece' }
+    })
+    const result = await execute('synapse_pin', { cid: 'bafyexisting' })
+    expect(result.isError).toBe(false)
+    expect(result.content).toEqual([{ type: 'text', text: 'bafyexisting: pinned (provider filecoin, piece bafkzcibtestpiece)' }])
   })
 
   it('uploads a local file then pins the returned cid (path route)', async () => {
@@ -419,7 +432,7 @@ describe('provider selection: no default exclusions, one loud fallback', () => {
       const cid = await storedBackend(dir, backend)
       pinMocks.findPiece.mockResolvedValueOnce('bafkpiece')
       const status = await backend.checkPin(cid)
-      expect(status).toEqual({ cid, provider: 'filecoin', expiresAt: 0, redundancy: 1 })
+      expect(status).toEqual({ cid, provider: 'filecoin', expiresAt: 0, redundancy: 1, pieceCid: 'bafkpiece' })
       // Recorded provider first: entry says 4, so four.test leads the sweep.
       expect(pinMocks.findPiece).toHaveBeenCalledWith({ serviceURL: 'https://four.test', pieceCid: 'bafkpiece', timeout: 15000 })
     } finally {

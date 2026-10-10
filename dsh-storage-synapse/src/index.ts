@@ -371,13 +371,15 @@ const PIN_STATUS_SCHEMA = {
     provider: { type: 'string', required: true },
     expiresAt: { type: 'number', required: true, description: '0 = permanent, -1 = not pinned.' },
     redundancy: { type: 'number', required: true, description: 'Replica count; 0 = not pinned.' },
+    pieceCid: { type: 'string', description: 'CommP piece CID carrying the root (present when the ledger maps it).' },
   },
 } as const
 
 /** Render one pin status as the model-facing text block. */
 function renderStatus(value: PinStatus): { type: 'text'; text: string }[] {
   const health = value.redundancy > 0 ? 'pinned' : 'not pinned'
-  return [{ type: 'text', text: `${value.cid}: ${health} (provider ${value.provider})` }]
+  const piece = value.pieceCid !== undefined && value.pieceCid !== '' ? `, piece ${value.pieceCid}` : ''
+  return [{ type: 'text', text: `${value.cid}: ${health} (provider ${value.provider}${piece})` }]
 }
 
 /**

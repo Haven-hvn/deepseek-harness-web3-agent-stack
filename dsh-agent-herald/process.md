@@ -39,7 +39,10 @@ reason written in the conversation.
    (enforced by the tool — malformed records are rejected before
    signing, never silently stored): payload carries `fcid`/`piece`
    (Filecoin locator, exactly one), `gate` (gate-metadata JSON),
-   `vlm` (analysis CID when present); attributes carry `grp`
+   `vlm` (analysis CID when present); on gated records `piece` is
+   the CommP piece CID (`bafk…`) from the `synapse_pin` result —
+   never the UnixFS root (players fetch playback bytes by CommP).
+   Attributes carry `grp`
    (`haven.video.full` for video, `haven.audio.full` for audio,
    or the generic-file / drip group),
    `title`, the gate corpus (`gate_type` = the gate version —

@@ -440,12 +440,22 @@ function resolveExpiresIn(grpClass: HavenGroupClass, expiresIn: unknown): number
   return expiresIn;
 }
 
+/** CommP piece CIDs are base32 `bafk…` (v1/v2) — the only value `piece` may carry. */
+const COMMP_PATTERN = /^bafk[a-z2-7]+$/;
+
+function requireCommP(where: string, value: unknown): string {
+  if (typeof value !== 'string' || !COMMP_PATTERN.test(value)) {
+    fail(`${where} must be the CommP piece CID (bafk… base32), got ${JSON.stringify(value)} — gated records address the Filecoin piece, never the UnixFS root`);
+  }
+  return value;
+}
+
 /** Shared payload helpers for full/generic records. */
 function requireLocator(payload: Record<string, unknown>): { locator: string; gated: boolean } {
   const piece = payload.piece;
   const fcid = payload.fcid;
   if (piece !== undefined && fcid !== undefined) fail('payload carries both piece and fcid — encrypted records carry piece, clear records carry fcid, never both');
-  if (typeof piece === 'string' && piece.length > 0) return { locator: piece, gated: true };
+  if (typeof piece === 'string' && piece.length > 0) return { locator: requireCommP('payload piece', piece), gated: true };
   if (typeof fcid === 'string' && fcid.length > 0) return { locator: fcid, gated: false };
   fail('payload needs exactly one locator: piece (encrypted) or fcid (clear)');
 }
@@ -682,6 +692,7 @@ function finishPart(args: {
     if (name !== 'piece' && name !== 'gate') fail(`part payload carries ${JSON.stringify(name)} — part payload is exactly { piece, gate }`);
   }
   if (typeof payload.piece !== 'string' || payload.piece.length === 0) fail('part payload piece must be the ciphertext locator CID');
+  requireCommP('part payload piece', payload.piece);
   if (payload.gate === undefined) fail('part payload requires the v4 gate JSON string');
   const gate = parseGateJson('payload gate', payload.gate);
   if (gate.version !== 4) fail(`part gate.version must be 4, got ${gate.version}`);

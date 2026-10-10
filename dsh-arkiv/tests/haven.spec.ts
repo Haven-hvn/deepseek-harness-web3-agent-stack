@@ -358,6 +358,14 @@ describe('haven writes: fail-closed rejections', () => {
       const r = fullV1();
       return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibpiece', gate: 'nope{' })) };
     }, /not valid JSON/],
+    ['unixfs root in piece', () => {
+      const r = fullV1();
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafybeihbb4qvts3xuy4kphwnglfg5twuockj7zqrjgrsiinqfmc4tsocei', gate: JSON.stringify(gateV1()) })) };
+    }, /CommP/],
+    ['unixfs root in part piece', () => {
+      const r = dripPart();
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafybeihbb4qvts3xuy4kphwnglfg5twuockj7zqrjgrsiinqfmc4tsocei', gate: JSON.stringify(gateV4()) })) };
+    }, /CommP/],
     ['missing sha256_ct', () => { const r = fullV1(); const { sha256_ct: _d, ...rest } = r.attributes; return { ...r, attributes: rest }; }, /sha256_ct/],
     ['malformed sha256_ct', () => { const r = fullV1(); return { ...r, attributes: { ...r.attributes, sha256_ct: 'xyz' } }; }, /sha256 digest/],
     ['mime out of enum', () => { const r = fullV1(); return { ...r, attributes: { ...r.attributes, mime: 15 } }; }, /0\.\.14/],

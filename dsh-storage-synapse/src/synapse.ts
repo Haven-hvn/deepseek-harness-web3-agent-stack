@@ -20,6 +20,8 @@ export interface PinStatus {
   readonly provider: string
   readonly expiresAt: number
   readonly redundancy: number
+  /** CommP piece CID carrying the root (present when the ledger maps it) — gated-record writers address this, never the root. */
+  readonly pieceCid?: string | undefined
 }
 
 export const internals: { fetch: typeof globalThis.fetch | undefined } = { fetch: undefined }
@@ -265,7 +267,7 @@ export class FilecoinBackend {
         try {
           await findPiece({ serviceURL, pieceCid: piece, timeout: 15000 })
           console.log(`[synapse] checkPin ${cid} pinned (piece ${entry.pieceCid} on ${serviceURL})`)
-          return { cid, provider: 'filecoin', expiresAt: 0, redundancy: 1 }
+          return { cid, provider: 'filecoin', expiresAt: 0, redundancy: 1, pieceCid: entry.pieceCid }
         } catch {
           // This provider doesn't hold it — try the next.
         }
