@@ -66,7 +66,7 @@ Without a wired `signDigest` (default OWS path), the `signGate` seam stays **uns
 
 - `attestHolding` — no wrapper exists in any SDK yet (TS, Python, or here).
 
-Sealing (`aol_seal`) is harness-native: v3/v4 metadata builders and derivation inputs stay SDK-verbatim, the v1 builder is ported from Python `core.py`, AES-GCM mirrors the SDK wire byte-for-byte, and the IBE wrap runs against `@icp-sdk/vetkeys` under the **canister-fetched** verification key. Seal here, upload the sealed bytes plus `gateMetadataJson` via the storage tools.
+Sealing (`aol_seal`) is harness-native: v3/v4 metadata builders and derivation inputs stay SDK-verbatim, the v1 builder is ported from Python `core.py`, file bytes ship in haven-cli's framed chunk layout (`[12-byte base IV][u32LE index][u32LE length][ciphertext+tag]*`, 1 MiB chunks — players refuse unframed payloads over 32 MiB), and the IBE wrap runs against `@icp-sdk/vetkeys` under the **canister-fetched** verification key. Seal here, upload the sealed bytes plus `gateMetadataJson` via the storage tools. Decrypt dispatches on framing, so pre-framing legacy rows stay open.
 
 ## Key reuse (epoch buckets)
 

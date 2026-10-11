@@ -111,3 +111,9 @@ metadata; on Arkiv the same number rides as the `gate_type` attribute
   AES-GCM key per seal, IBE-wrapped under the canister-fetched
   verification key, gate metadata out. Seal once per release —
   a second seal mints a different key and a different release.
+- **Payload framing:** sealed files ship chunked framing (`[12-byte
+  base IV][u32LE index][u32LE length][ciphertext+tag]*`, 1 MiB
+  chunks) — the only shape players stream. An unframed (legacy
+  single-shot) seal over ~32 MiB fails in the player with a decrypt
+  error, not a gate error: re-seal framed and re-release, never
+  re-gate the same bytes.

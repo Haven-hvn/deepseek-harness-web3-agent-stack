@@ -140,6 +140,7 @@ describe('agent docs', () => {
       'InvalidOracle',
       'EIP-191',
       'attestHolding',
+      'chunked framing',
     ]) {
       expect(protocol).toContain(anchor)
     }

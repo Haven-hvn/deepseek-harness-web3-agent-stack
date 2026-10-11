@@ -19,8 +19,12 @@
  *   same reason.
  * - Seal-side (encrypt) primitives live in `./seal.ts`: the v1 metadata
  *   builder is ported from Python `core.py` (the TS SDK never grew one);
- *   v3/v4 builders, derivation inputs, and AES/IBE wire formats stay
- *   SDK-verbatim. The IBE wrap always uses the canister-fetched
+ *   v3/v4 builders, derivation inputs, and IBE wire formats stay
+ *   SDK-verbatim. File payloads ship in haven-cli's framed chunk layout
+ *   (`[12-byte base IV][u32LE index][u32LE length][ciphertext+tag]*`,
+ *   1 MiB chunks) — the SDK's `decryptFile` only opens legacy
+ *   single-shot payloads, so decrypt dispatches on framing instead of
+ *   calling it. The IBE wrap always uses the canister-fetched
  *   verification key, never a locally derived guess.
  * - The single signature in every flow (EIP-712 gate request) goes through
  *   the signGate seam. Default is fail-loud (AolSigningError): ctx.wallet
@@ -63,7 +67,6 @@ import {
   createTransportKeyPair,
   recoverVetKey,
   ibeDecryptAesKey,
-  decryptFile,
   requestDecryptionKey,
   fetchVerificationKey,
   fetchVerificationKeyV4,
@@ -81,7 +84,8 @@ import { loadKeyStore, saveKeyStore } from './keyStore.ts'
 import {
   buildGateMetadataV1,
   gateMetadataV1ToJson,
-  encryptFileAesGcm,
+  decryptFileAny,
+  encryptFileChunkedAesGcm,
   freshAesKey,
   ibeEncryptAesKey,
 } from './seal.ts'
@@ -632,7 +636,7 @@ export class AolRuntime {
         recoverVetKey(result.ok.encryptedKey, secretKey, result.ok.verificationKey, derivationInput))
     })
     const aesKey = unwrapStage('v1 epoch-key IBE unwrap', () => ibeDecryptAesKey(metadata.encryptedAesKey, vetKey))
-    return unwrapStageAsync('v1 file AES-GCM open', () => decryptFile(params.encryptedFileBytes, aesKey))
+    return unwrapStageAsync('v1 file AES-GCM open', () => decryptFileAny(params.encryptedFileBytes, aesKey))
   }
 
   /**
@@ -668,7 +672,7 @@ export class AolRuntime {
         recoverVetKey(result.ok.encryptedKey, secretKey, result.ok.verificationKey, derivationInput))
     })
     const aesKey = unwrapStage('v3 epoch-key IBE unwrap', () => ibeDecryptAesKey(metadata.encryptedAesKey, vetKey))
-    return unwrapStageAsync('v3 file AES-GCM open', () => decryptFile(params.encryptedFileBytes, aesKey))
+    return unwrapStageAsync('v3 file AES-GCM open', () => decryptFileAny(params.encryptedFileBytes, aesKey))
   }
 
   /** v4 end-to-end decrypt (market-cap drip). Fails closed client-side on non-Bond oracles; same vetKey caching as v3 (per rung). */
@@ -707,7 +711,7 @@ export class AolRuntime {
         recoverVetKey(result.ok.encryptedKey, secretKey, result.ok.verificationKey, derivationInput))
     })
     const aesKey = unwrapStage('v4 epoch-key IBE unwrap', () => ibeDecryptAesKey(metadata.encryptedAesKey, vetKey))
-    return unwrapStageAsync('v4 file AES-GCM open', () => decryptFile(params.encryptedFileBytes, aesKey))
+    return unwrapStageAsync('v4 file AES-GCM open', () => decryptFileAny(params.encryptedFileBytes, aesKey))
   }
 
   /**
@@ -778,7 +782,9 @@ export class AolRuntime {
       aesKey = freshAesKey()
       wrapped = this.wrapOrThrow(params.version, dpk, derivationInput, aesKey)
     }
-    const { sealed: sealedBytes } = await encryptFileAesGcm(params.plaintext, aesKey)
+    // Framed, like haven-cli's streaming encryptor: mobile streams
+    // chunked payloads and refuses unframed bodies over 32 MiB.
+    const { sealed: sealedBytes } = await encryptFileChunkedAesGcm(params.plaintext, aesKey)
     const gateMetadataJson = params.version === 1
       ? gateMetadataV1ToJson(buildGateMetadataV1({
         cid: params.cid, chain: params.chain, tokenAddress,

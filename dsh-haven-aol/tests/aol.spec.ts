@@ -371,7 +371,10 @@ describe('seal (harness-native encrypt side)', () => {
         plaintext,
       })
       expect(sealed.version).toBe(version)
-      expect(sealed.sealedBytes.length).toBe(plaintext.length + 28) // 12-byte IV + 16-byte GCM tag
+      // Framed single-chunk: 12-byte base IV + 8-byte chunk header + 16-byte GCM tag.
+      expect(sealed.sealedBytes.length).toBe(plaintext.length + 36)
+      const { isChunkedPayload } = await import('../src/seal.ts')
+      expect(isChunkedPayload(sealed.sealedBytes)).toBe(true)
       expect(sealed.keySha256).toMatch(/^[0-9a-f]{64}$/)
       // The metadata parses through the SDK-verbatim readers.
       const info = await execute('aol_gate_info', { gateMetadataJson: sealed.gateMetadataJson })
@@ -508,8 +511,8 @@ describe('seal (harness-native encrypt side)', () => {
         threshold: '100',
       })
       expect(res.isError).toBe(false)
-      expect(JSON.stringify(res.content)).toContain(`sealed ${bytes.length + 28} bytes`)
-      expect((await readFile(join(dir, 'sealed.bin'))).length).toBe(bytes.length + 28)
+      expect(JSON.stringify(res.content)).toContain(`sealed ${bytes.length + 36} bytes`)
+      expect((await readFile(join(dir, 'sealed.bin'))).length).toBe(bytes.length + 36)
       // Durable twin: the gate sidecar survives restarts that lose in-turn results.
       const sidecar = await readFile(join(dir, 'sealed.bin.gate.json'), 'utf8')
       const meta = JSON.parse(sidecar) as { version: number; cid: string; encryptedAesKey: string }
@@ -538,6 +541,102 @@ describe('seal (harness-native encrypt side)', () => {
     expect(sealed.length).toBe(plaintext.length + 28)
     await expect(decryptFile(sealed, key)).resolves.toEqual(plaintext)
     await expect(encryptFileAesGcm(plaintext, new Uint8Array(16))).rejects.toThrow('32 bytes')
+  })
+
+  describe('framed chunk payloads (haven-cli streaming parity)', () => {
+    // Golden vectors produced by haven-cli's own streaming encryptor
+    // (`haven_aol_v3.encrypt_file_streaming_v3`, EthSepolia, threshold
+    // 10^18, epoch 691): aes_key = 32×0x07, os.urandom stubbed to
+    // bytes 00..0b, IBE wrap stubbed (ciphertext is independent of
+    // it). Regen in the haven-cli venv with those stubs, then paste.
+    const GOLDEN_TEXT = 'The quick brown fox jumps over the lazy dog. The quick brown fox jumps'
+    const GOLDEN_KEY = new Uint8Array(32).fill(7)
+    const GOLDEN_IV = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+    const GOLDEN_MULTI_16 = '000102030405060708090a0b00000000200000004ce98c506c7cb02a1c9287ee8d2f02da8fd4f71be15876e614a54998993efb7d0100000020000000150e15c08685f68d27621dd31aaac05c0cf63897134294f79a93cd73c9c4acd002000000200000002b54020903fa196575f09e0353e5846402ee146efe556b1f616c1498e8ee2de6030000002000000036ab4e1badda75eddef15912579cfa26eb0c786d0a6d20546251e77f681de33d0400000016000000d9046af28b54274e0e66538d6f1a266c90908d177a40'
+    const GOLDEN_SINGLE_1024 = '000102030405060708090a0b00000000560000004ce98c506c7cb02a1c9287ee8d2f02da8753ceae72171a4165ee0ccceba54d71b60a668ef6b548dd908aa4987ca3dd56d4412910b7bec4f40320c3e280a674b76d2576d1ea206a8f96e8b9844d2c1a2241630298dcb1'
+
+    function hexToBytes(hex: string): Uint8Array {
+      return new Uint8Array(Buffer.from(hex, 'hex'))
+    }
+
+    it('chunked seals are byte-identical to haven-cli (multi + single chunk)', async () => {
+      const { encryptFileChunkedAesGcm } = await import('../src/seal.ts')
+      const plaintext = new TextEncoder().encode(GOLDEN_TEXT)
+      expect(plaintext.length).toBe(70)
+      const multi = await encryptFileChunkedAesGcm(plaintext, GOLDEN_KEY, { chunkSize: 16, baseIv: GOLDEN_IV })
+      expect(Buffer.from(multi.sealed).toString('hex')).toBe(GOLDEN_MULTI_16)
+      const single = await encryptFileChunkedAesGcm(plaintext, GOLDEN_KEY, { chunkSize: 1024, baseIv: GOLDEN_IV })
+      expect(Buffer.from(single.sealed).toString('hex')).toBe(GOLDEN_SINGLE_1024)
+    })
+
+    it('chunked decrypt opens haven-cli bytes; any-shape open dispatches', async () => {
+      const { decryptFileAny, decryptFileChunked, encryptFileAesGcm, isChunkedPayload } = await import('../src/seal.ts')
+      const { decryptFile } = await import('haven-aol')
+      const plaintext = new TextEncoder().encode(GOLDEN_TEXT)
+      const golden = hexToBytes(GOLDEN_MULTI_16)
+      expect(isChunkedPayload(golden)).toBe(true)
+      await expect(decryptFileChunked(golden, GOLDEN_KEY)).resolves.toEqual(plaintext)
+      await expect(decryptFileAny(golden, GOLDEN_KEY)).resolves.toEqual(plaintext)
+      // Legacy rows stay open through the same entry point, SDK-identical.
+      const { sealed: legacy } = await encryptFileAesGcm(plaintext, GOLDEN_KEY)
+      await expect(decryptFileAny(legacy, GOLDEN_KEY)).resolves.toEqual(plaintext)
+      await expect(decryptFile(legacy, GOLDEN_KEY)).resolves.toEqual(plaintext)
+    })
+
+    it('framing detector agrees with mobile: framed yes, legacy-shaped no', async () => {
+      const { isChunkedPayload } = await import('../src/seal.ts')
+      expect(isChunkedPayload(hexToBytes(GOLDEN_SINGLE_1024))).toBe(true)
+      expect(isChunkedPayload(hexToBytes(GOLDEN_MULTI_16))).toBe(true)
+      // Deterministic legacy-shaped buffers (shape only — never decrypted here).
+      const notIndexZero = new Uint8Array(48).fill(0)
+      notIndexZero[12] = 1 // would-be index 1, not a chunk stream
+      expect(isChunkedPayload(notIndexZero)).toBe(false)
+      const tagOnlyLength = new Uint8Array(48).fill(0)
+      new DataView(tagOnlyLength.buffer).setUint32(16, 4, true) // length below the tag floor
+      expect(isChunkedPayload(tagOnlyLength)).toBe(false)
+      expect(isChunkedPayload(new Uint8Array(19))).toBe(false) // shorter than IV + header
+    })
+
+    it('chunked decrypt fails closed on corrupt framing', async () => {
+      const { decryptFileChunked } = await import('../src/seal.ts')
+      const golden = hexToBytes(GOLDEN_MULTI_16)
+      // Reordered: the second chunk claims index 0 again → order mismatch.
+      const reordered = new Uint8Array(golden)
+      reordered.set([0, 0, 0, 0], 12 + 8 + 32)
+      await expect(decryptFileChunked(reordered, GOLDEN_KEY)).rejects.toThrow('order mismatch')
+      // Declared length past the end → truncation, not an alloc.
+      const truncated = golden.subarray(0, golden.length - 1)
+      await expect(decryptFileChunked(truncated, GOLDEN_KEY)).rejects.toThrow('truncated chunk')
+      // Length below the tag floor → invalid.
+      const badLen = new Uint8Array(golden)
+      new DataView(badLen.buffer).setUint32(16, 4, true)
+      await expect(decryptFileChunked(badLen, GOLDEN_KEY)).rejects.toThrow('invalid length')
+      // Flipped ciphertext bit → GCM tag failure, never silent plaintext.
+      const tampered = new Uint8Array(golden)
+      tampered[20] = (tampered[20] as number) ^ 0xff
+      await expect(decryptFileChunked(tampered, GOLDEN_KEY)).rejects.toThrow()
+    })
+
+    it('per-chunk IVs match haven-cli derivation (index 0 is identity, index 1 xors)', async () => {
+      const { deriveChunkIv } = await import('../src/seal.ts')
+      expect(deriveChunkIv(GOLDEN_IV, 0)).toEqual(GOLDEN_IV)
+      const one = deriveChunkIv(GOLDEN_IV, 1)
+      expect(Array.from(one.subarray(0, 4))).toEqual([0, 1, 2, 3])
+      expect(Array.from(one.subarray(4))).toEqual([4, 5, 6, 7, 8, 9, 10, 10])
+    })
+
+    it('chunked round-trip across many chunks + input validation', async () => {
+      const { decryptFileAny, encryptFileChunkedAesGcm } = await import('../src/seal.ts')
+      const plaintext = new Uint8Array(5000).map((_, i) => i % 251)
+      const key = new Uint8Array(32).fill(9)
+      const { sealed } = await encryptFileChunkedAesGcm(plaintext, key, { chunkSize: 1000 })
+      // 12 base IV + 5 × (8 header + 1000 ct + 16 tag).
+      expect(sealed.length).toBe(12 + 5 * (8 + 1000 + 16))
+      await expect(decryptFileAny(sealed, key)).resolves.toEqual(plaintext)
+      await expect(encryptFileChunkedAesGcm(plaintext, new Uint8Array(16))).rejects.toThrow('32 bytes')
+      await expect(encryptFileChunkedAesGcm(plaintext, key, { chunkSize: 0 })).rejects.toThrow('chunkSize')
+      await expect(decryptFileAny(new Uint8Array(4), key)).rejects.toThrow('too short')
+    })
   })
 
   it('IBE wrap output deserializes at the vetkeys-advertised size', async () => {
