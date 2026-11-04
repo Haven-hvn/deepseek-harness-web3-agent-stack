@@ -20,17 +20,24 @@ const SHA_A = 'aa'.repeat(32);
 const SHA_B = 'bb'.repeat(32);
 const ATTRS_A = { grp: 'haven.video.full', title: 'batch-a', sha256_ct: SHA_A, mime: 1 };
 const ATTRS_B = { grp: 'haven.video.full', title: 'batch-b', sha256_ct: SHA_B, mime: 2 };
-const JSON_A = JSON.stringify({ fcid: 'bafybatcha', size: 1 });
-const JSON_B = JSON.stringify({ fcid: 'bafybatchb', size: 2 });
+const JSON_A = JSON.stringify({ fcid: 'bafkreibebwmza7lq7rxwpfoabhmjz7zxdes4tpq2tceirmd3guenpawsxa', size: 1 });
+const JSON_B = JSON.stringify({ fcid: 'bafkreigcdtsmkodhzixi7rf4rerdyphyrcivzajfsps3z2ezutslly3uiq', size: 2 });
 const BYTES_A = new TextEncoder().encode(JSON_A);
 const BYTES_B = new TextEncoder().encode(JSON_B);
 
+/** Valid PieceCID fixture (CommP of a small fixture payload). */
+const PIECE = 'bafkzcibcmubntvjcpgpa2qyxnufn7faxjn6xi6fybcpidg77pad2wces3hkk2my';
+const receiptFor = (cid: string) => ({ version: 1 as const, kind: 'haven.pin-receipt' as const, cid, pieceCid: PIECE });
+const FCID_A = 'bafkreibebwmza7lq7rxwpfoabhmjz7zxdes4tpq2tceirmd3guenpawsxa';
+const FCID_B = 'bafkreigcdtsmkodhzixi7rf4rerdyphyrcivzajfsps3z2ezutslly3uiq';
+const FCID_OTHER = 'bafkreibs5npecrrwtmfhqciatorthpuo2l3f2yvf7ynostpbufcyo73t4y';
+
 function recordA() {
-  return { payload: BYTES_A, contentType: 'application/json', attributes: { ...ATTRS_A } };
+  return { payload: BYTES_A, contentType: 'application/json', attributes: { ...ATTRS_A }, pinReceipt: receiptFor(FCID_A) };
 }
 
 function recordB() {
-  return { payload: BYTES_B, contentType: 'application/json', attributes: { ...ATTRS_B } };
+  return { payload: BYTES_B, contentType: 'application/json', attributes: { ...ATTRS_B }, pinReceipt: receiptFor(FCID_B) };
 }
 
 function runtime() {
@@ -105,8 +112,8 @@ describe('batch submit', () => {
     const { rt, backend } = runtime();
     const first = await rt.createEntities([recordA(), recordB()]);
     const second = await rt.createEntities([
-      { payload: new TextEncoder().encode(JSON_A), contentType: 'application/json', attributes: { ...ATTRS_A } },
-      { payload: new TextEncoder().encode(JSON_B), contentType: 'application/json', attributes: { ...ATTRS_B } },
+      { payload: new TextEncoder().encode(JSON_A), contentType: 'application/json', attributes: { ...ATTRS_A }, pinReceipt: receiptFor(FCID_A) },
+      { payload: new TextEncoder().encode(JSON_B), contentType: 'application/json', attributes: { ...ATTRS_B }, pinReceipt: receiptFor(FCID_B) },
     ]);
     expect(second).toEqual(first);
     expect(backend.batches).toBe(1);
@@ -118,7 +125,7 @@ describe('batch submit', () => {
       return records.map((_, index) => ({ key: `0x${index}`, txHash: '0x9' }) as never);
     };
     const other = [
-      { payload: new TextEncoder().encode(JSON.stringify({ fcid: 'bafyother', size: 3 })), contentType: 'application/json', attributes: { ...ATTRS_A } },
+      { payload: new TextEncoder().encode(JSON.stringify({ fcid: FCID_OTHER, size: 3 })), contentType: 'application/json', attributes: { ...ATTRS_A }, pinReceipt: receiptFor(FCID_OTHER) },
       recordB(),
     ];
     await expect(rt.createEntities(other)).rejects.toThrow('chain hiccup');

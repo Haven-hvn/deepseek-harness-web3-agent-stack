@@ -47,13 +47,19 @@ importers:
     dependencies:
       '@arkiv-network/sdk':
         specifier: '=0.8.1'
-        version: 0.8.1(typescript@7.0.2)(viem@2.56.9(typescript@7.0.2)(zod@4.6.5))
+        version: 0.8.1(typescript@7.0.2)(viem@2.56.9(typescript@7.0.2)(zod@4.4.3))
       '@deepseek-ai/schemastery':
         specifier: ~3.18.5-alpha.1
         version: 3.18.5-alpha.1
+      '@filoz/synapse-core':
+        specifier: '=0.10.0'
+        version: 0.10.0(typescript@7.0.2)(viem@2.56.9(typescript@7.0.2)(zod@4.4.3))
+      multiformats:
+        specifier: '=14.0.5'
+        version: 14.0.5
       viem:
         specifier: '=2.56.9'
-        version: 2.56.9(typescript@7.0.2)(zod@4.6.5)
+        version: 2.56.9(typescript@7.0.2)(zod@4.4.3)
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: ~4.0.5-alpha.1
@@ -299,22 +305,22 @@ importers:
         version: 3.18.5-alpha.1
       '@filoz/synapse-core':
         specifier: '=0.10.0'
-        version: 0.10.0(typescript@7.0.2)(viem@2.56.9(typescript@7.0.2)(zod@4.4.3))
+        version: 0.10.0(typescript@7.0.2)(viem@2.56.9(typescript@7.0.2)(zod@4.6.5))
       '@filoz/synapse-sdk':
         specifier: '=2.0.2'
-        version: 2.0.2(typescript@7.0.2)(viem@2.56.9(typescript@7.0.2)(zod@4.4.3))
+        version: 2.0.2(typescript@7.0.2)(viem@2.56.9(typescript@7.0.2)(zod@4.6.5))
       ethers:
         specifier: '=6.17.0'
         version: 6.17.0
       filecoin-pin:
         specifier: '=2.1.1'
-        version: 2.1.1(@opentelemetry/core@2.11.0(@opentelemetry/api@1.9.1))(typescript@7.0.2)(zod@4.4.3)
+        version: 2.1.1(@opentelemetry/core@2.11.0(@opentelemetry/api@1.9.1))(supports-color@10.2.2)(typescript@7.0.2)(zod@4.6.5)
       multiformats:
         specifier: '=14.0.5'
         version: 14.0.5
       viem:
         specifier: '=2.56.9'
-        version: 2.56.9(typescript@7.0.2)(zod@4.4.3)
+        version: 2.56.9(typescript@7.0.2)(zod@4.6.5)
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: ~4.0.5-alpha.1
@@ -1699,11 +1705,6 @@ packages:
 
   ajv-formats@3.0.1:
     resolution: {integrity: sha512-8iUql50EUR+uUcdRQ3HDqa6EVyo3docL8g5WJ3FNcWmu62IbkGUue/pEyLBW8VGKKucTPgqeks4fIU1DA4yowQ==}
-    peerDependencies:
-      ajv: ^8.0.0
-    peerDependenciesMeta:
-      ajv:
-        optional: true
 
   ajv@8.20.0:
     resolution: {integrity: sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==}
@@ -2938,10 +2939,10 @@ snapshots:
 
   '@adraffy/ens-normalize@1.11.1': {}
 
-  '@arkiv-network/sdk@0.8.1(typescript@7.0.2)(viem@2.56.9(typescript@7.0.2)(zod@4.6.5))':
+  '@arkiv-network/sdk@0.8.1(typescript@7.0.2)(viem@2.56.9(typescript@7.0.2)(zod@4.4.3))':
     dependencies:
       brotli-wasm: 3.0.1
-      viem: 2.56.9(typescript@7.0.2)(zod@4.6.5)
+      viem: 2.56.9(typescript@7.0.2)(zod@4.4.3)
     optionalDependencies:
       typescript: 7.0.2
 
@@ -3314,7 +3315,7 @@ snapshots:
   '@fastify/ajv-compiler@4.0.6':
     dependencies:
       ajv: 8.20.0
-      ajv-formats: 3.0.1(ajv@8.20.0)
+      ajv-formats: 3.0.1
       fast-uri: 4.2.1
 
   '@fastify/error@4.2.0': {}
@@ -3348,7 +3349,7 @@ snapshots:
     transitivePeerDependencies:
       - typescript
 
-  '@filoz/synapse-core@0.9.1(typescript@7.0.2)(viem@2.56.9(typescript@7.0.2)(zod@4.4.3))':
+  '@filoz/synapse-core@0.10.0(typescript@7.0.2)(viem@2.56.9(typescript@7.0.2)(zod@4.6.5))':
     dependencies:
       dnum: 2.17.0
       iso-web: 3.1.2
@@ -3357,16 +3358,30 @@ snapshots:
       p-locate: 7.0.0
       p-some: 7.0.0
       sync-multihash-sha2: 1.0.0
-      viem: 2.56.9(typescript@7.0.2)(zod@4.4.3)
+      viem: 2.56.9(typescript@7.0.2)(zod@4.6.5)
       zod: 4.4.3
     transitivePeerDependencies:
       - typescript
 
-  '@filoz/synapse-sdk@2.0.2(typescript@7.0.2)(viem@2.56.9(typescript@7.0.2)(zod@4.4.3))':
+  '@filoz/synapse-core@0.9.1(typescript@7.0.2)(viem@2.56.9(typescript@7.0.2)(zod@4.6.5))':
     dependencies:
-      '@filoz/synapse-core': 0.10.0(typescript@7.0.2)(viem@2.56.9(typescript@7.0.2)(zod@4.4.3))
+      dnum: 2.17.0
+      iso-web: 3.1.2
       multiformats: 14.0.5
-      viem: 2.56.9(typescript@7.0.2)(zod@4.4.3)
+      ox: 0.14.29(typescript@7.0.2)(zod@4.4.3)
+      p-locate: 7.0.0
+      p-some: 7.0.0
+      sync-multihash-sha2: 1.0.0
+      viem: 2.56.9(typescript@7.0.2)(zod@4.6.5)
+      zod: 4.4.3
+    transitivePeerDependencies:
+      - typescript
+
+  '@filoz/synapse-sdk@2.0.2(typescript@7.0.2)(viem@2.56.9(typescript@7.0.2)(zod@4.6.5))':
+    dependencies:
+      '@filoz/synapse-core': 0.10.0(typescript@7.0.2)(viem@2.56.9(typescript@7.0.2)(zod@4.6.5))
+      multiformats: 14.0.5
+      viem: 2.56.9(typescript@7.0.2)(zod@4.6.5)
     transitivePeerDependencies:
       - typescript
 
@@ -3454,7 +3469,7 @@ snapshots:
       multiformats: 13.4.2
       uint8arrays: 5.1.1
 
-  '@helia/unixfs@7.2.1':
+  '@helia/unixfs@7.2.1(supports-color@10.2.2)':
     dependencies:
       '@helia/interface': 6.2.1
       '@ipld/dag-pb': 4.2.0
@@ -3465,7 +3480,7 @@ snapshots:
       interface-blockstore: 6.0.2
       ipfs-unixfs: 12.0.2
       ipfs-unixfs-exporter: 15.0.4
-      ipfs-unixfs-importer: 16.1.5
+      ipfs-unixfs-importer: 16.1.5(supports-color@10.2.2)
       it-all: 3.0.11
       it-first: 3.0.11
       it-glob: 3.0.6
@@ -3814,12 +3829,12 @@ snapshots:
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/semantic-conventions': 1.43.0
 
-  '@opentelemetry/instrumentation@0.220.0(@opentelemetry/api@1.9.1)':
+  '@opentelemetry/instrumentation@0.220.0(@opentelemetry/api@1.9.1)(supports-color@10.2.2)':
     dependencies:
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/api-logs': 0.220.0
       import-in-the-middle: 3.5.2
-      require-in-the-middle: 8.0.1
+      require-in-the-middle: 8.0.1(supports-color@10.2.2)
     transitivePeerDependencies:
       - supports-color
 
@@ -3924,7 +3939,7 @@ snapshots:
     dependencies:
       '@sentry/conventions': 0.16.0
 
-  '@sentry/node-core@10.76.0(@opentelemetry/api@1.9.1)(@opentelemetry/core@2.11.0(@opentelemetry/api@1.9.1))(@opentelemetry/instrumentation@0.220.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1))':
+  '@sentry/node-core@10.76.0(@opentelemetry/api@1.9.1)(@opentelemetry/core@2.11.0(@opentelemetry/api@1.9.1))(@opentelemetry/instrumentation@0.220.0(@opentelemetry/api@1.9.1)(supports-color@10.2.2))(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1))':
     dependencies:
       '@sentry/conventions': 0.16.0
       '@sentry/core': 10.76.0
@@ -3933,17 +3948,17 @@ snapshots:
     optionalDependencies:
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/core': 2.11.0(@opentelemetry/api@1.9.1)
-      '@opentelemetry/instrumentation': 0.220.0(@opentelemetry/api@1.9.1)
+      '@opentelemetry/instrumentation': 0.220.0(@opentelemetry/api@1.9.1)(supports-color@10.2.2)
       '@opentelemetry/sdk-trace-base': 2.11.0(@opentelemetry/api@1.9.1)
 
-  '@sentry/node@10.76.0(@opentelemetry/core@2.11.0(@opentelemetry/api@1.9.1))':
+  '@sentry/node@10.76.0(@opentelemetry/core@2.11.0(@opentelemetry/api@1.9.1))(supports-color@10.2.2)':
     dependencies:
       '@opentelemetry/api': 1.9.1
-      '@opentelemetry/instrumentation': 0.220.0(@opentelemetry/api@1.9.1)
+      '@opentelemetry/instrumentation': 0.220.0(@opentelemetry/api@1.9.1)(supports-color@10.2.2)
       '@opentelemetry/sdk-trace-base': 2.11.0(@opentelemetry/api@1.9.1)
       '@sentry/conventions': 0.16.0
       '@sentry/core': 10.76.0
-      '@sentry/node-core': 10.76.0(@opentelemetry/api@1.9.1)(@opentelemetry/core@2.11.0(@opentelemetry/api@1.9.1))(@opentelemetry/instrumentation@0.220.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1))
+      '@sentry/node-core': 10.76.0(@opentelemetry/api@1.9.1)(@opentelemetry/core@2.11.0(@opentelemetry/api@1.9.1))(@opentelemetry/instrumentation@0.220.0(@opentelemetry/api@1.9.1)(supports-color@10.2.2))(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1))
       '@sentry/opentelemetry': 10.76.0(@opentelemetry/api@1.9.1)(@opentelemetry/core@2.11.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1))
       '@sentry/server-utils': 10.76.0
       import-in-the-middle: 3.5.2
@@ -4165,8 +4180,8 @@ snapshots:
 
   aes-js@4.0.0-beta.5: {}
 
-  ajv-formats@3.0.1(ajv@8.20.0):
-    optionalDependencies:
+  ajv-formats@3.0.1:
+    dependencies:
       ajv: 8.20.0
 
   ajv@8.20.0:
@@ -4252,7 +4267,7 @@ snapshots:
   conf@15.1.0:
     dependencies:
       ajv: 8.20.0
-      ajv-formats: 3.0.1(ajv@8.20.0)
+      ajv-formats: 3.0.1
       atomically: 2.1.1
       debounce-fn: 6.0.0
       dot-prop: 10.2.0
@@ -4296,9 +4311,11 @@ snapshots:
     dependencies:
       mimic-function: 5.0.1
 
-  debug@4.4.3:
+  debug@4.4.3(supports-color@10.2.2):
     dependencies:
       ms: 2.1.3
+    optionalDependencies:
+      supports-color: 10.2.2
 
   defu@6.1.7: {}
 
@@ -4368,7 +4385,7 @@ snapshots:
     dependencies:
       '@fastify/merge-json-schemas': 0.2.1
       ajv: 8.20.0
-      ajv-formats: 3.0.1(ajv@8.20.0)
+      ajv-formats: 3.0.1
       fast-uri: 4.2.1
       json-schema-ref-resolver: 3.0.0
       rfdc: 1.4.1
@@ -4417,24 +4434,24 @@ snapshots:
     optionalDependencies:
       picomatch: 4.0.7
 
-  filecoin-pin@2.1.1(@opentelemetry/core@2.11.0(@opentelemetry/api@1.9.1))(typescript@7.0.2)(zod@4.4.3):
+  filecoin-pin@2.1.1(@opentelemetry/core@2.11.0(@opentelemetry/api@1.9.1))(supports-color@10.2.2)(typescript@7.0.2)(zod@4.6.5):
     dependencies:
       '@chainsafe/libp2p-noise': 17.0.0
       '@chainsafe/libp2p-yamux': 8.0.1
       '@clack/prompts': 1.8.1
-      '@filoz/synapse-core': 0.9.1(typescript@7.0.2)(viem@2.56.9(typescript@7.0.2)(zod@4.4.3))
-      '@filoz/synapse-sdk': 2.0.2(typescript@7.0.2)(viem@2.56.9(typescript@7.0.2)(zod@4.4.3))
+      '@filoz/synapse-core': 0.9.1(typescript@7.0.2)(viem@2.56.9(typescript@7.0.2)(zod@4.6.5))
+      '@filoz/synapse-sdk': 2.0.2(typescript@7.0.2)(viem@2.56.9(typescript@7.0.2)(zod@4.6.5))
       '@helia/block-brokers': 5.2.4
       '@helia/interface': 6.2.1
       '@helia/routers': 5.1.1
-      '@helia/unixfs': 7.2.1
+      '@helia/unixfs': 7.2.1(supports-color@10.2.2)
       '@helia/utils': 2.5.2
       '@ipld/car': 5.4.7
       '@libp2p/identify': 4.1.14
       '@libp2p/tcp': 11.0.28
       '@multiformats/multiaddr': 13.0.3
       '@multiformats/multiaddr-to-uri': 12.0.0
-      '@sentry/node': 10.76.0(@opentelemetry/core@2.11.0(@opentelemetry/api@1.9.1))
+      '@sentry/node': 10.76.0(@opentelemetry/core@2.11.0(@opentelemetry/api@1.9.1))(supports-color@10.2.2)
       commander: 15.0.0
       datastore-core: 11.0.4
       env-paths: 3.0.0
@@ -4448,7 +4465,7 @@ snapshots:
       pino: 10.3.1
       semver: 7.8.5
       varint: 6.0.0
-      viem: 2.56.9(typescript@7.0.2)(zod@4.4.3)
+      viem: 2.56.9(typescript@7.0.2)(zod@4.6.5)
     transitivePeerDependencies:
       - '@opentelemetry/core'
       - '@opentelemetry/exporter-trace-otlp-http'
@@ -4566,7 +4583,7 @@ snapshots:
       p-queue: 9.3.3
       progress-events: 1.1.0
 
-  ipfs-unixfs-importer@16.1.5:
+  ipfs-unixfs-importer@16.1.5(supports-color@10.2.2):
     dependencies:
       '@ipld/dag-pb': 4.2.0
       '@multiformats/murmur3': 2.2.8
@@ -4581,7 +4598,7 @@ snapshots:
       it-parallel-batch: 3.0.11
       multiformats: 13.4.2
       progress-events: 1.1.0
-      rabin-wasm: 0.1.5
+      rabin-wasm: 0.1.5(supports-color@10.2.2)
       uint8arraylist: 2.4.9
       uint8arrays: 5.1.1
     transitivePeerDependencies:
@@ -5107,11 +5124,11 @@ snapshots:
 
   quick-format-unescaped@4.0.4: {}
 
-  rabin-wasm@0.1.5:
+  rabin-wasm@0.1.5(supports-color@10.2.2):
     dependencies:
       '@assemblyscript/loader': 0.9.4
       bl: 5.1.0
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@10.2.2)
       minimist: 1.2.8
       node-fetch: 2.7.0
       readable-stream: 3.6.2
@@ -5139,9 +5156,9 @@ snapshots:
 
   require-from-string@2.0.2: {}
 
-  require-in-the-middle@8.0.1:
+  require-in-the-middle@8.0.1(supports-color@10.2.2):
     dependencies:
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@10.2.2)
       module-details-from-path: 1.0.4
     transitivePeerDependencies:
       - supports-color

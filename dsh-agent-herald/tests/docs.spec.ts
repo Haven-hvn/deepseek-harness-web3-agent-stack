@@ -61,6 +61,9 @@ describe('agent docs', () => {
       'opt-in journal',
       'embedded player',
       'Arkiv key <0x…>',
+      'pinReceiptPath',
+      'writer injects the locator from the receipt by machine',
+      'without its receipt is rejected before signing',
     ]) {
       expect(process).toContain(anchor)
     }
@@ -133,6 +136,8 @@ describe('agent docs', () => {
       'sha256_ct',
       'access path',
       'Deliberately absent',
+      'Evidence: the pin receipt path',
+      'supplied by machine, never by hand',
     ]) {
       expect(workflow).toContain(anchor)
     }

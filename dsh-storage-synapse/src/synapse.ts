@@ -24,6 +24,8 @@ export interface PinStatus {
   readonly redundancy: number
   /** CommP piece CID carrying the root (present when the ledger maps it) — gated-record writers address this, never the root. */
   readonly pieceCid?: string | undefined
+  /** Machine-written pin receipt path (present after a path upload) — catalog writers pass this, never a copied CID. */
+  readonly receiptPath?: string | undefined
 }
 
 export const internals: { fetch: typeof globalThis.fetch | undefined } = { fetch: undefined }
@@ -117,10 +119,15 @@ export class FilecoinBackend {
         version?: unknown; pieces?: Record<string, { pieceCid?: unknown; providerId?: unknown; storedAt?: unknown }>
       }
       if (raw?.version !== PIECE_LEDGER_VERSION || typeof raw?.pieces !== 'object' || raw.pieces === null) return
+      const { tryFrom: tryPieceFrom } = await import('@filoz/synapse-core/piece')
       for (const [cid, entry] of Object.entries(raw.pieces)) {
-        if (typeof entry?.pieceCid === 'string' && entry.pieceCid !== '') {
+        // Only canonical PieceCIDs enter the ledger: a malformed entry can
+        // never be verified live, and handing it on would catalog bytes no
+        // player can address.
+        const piece = typeof entry?.pieceCid === 'string' ? tryPieceFrom(entry.pieceCid) : null
+        if (piece !== null) {
           this.pieces.set(cid, {
-            pieceCid: entry.pieceCid,
+            pieceCid: piece.toString(),
             providerId: typeof entry.providerId === 'string' ? entry.providerId : undefined,
             storedAt: typeof entry.storedAt === 'string' ? entry.storedAt : new Date(0).toISOString(),
           })
@@ -204,7 +211,19 @@ export class FilecoinBackend {
     }
     const cid: string = car?.rootCid ?? result?.cid ?? result?.rootCid ?? ''
     if (!cid) throw new Error('dsh-storage-synapse: filecoin store returned empty CID')
-    const pieceCid: string | undefined = result?.pieceCid ?? result?.piece
+    // Canonicalize through the PieceCID parser before anything records it:
+    // an unparseable piece (truncated, wrong codec, root CID in its place)
+    // fails the upload here instead of reaching a catalog downstream.
+    const rawPiece: unknown = result?.pieceCid ?? result?.piece
+    let pieceCid: string | undefined
+    if (typeof rawPiece === 'string' && rawPiece !== '') {
+      const { tryFrom: tryPieceFrom } = await import('@filoz/synapse-core/piece')
+      const parsed = tryPieceFrom(rawPiece)
+      if (parsed === null) {
+        throw new Error(`dsh-storage-synapse: upload returned an invalid PieceCID (${JSON.stringify(rawPiece)}) — refusing to record an unaddressable piece`)
+      }
+      pieceCid = parsed.toString()
+    }
     // Record the root→piece mapping checkPin verifies against. The first copy's
     // provider is a hint only — verification sweeps every approved provider.
     if (typeof pieceCid === 'string' && pieceCid !== '') {

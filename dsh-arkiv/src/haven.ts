@@ -31,6 +31,8 @@
  */
 
 import { addr, bytes32, i32, key, str, u256, U256_MAX } from '@arkiv-network/sdk/attr';
+import { CID } from 'multiformats/cid';
+import { tryFrom as tryPieceFrom } from '@filoz/synapse-core/piece';
 
 /** Spec version this module enforces (bump with ARKIV_FORMAT.md). */
 export const HAVEN_FORMAT_VERSION = '2.3.0';
@@ -391,6 +393,10 @@ export function validateHavenWrite(input: {
   contentType: string;
   attributes?: Record<string, unknown>;
   expiresIn?: number;
+  /** Machine-written pin receipt: its locator is injected/verified, never copied. */
+  pinReceipt?: HavenPinReceipt;
+  /** Refuse locator-bearing payloads that arrive without a pin receipt. */
+  requirePinReceipt?: boolean;
 }): HavenNormalizedWrite {
   if (input.contentType !== HAVEN_CONTENT_TYPE) {
     fail(`contentType must be ${JSON.stringify(HAVEN_CONTENT_TYPE)} (Haven entities are JSON records), got ${JSON.stringify(input.contentType)}`);
@@ -405,6 +411,18 @@ export function validateHavenWrite(input: {
     fail('payload must be a JSON object (Haven record with piece⊕fcid + gate)');
   }
   if (!isRecord(payload)) fail('payload must be a JSON object (Haven record with piece⊕fcid + gate)');
+
+  // Locator provenance, before any shape rule runs: a receipt injects (or
+  // exactly verifies) the piece/fcid, and a write path that requires one
+  // refuses hand-copied locators outright. The resolved bytes — not the
+  // caller's original payload — are what get signed and stored.
+  let raw = input.payload;
+  if (input.pinReceipt !== undefined) {
+    applyPinReceipt(payload, input.pinReceipt);
+    raw = Buffer.from(JSON.stringify(payload), 'utf8');
+  } else if (input.requirePinReceipt === true && (payload.piece !== undefined || payload.fcid !== undefined)) {
+    fail('payload locator (piece/fcid) requires a pin receipt — pass pinReceiptPath from synapse_pin so the locator is injected by machine, never copied by hand');
+  }
 
   if (!isRecord(input.attributes)) fail('attributes are required (grp, title, gate corpus, sha256_ct, …)');
   const attributes = input.attributes;
@@ -427,9 +445,9 @@ export function validateHavenWrite(input: {
   }
 
   switch (grpClass) {
-    case 'series': return finishSeries({ grp, payload, raw: input.payload, attributes, expiresIn: input.expiresIn });
-    case 'part': return finishPart({ grp, payload, raw: input.payload, attributes, expiresIn: input.expiresIn });
-    default: return finishFull({ grp, grpClass, payload, raw: input.payload, attributes, expiresIn: input.expiresIn });
+    case 'series': return finishSeries({ grp, payload, raw, attributes, expiresIn: input.expiresIn });
+    case 'part': return finishPart({ grp, payload, raw, attributes, expiresIn: input.expiresIn });
+    default: return finishFull({ grp, grpClass, payload, raw, attributes, expiresIn: input.expiresIn });
   }
 }
 
@@ -447,14 +465,84 @@ function resolveExpiresIn(grpClass: HavenGroupClass, expiresIn: unknown): number
   return expiresIn;
 }
 
-/** CommP piece CIDs are base32 `bafk…` (v1/v2) — the only value `piece` may carry. */
-const COMMP_PATTERN = /^bafk[a-z2-7]+$/;
-
+/**
+ * CommP piece CIDs — the only value `piece` may carry. Validated by parsing
+ * with the Filecoin PieceCID parser, never by shape: a truncated CID is a
+ * well-formed base32 prefix of the real one and passes any regex, so only a
+ * full decode (version, codec, commP multihash, exact length) can reject it.
+ * Returns the canonical spelling.
+ */
 function requireCommP(where: string, value: unknown): string {
-  if (typeof value !== 'string' || !COMMP_PATTERN.test(value)) {
-    fail(`${where} must be the CommP piece CID (bafk… base32), got ${JSON.stringify(value)} — gated records address the Filecoin piece, never the UnixFS root`);
+  const piece = typeof value === 'string' ? tryPieceFrom(value) : null;
+  if (piece === null) {
+    fail(`${where} must be the complete CommP piece CID (bafk… PieceCID), got ${JSON.stringify(value)} — gated records address the Filecoin piece, never the UnixFS root, and never a shortened copy`);
   }
+  return piece.toString();
+}
+
+/** Any CID, canonical spelling — the only value `fcid` may carry. */
+function requireCid(where: string, value: unknown): string {
+  if (typeof value !== 'string') fail(`${where} must be a CID string, got ${JSON.stringify(value)}`);
+  let cid: CID;
+  try {
+    cid = CID.parse(value);
+  } catch {
+    fail(`${where} must be a complete CID, got ${JSON.stringify(value)}`);
+  }
+  if (cid.toString() !== value) fail(`${where} must be the canonical CID spelling, got ${JSON.stringify(value)}`);
   return value;
+}
+
+/**
+ * Machine-written handoff from `synapse_pin` to the Arkiv writer: the upload
+ * tool writes this receipt next to the pinned file, and the writer injects
+ * its locators into the payload. The model passes only the receipt PATH —
+ * CIDs never transit its context, so they cannot be truncated, paraphrased,
+ * or shortened on the way to the chain.
+ */
+export interface HavenPinReceipt {
+  version: 1;
+  kind: 'haven.pin-receipt';
+  /** CAR root CID of the pinned bytes (the `fcid` of clear records). */
+  cid: string;
+  /** CommP PieceCID carrying the root (the `piece` of gated records). */
+  pieceCid: string;
+}
+
+/** Parse + fully validate one pin receipt (both locators decode-checked). */
+export function parseHavenPinReceipt(raw: unknown): HavenPinReceipt {
+  if (!isRecord(raw)) fail('pin receipt must be a JSON object written by synapse_pin');
+  if (raw.version !== 1) fail(`pin receipt version must be 1, got ${JSON.stringify(raw.version)}`);
+  if (raw.kind !== 'haven.pin-receipt') fail(`pin receipt kind must be "haven.pin-receipt", got ${JSON.stringify(raw.kind)}`);
+  const cid = requireCid('pin receipt cid', raw.cid);
+  if (typeof raw.pieceCid !== 'string' || tryPieceFrom(raw.pieceCid) === null) {
+    fail(`pin receipt pieceCid must be the complete CommP piece CID, got ${JSON.stringify(raw.pieceCid)}`);
+  }
+  return { version: 1, kind: 'haven.pin-receipt', cid, pieceCid: tryPieceFrom(raw.pieceCid)!.toString() };
+}
+
+/**
+ * Inject a receipt's locator into a parsed payload. A locator already
+ * present must agree exactly — a disagreement means the payload and the
+ * receipt describe different uploads, and guessing would catalog the wrong
+ * bytes. Series payloads carry no locator and never take a receipt.
+ */
+function applyPinReceipt(payload: Record<string, unknown>, receipt: HavenPinReceipt): void {
+  if (Array.isArray(payload.targets)) fail('pin receipt cannot supply a locator for a drip series payload (series records carry no piece/fcid)');
+  if (payload.piece !== undefined) {
+    if (payload.piece !== receipt.pieceCid) {
+      fail(`payload piece ${JSON.stringify(payload.piece)} does not match pin receipt pieceCid ${JSON.stringify(receipt.pieceCid)} — the payload and the pin receipt describe different uploads; rebuild the payload from the receipt, never by copying a CID`);
+    }
+    return;
+  }
+  if (payload.fcid !== undefined) {
+    if (payload.fcid !== receipt.cid) {
+      fail(`payload fcid ${JSON.stringify(payload.fcid)} does not match pin receipt cid ${JSON.stringify(receipt.cid)} — the payload and the pin receipt describe different uploads; rebuild the payload from the receipt, never by copying a CID`);
+    }
+    return;
+  }
+  if (payload.gate !== undefined) payload.piece = receipt.pieceCid;
+  else payload.fcid = receipt.cid;
 }
 
 /** Shared payload helpers for full/generic records. */
@@ -463,7 +551,7 @@ function requireLocator(payload: Record<string, unknown>): { locator: string; ga
   const fcid = payload.fcid;
   if (piece !== undefined && fcid !== undefined) fail('payload carries both piece and fcid — encrypted records carry piece, clear records carry fcid, never both');
   if (typeof piece === 'string' && piece.length > 0) return { locator: requireCommP('payload piece', piece), gated: true };
-  if (typeof fcid === 'string' && fcid.length > 0) return { locator: fcid, gated: false };
+  if (typeof fcid === 'string' && fcid.length > 0) return { locator: requireCid('payload fcid', fcid), gated: false };
   fail('payload needs exactly one locator: piece (encrypted) or fcid (clear)');
 }
 

@@ -73,10 +73,13 @@ match what §2 decided. Evidence: sealed path, metadata JSON.
 `synapse_pin` by path (sealed bytes when gated, plaintext when
 free; by CID only for re-pins), then
 `synapse_pin_status` until the pin is confirmed. The returned
-CID is the release's permanent address — record it exactly;
-every downstream record points at it. A pin that errors may
+CID is the release's permanent address — every downstream
+record points at it, but never through your transcription:
+the pin writes a receipt at `<path>.pin.json`, and stage 5
+hands that path to the catalog writer, which injects the
+locator by machine. A pin that errors may
 still have landed: status-check before re-pinning.
-Evidence: the CID.
+Evidence: the pin receipt path.
 
 ## 5. Sync — catalog on Arkiv
 
@@ -94,9 +97,14 @@ waits for the session's natural batch point when it is
 routine. Never hold a release past the conversation for a
 fuller batch — no timer exists to flush it, and a held v3
 record's epoch goes stale while it waits. Payload
-carries `fcid`/`piece` (the stage-4 CID, exactly one —
+carries `fcid`/`piece` (the stage-4 locator, exactly one —
 `piece` + `gate` when gated, `fcid` with no `gate` key when
-free), `gate` (the stage-3 metadata JSON, gated only), and
+free) — supplied by machine, never by hand: omit the locator
+from the payload you author and pass the stage-4 pin receipt
+(`<path>.pin.json`) as `pinReceiptPath` on every record
+(batch records each carry their own); the writer injects and
+verifies it before signing, and rejects locator records that
+arrive without one. `gate` (the stage-3 metadata JSON, gated only), and
 the stage-2 notes; attributes carry `grp`, `title`, the gate
 corpus when gated (`gate_token`/`gate_chain`/`gate_threshold`,
 numeric `gate_type` of 1, 3, or 4), `sha256_ct`, and `mime` —

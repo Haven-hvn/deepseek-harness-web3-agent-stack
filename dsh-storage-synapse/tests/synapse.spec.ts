@@ -13,7 +13,7 @@
  *    never throws (ported Haven semantics).
  */
 
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -27,6 +27,11 @@ import type { SynapsePinnedEvent } from '../src/types.ts'
 import { MemoryCredentials } from '../../dsh-wallet/tests/helpers/memory-credentials.ts'
 
 const testSignal = new AbortController().signal
+
+/** Real PieceCID fixture — the (mocked) parser only accepts this shape. */
+const PIECE = 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewfkuzq'
+/** The same piece with its last three base32 chars dropped. */
+const PIECE_TRUNCATED = 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewfk'
 
 // Harness tests stub SynapseRuntime methods directly to avoid wss network — fast,
 // deterministic, proves the gated wiring. Only the backend retry suite below mocks
@@ -54,6 +59,8 @@ vi.mock('@filoz/synapse-core/sp', () => ({
 }))
 vi.mock('@filoz/synapse-core/piece', () => ({
   from: (s: string) => s,
+  // Shape-faithful stand-in for the real parser: only long bafk… strings parse.
+  tryFrom: (s: unknown) => (typeof s === 'string' && /^bafk[a-z2-7]{65,}$/.test(s) ? { toString: () => s } : null),
 }))
 vi.mock('@filoz/synapse-core/sp-registry', () => ({
   getApprovedPDPProviders: pinMocks.getApprovedPDPProviders,
@@ -88,11 +95,11 @@ async function harness() {
   // Proves the gated wiring (wallet OWS resolved per operation) while keeping tests deterministic
   const synapse: any = ctx.synapse
   synapse.store = vi.fn(async (_data: Uint8Array, _signal?: AbortSignal) => {
-    return { cid: 'bafyfresh' }
+    return { cid: 'bafyfresh', pieceCid: PIECE }
   })
   synapse.pin = vi.fn(async (cid: string, _signal?: AbortSignal) => {
     ctx.emit('synapse/pinned', { cid } as any)
-    return { cid, provider: 'filecoin', expiresAt: 0, redundancy: 1 }
+    return { cid, provider: 'filecoin', expiresAt: 0, redundancy: 1, pieceCid: PIECE }
   })
   synapse.checkPin = vi.fn(async (cid: string, _signal?: AbortSignal) => {
     return { cid, provider: 'filecoin', expiresAt: -1, redundancy: 0 }
@@ -160,7 +167,7 @@ describe('synapse_pin through the executor (the harness natively pins)', () => {
     const result = await execute('synapse_pin', { cid: 'bafyexisting' })
 
     expect(result.isError).toBe(false)
-    expect(result.content).toEqual([{ type: 'text', text: 'bafyexisting: pinned (provider filecoin)' }])
+    expect(result.content).toEqual([{ type: 'text', text: `bafyexisting: pinned (provider filecoin, piece ${PIECE})` }])
     expect(pinned).toEqual([{ cid: 'bafyexisting' }])
   })
 
@@ -169,11 +176,11 @@ describe('synapse_pin through the executor (the harness natively pins)', () => {
     const synapse: any = ctx.synapse
     synapse.pin = vi.fn(async (cid: string) => {
       ctx.emit('synapse/pinned', { cid } as any)
-      return { cid, provider: 'filecoin', expiresAt: 0, redundancy: 1, pieceCid: 'bafkzcibtestpiece' }
+      return { cid, provider: 'filecoin', expiresAt: 0, redundancy: 1, pieceCid: PIECE }
     })
     const result = await execute('synapse_pin', { cid: 'bafyexisting' })
     expect(result.isError).toBe(false)
-    expect(result.content).toEqual([{ type: 'text', text: 'bafyexisting: pinned (provider filecoin, piece bafkzcibtestpiece)' }])
+    expect(result.content).toEqual([{ type: 'text', text: `bafyexisting: pinned (provider filecoin, piece ${PIECE})` }])
   })
 
   it('uploads a local file then pins the returned cid (path route)', async () => {
@@ -184,10 +191,29 @@ describe('synapse_pin through the executor (the harness natively pins)', () => {
     try {
       const result = await execute('synapse_pin', { path: file })
       expect(result.isError).toBe(false)
-      expect(result.content).toEqual([{ type: 'text', text: 'bafyfresh: pinned (provider filecoin)' }])
+      expect(result.content).toEqual([{ type: 'text', text: `bafyfresh: pinned (provider filecoin, piece ${PIECE}, receipt ${file}.pin.json)` }])
+      // The receipt is the machine handoff catalog writers consume.
+      const receipt = JSON.parse(await readFile(`${file}.pin.json`, 'utf8'))
+      expect(receipt).toEqual({
+        version: 1,
+        kind: 'haven.pin-receipt',
+        cid: 'bafyfresh',
+        pieceCid: PIECE,
+        provider: 'filecoin',
+        redundancy: 1,
+      })
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
+  })
+
+  it('refuses to hand off a pin with no recorded PieceCID', async () => {
+    const { ctx, execute } = await harness()
+    const synapse: any = ctx.synapse
+    synapse.store = vi.fn(async () => ({ cid: 'bafynopiece' }))
+    synapse.pin = vi.fn(async (cid: string) => ({ cid, provider: 'filecoin', expiresAt: 0, redundancy: 1 }))
+    const result = await execute('synapse_pin', { cid: 'bafynopiece' })
+    expect(result.isError).toBe(true)
   })
 
   it('rejects ambiguous arguments: exactly one of path or cid', async () => {
@@ -433,7 +459,7 @@ describe('provider selection: no default exclusions, one loud fallback', () => {
     return { backend, dir }
   }
 
-  async function storedBackend(dir: string, backend: FilecoinBackend, pieceCid = 'bafkpiece', providerId = 4n) {
+  async function storedBackend(dir: string, backend: FilecoinBackend, pieceCid = PIECE, providerId = 4n) {
     pinMocks.executeUpload.mockResolvedValueOnce({ pieceCid, copies: [{ providerId, dataSetId: 1n }] })
     const stored = await backend.store(new TextEncoder().encode('payload'))
     return stored.cid
@@ -444,9 +470,9 @@ describe('provider selection: no default exclusions, one loud fallback', () => {
     try {
       pinMocks.executeUpload
         .mockRejectedValueOnce(new Error('StorageContext smartSelect failed: No endorsed provider available'))
-        .mockResolvedValueOnce({ pieceCid: 'baga-piece' })
+        .mockResolvedValueOnce({ pieceCid: PIECE })
       const stored = await backend.store(new TextEncoder().encode('payload'))
-      expect(stored).toEqual({ cid: PAYLOAD_CID, pieceCid: 'baga-piece' })
+      expect(stored).toEqual({ cid: PAYLOAD_CID, pieceCid: PIECE })
       expect(pinMocks.executeUpload).toHaveBeenCalledTimes(2)
       // Primary carries the exclusions; the fallback drops them (stale lists fail open, loudly).
       expect(pinMocks.executeUpload.mock.calls[0]?.[3]).toMatchObject({ excludeProviderIds: [4n, 9n] })
@@ -473,9 +499,9 @@ describe('provider selection: no default exclusions, one loud fallback', () => {
     try {
       // Real result shape: dataset ids and fees are BigInts — bare
       // JSON.stringify throws and turns success into a thrown error.
-      pinMocks.executeUpload.mockResolvedValueOnce({ pieceCid: 'baga-piece', dataSetId: 42n, fee: 1000n })
+      pinMocks.executeUpload.mockResolvedValueOnce({ pieceCid: PIECE, dataSetId: 42n, fee: 1000n })
       const stored = await backend.store(new TextEncoder().encode('payload'))
-      expect(stored).toEqual({ cid: PAYLOAD_CID, pieceCid: 'baga-piece' })
+      expect(stored).toEqual({ cid: PAYLOAD_CID, pieceCid: PIECE })
       expect(preview({ dataSetId: 42n })).toContain('42n')
     } finally {
       await rm(dir, { recursive: true, force: true })
@@ -486,11 +512,11 @@ describe('provider selection: no default exclusions, one loud fallback', () => {
     const { backend, dir } = await backendHarness({})
     try {
       const cid = await storedBackend(dir, backend)
-      pinMocks.findPiece.mockResolvedValueOnce('bafkpiece')
+      pinMocks.findPiece.mockResolvedValueOnce(PIECE)
       const status = await backend.checkPin(cid)
-      expect(status).toEqual({ cid, provider: 'filecoin', expiresAt: 0, redundancy: 1, pieceCid: 'bafkpiece' })
+      expect(status).toEqual({ cid, provider: 'filecoin', expiresAt: 0, redundancy: 1, pieceCid: PIECE })
       // Recorded provider first: entry says 4, so four.test leads the sweep.
-      expect(pinMocks.findPiece).toHaveBeenCalledWith({ serviceURL: 'https://four.test', pieceCid: 'bafkpiece', timeout: 15000 })
+      expect(pinMocks.findPiece).toHaveBeenCalledWith({ serviceURL: 'https://four.test', pieceCid: PIECE, timeout: 15000 })
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
@@ -529,12 +555,22 @@ describe('provider selection: no default exclusions, one loud fallback', () => {
       const cid = await storedBackend(first.dir, first.backend)
       // A fresh backend over the same file re-learns the mapping without a new store.
       const second = await backendHarness({ pieceLedgerPath: ledgerPath })
-      pinMocks.findPiece.mockResolvedValueOnce('bafkpiece')
+      pinMocks.findPiece.mockResolvedValueOnce(PIECE)
       const status = await second.backend.checkPin(cid)
       expect(status.redundancy).toBe(1)
-      expect(pinMocks.findPiece).toHaveBeenCalledWith({ serviceURL: 'https://four.test', pieceCid: 'bafkpiece', timeout: 15000 })
+      expect(pinMocks.findPiece).toHaveBeenCalledWith({ serviceURL: 'https://four.test', pieceCid: PIECE, timeout: 15000 })
       await rm(first.dir, { recursive: true, force: true })
       await rm(second.dir, { recursive: true, force: true })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('an upload returning a truncated PieceCID fails instead of recording it', async () => {
+    const { backend, dir } = await backendHarness({})
+    try {
+      pinMocks.executeUpload.mockResolvedValueOnce({ pieceCid: PIECE_TRUNCATED, copies: [{ providerId: 4n }] })
+      await expect(backend.store(new TextEncoder().encode('payload'))).rejects.toThrow(/invalid PieceCID/)
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
@@ -554,7 +590,7 @@ describe('provider selection: no default exclusions, one loud fallback', () => {
   it('store uploads the single-block CAR bytes under the raw root CID', async () => {
     const { backend, dir } = await backendHarness({})
     try {
-      pinMocks.executeUpload.mockResolvedValueOnce({ pieceCid: 'baga-piece' })
+      pinMocks.executeUpload.mockResolvedValueOnce({ pieceCid: PIECE })
       await backend.store(new TextEncoder().encode('payload'))
       expect(pinMocks.executeUpload).toHaveBeenCalledTimes(1)
       const call = pinMocks.executeUpload.mock.calls[0] as [unknown, Uint8Array, { toString(): string }, unknown]

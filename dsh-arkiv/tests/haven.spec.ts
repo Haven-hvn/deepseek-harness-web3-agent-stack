@@ -18,8 +18,17 @@ import {
   HAVEN_BTL_PART_S,
   HAVEN_BTL_SERIES_S,
   normalizeHavenWhere,
+  parseHavenPinReceipt,
   validateHavenWrite,
 } from '../src/haven.ts';
+
+/** Real PieceCID (calibration upload) — parsers reject every fake below. */
+const PIECE = 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewfkuzq';
+/** The same piece with its last three base32 chars dropped (the on-chain incident). */
+const PIECE_TRUNCATED = 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewfk';
+/** Real CAR root CID for the same upload. */
+const ROOT_CID = 'bafkreihcf3vmvf7q55lo54v6m26qpb2rhhnza6azkb24zwh3nvepl5ldwu';
+const PIN_RECEIPT = { version: 1, kind: 'haven.pin-receipt', cid: ROOT_CID, pieceCid: PIECE } as const;
 
 const TOKEN = `0x${'ab'.repeat(20)}`;
 const SHA = 'cd'.repeat(32);
@@ -61,7 +70,7 @@ const gateV4 = () => ({
 function fullV1() {
   return {
     payload: new TextEncoder().encode(JSON.stringify({
-      piece: 'bafkzcibpiece',
+      piece: 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewfkuzq',
       gate: JSON.stringify(gateV1()),
       size: 1024,
       pt_hash: `0x${'ef'.repeat(32)}`,
@@ -93,7 +102,7 @@ function fullV3() {
   const base = fullV1();
   return {
     payload: new TextEncoder().encode(JSON.stringify({
-      piece: 'bafkzcibpiece3',
+      piece: 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewfkuzq',
       gate: JSON.stringify(gateV3()),
       size: 2048,
     })),
@@ -114,7 +123,7 @@ function fullV3() {
 
 function fullClear() {
   return {
-    payload: new TextEncoder().encode(JSON.stringify({ fcid: 'bafyclear', size: 5 })),
+    payload: new TextEncoder().encode(JSON.stringify({ fcid: 'bafkreihwuxaiqh7lilssiyokjzcwmn6dgwlwqttxc33piz3t6xpg4355zm', size: 5 })),
     contentType: 'application/json',
     attributes: { grp: 'haven.video.full', title: 'Freebie', sha256_ct: SHA, mime: 12 },
   };
@@ -123,7 +132,7 @@ function fullClear() {
 function genericImage() {
   return {
     payload: new TextEncoder().encode(JSON.stringify({
-      piece: 'bafkzcibimg',
+      piece: 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewfkuzq',
       gate: JSON.stringify(gateV1()),
       name: 'pic.png',
       size: 42,
@@ -145,7 +154,7 @@ function genericImage() {
 function genericCtFile() {
   return {
     payload: new TextEncoder().encode(JSON.stringify({
-      fcid: 'bafybook',
+      fcid: 'bafkreicucrr2wz3pfw3hcx62a6iz6vx52c7muglecsboim3pkc4iumdjny',
       name: 'book.epub',
       ct: 'application/epub+zip',
       size: 7,
@@ -158,7 +167,7 @@ function genericCtFile() {
 function audioFlac() {
   return {
     payload: new TextEncoder().encode(JSON.stringify({
-      piece: 'bafkzcibaudio',
+      piece: 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewfkuzq',
       gate: JSON.stringify(gateV1()),
       name: 'album.flac',
       ct: 'audio/flac',
@@ -196,7 +205,7 @@ function dripSeries() {
 
 function dripPart() {
   return {
-    payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibpart', gate: JSON.stringify(gateV4()) })),
+    payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewfkuzq', gate: JSON.stringify(gateV4()) })),
     contentType: 'application/json',
     attributes: {
       grp: 'haven.video.drip.part',
@@ -232,7 +241,7 @@ describe('haven writes: valid records pass', () => {
     expect(write.expiresIn).toBe(HAVEN_BTL_FULL_S);
     const nameless = audioFlac();
     nameless.payload = new TextEncoder().encode(JSON.stringify({
-      piece: 'bafkzcibaudio',
+      piece: 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewfkuzq',
       gate: JSON.stringify(gateV1()),
       ct: 'audio/flac',
       size: 1,
@@ -286,13 +295,13 @@ describe('haven writes: normalization', () => {
     // 2**31 exceeds i32 but is a safe integer — valid as a number.
     const mid = fullV1();
     const midGate = { ...gateV1(), threshold: String(2 ** 31) };
-    mid.payload = new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibpiece', gate: JSON.stringify(midGate) }));
+    mid.payload = new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewfkuzq', gate: JSON.stringify(midGate) }));
     mid.attributes = { ...mid.attributes, gate_threshold: 2 ** 31 };
     expect(validateHavenWrite(mid).attributes.gate_threshold).toEqual({ type: 'u256', value: BigInt(2 ** 31) });
     // 1e18 is past 2**53: numbers are refused, decimal strings stay exact.
     const wei = fullV1();
     const weiGate = { ...gateV1(), threshold: '1000000000000000000' };
-    wei.payload = new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibpiece', gate: JSON.stringify(weiGate) }));
+    wei.payload = new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewfkuzq', gate: JSON.stringify(weiGate) }));
     wei.attributes = { ...wei.attributes, gate_threshold: '1000000000000000000' };
     expect(validateHavenWrite(wei).attributes.gate_threshold).toEqual({ type: 'u256', value: 10n ** 18n });
     expect(() => validateHavenWrite({ ...fullV1(), attributes: { ...fullV1().attributes, gate_threshold: 10 ** 18 } }))
@@ -325,7 +334,7 @@ describe('haven writes: fail-closed rejections', () => {
     ['unknown gate chain', () => {
       const gate = { ...gateV1(), chain: 'Solana' };
       const r = fullV1();
-      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibpiece', gate: JSON.stringify(gate) })) };
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewfkuzq', gate: JSON.stringify(gate) })) };
     }, /not a known Haven-AOL variant/],
     ['gate_chain mismatch', () => { const r = fullV1(); return { ...r, attributes: { ...r.attributes, gate_chain: 1 } }; }, /EIP-155/],
     ['threshold mismatch', () => { const r = fullV1(); return { ...r, attributes: { ...r.attributes, gate_threshold: 5 } }; }, /!= gate.threshold/],
@@ -337,18 +346,18 @@ describe('haven writes: fail-closed rejections', () => {
       const gate = { ...gateV1(), threshold: '0' };
       return {
         ...r,
-        payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibpiece', gate: JSON.stringify(gate) })),
+        payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewfkuzq', gate: JSON.stringify(gate) })),
         attributes: { ...r.attributes, gate_threshold: 0 },
       };
     }, /must be > 0/],
     ['gate JSON threshold zero', () => {
       const r = fullV3();
-      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibpiece3', gate: JSON.stringify({ ...gateV3(), threshold: 0 }) })) };
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewfkuzq', gate: JSON.stringify({ ...gateV3(), threshold: 0 }) })) };
     }, /positive integer/],
     ['series threshold zero', () => { const r = dripSeries(); return { ...r, attributes: { ...r.attributes, gate_threshold: 0 } }; }, /must be > 0/],
     ['part gate threshold zero', () => {
       const r = dripPart();
-      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibpart', gate: JSON.stringify({ ...gateV4(), threshold: '0' }) })) };
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewfkuzq', gate: JSON.stringify({ ...gateV4(), threshold: '0' }) })) };
     }, /positive integer/],
     ['bool threshold', () => { const r = fullV1(); return { ...r, attributes: { ...r.attributes, gate_threshold: true } }; }, /boolean/],
     ['v3 without epoch', () => { const r = fullV3(); const { gate_epoch: _d, ...rest } = r.attributes; return { ...r, attributes: rest }; }, /gate_epoch is required/],
@@ -356,26 +365,38 @@ describe('haven writes: fail-closed rejections', () => {
     ['v1 with epoch', () => { const r = fullV1(); return { ...r, attributes: { ...r.attributes, gate_epoch: 1 } }; }, /v3 only/],
     ['gate version mismatch', () => {
       const r = fullV3();
-      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibpiece3', gate: JSON.stringify(gateV1()) })) };
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewfkuzq', gate: JSON.stringify(gateV1()) })) };
     }, /!= gate.version/],
     ['gate missing key', () => {
       const gate = { ...gateV1() } as Record<string, unknown>;
       delete gate.encryptedAesKey;
       const r = fullV1();
-      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibpiece', gate: JSON.stringify(gate) })) };
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewfkuzq', gate: JSON.stringify(gate) })) };
     }, /missing required v1 key/],
     ['gate bool version', () => {
       const r = fullV1();
-      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibpiece', gate: JSON.stringify({ ...gateV1(), version: true }) })) };
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewfkuzq', gate: JSON.stringify({ ...gateV1(), version: true }) })) };
     }, /got boolean/],
     ['gate version 2', () => {
       const r = fullV1();
-      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibpiece', gate: JSON.stringify({ ...gateV1(), version: 2 }) })) };
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewfkuzq', gate: JSON.stringify({ ...gateV1(), version: 2 }) })) };
     }, /must be 1, 3, or 4/],
     ['gate not JSON', () => {
       const r = fullV1();
-      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibpiece', gate: 'nope{' })) };
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewfkuzq', gate: 'nope{' })) };
     }, /not valid JSON/],
+    ['truncated piece (valid base32 prefix, not a PieceCID)', () => {
+      const r = fullV1();
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: PIECE_TRUNCATED, gate: JSON.stringify(gateV1()) })) };
+    }, /CommP/],
+    ['truncated piece in part', () => {
+      const r = dripPart();
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: PIECE_TRUNCATED, gate: JSON.stringify(gateV4()) })) };
+    }, /CommP/],
+    ['non-CID fcid', () => {
+      const r = fullClear();
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ fcid: 'bafyclear', size: 5 })) };
+    }, /fcid/],
     ['unixfs root in piece', () => {
       const r = fullV1();
       return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafybeihbb4qvts3xuy4kphwnglfg5twuockj7zqrjgrsiinqfmc4tsocei', gate: JSON.stringify(gateV1()) })) };
@@ -399,7 +420,7 @@ describe('haven writes: fail-closed rejections', () => {
     ['reserved attr name', () => { const r = fullV1(); return { ...r, attributes: { ...r.attributes, and: 1 } }; }, /reserved by the query language/],
     ['piece and fcid', () => {
       const r = fullV1();
-      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibpiece', fcid: 'bafyclear', gate: JSON.stringify(gateV1()) })) };
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewfkuzq', fcid: 'bafkreihwuxaiqh7lilssiyokjzcwmn6dgwlwqttxc33piz3t6xpg4355zm', gate: JSON.stringify(gateV1()) })) };
     }, /never both/],
     ['no locator', () => {
       const r = fullV1();
@@ -407,44 +428,44 @@ describe('haven writes: fail-closed rejections', () => {
     }, /exactly one locator/],
     ['piece without gate', () => {
       const r = fullV1();
-      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibpiece' })) };
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewfkuzq' })) };
     }, /requires the gate/],
     ['clear with gate attrs', () => { const r = fullClear(); return { ...r, attributes: { ...r.attributes, gate_type: 1 } }; }, /must not carry gate_type/],
     ['clear with gate payload', () => {
       const r = fullClear();
-      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ fcid: 'bafyclear', gate: JSON.stringify(gateV1()) })) };
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ fcid: 'bafkreihwuxaiqh7lilssiyokjzcwmn6dgwlwqttxc33piz3t6xpg4355zm', gate: JSON.stringify(gateV1()) })) };
     }, /must not carry gate/],
     ['old key piece_cid', () => {
       const r = fullClear();
-      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ fcid: 'bafyclear', piece_cid: 'bafk' })) };
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ fcid: 'bafkreihwuxaiqh7lilssiyokjzcwmn6dgwlwqttxc33piz3t6xpg4355zm', piece_cid: 'bafk' })) };
     }, /renamed to/],
     ['old key encryption_metadata', () => {
       const r = fullClear();
-      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ fcid: 'bafyclear', encryption_metadata: '{}' })) };
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ fcid: 'bafkreihwuxaiqh7lilssiyokjzcwmn6dgwlwqttxc33piz3t6xpg4355zm', encryption_metadata: '{}' })) };
     }, /renamed to/],
     ['old key original_hash', () => {
       const r = fullClear();
-      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ fcid: 'bafyclear', original_hash: SHA })) };
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ fcid: 'bafkreihwuxaiqh7lilssiyokjzcwmn6dgwlwqttxc33piz3t6xpg4355zm', original_hash: SHA })) };
     }, /renamed to/],
     ['mirror is_encrypted', () => {
       const r = fullClear();
-      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ fcid: 'bafyclear', is_encrypted: true })) };
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ fcid: 'bafkreihwuxaiqh7lilssiyokjzcwmn6dgwlwqttxc33piz3t6xpg4355zm', is_encrypted: true })) };
     }, /dropped in 2\.0\.0/],
     ['mirror duration', () => {
       const r = fullClear();
-      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ fcid: 'bafyclear', duration: 1.5 })) };
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ fcid: 'bafkreihwuxaiqh7lilssiyokjzcwmn6dgwlwqttxc33piz3t6xpg4355zm', duration: 1.5 })) };
     }, /dropped in 2\.0\.0/],
     ['mirror gate_type', () => {
       const r = fullClear();
-      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ fcid: 'bafyclear', gate_type: 1 })) };
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ fcid: 'bafkreihwuxaiqh7lilssiyokjzcwmn6dgwlwqttxc33piz3t6xpg4355zm', gate_type: 1 })) };
     }, /dropped in 2\.0\.0/],
     ['unknown payload key', () => {
       const r = fullClear();
-      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ fcid: 'bafyclear', frobnicate: 1 })) };
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ fcid: 'bafkreihwuxaiqh7lilssiyokjzcwmn6dgwlwqttxc33piz3t6xpg4355zm', frobnicate: 1 })) };
     }, /not in the .* record/],
     ['generic without name', () => {
       const r = genericImage();
-      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibimg', gate: JSON.stringify(gateV1()) })) };
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewfkuzq', gate: JSON.stringify(gateV1()) })) };
     }, /name is required/],
     ['name on video', () => {
       const r = fullV1();
@@ -493,11 +514,11 @@ describe('haven writes: fail-closed rejections', () => {
     }, /over the 2048-byte limit/],
     ['oversized payload', () => {
       const r = fullClear();
-      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ fcid: 'bafyclear', src: `https://x/${'y'.repeat(140 * 1024)}` })) };
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ fcid: 'bafkreihwuxaiqh7lilssiyokjzcwmn6dgwlwqttxc33piz3t6xpg4355zm', src: `https://x/${'y'.repeat(140 * 1024)}` })) };
     }, /over the 131072-byte/],
     ['bad size', () => {
       const r = fullClear();
-      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ fcid: 'bafyclear', size: -1 })) };
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ fcid: 'bafkreihwuxaiqh7lilssiyokjzcwmn6dgwlwqttxc33piz3t6xpg4355zm', size: -1 })) };
     }, /non-negative integer/],
     ['expiresIn zero', () => ({ ...fullV1(), expiresIn: 0 }), /positive integer/],
     ['expiresIn fractional', () => ({ ...fullV1(), expiresIn: 1.5 }), /positive integer/],
@@ -527,7 +548,7 @@ describe('haven writes: fail-closed rejections', () => {
     ['part with gate_token', () => { const r = dripPart(); return { ...r, attributes: { ...r.attributes, gate_token: TOKEN } }; }, /lives on the series/],
     ['part payload extra', () => {
       const r = dripPart();
-      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibpart', gate: JSON.stringify(gateV4()), size: 1 })) };
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewfkuzq', gate: JSON.stringify(gateV4()), size: 1 })) };
     }, /exactly \{ piece, gate \}/],
     ['part without piece', () => {
       const r = dripPart();
@@ -535,7 +556,7 @@ describe('haven writes: fail-closed rejections', () => {
     }, /piece must be/],
     ['part v3 gate', () => {
       const r = dripPart();
-      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibpart', gate: JSON.stringify(gateV3()) })) };
+      return { ...r, payload: new TextEncoder().encode(JSON.stringify({ piece: 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewfkuzq', gate: JSON.stringify(gateV3()) })) };
     }, /must be 4/],
     ['part negative drip_idx', () => { const r = dripPart(); return { ...r, attributes: { ...r.attributes, drip_idx: -1 } }; }, />= 0/],
     ['part negative mcap', () => { const r = dripPart(); return { ...r, attributes: { ...r.attributes, mcap_usd: -1 } }; }, />= 0/],
@@ -543,6 +564,50 @@ describe('haven writes: fail-closed rejections', () => {
 
   it.each(cases)('%s', (_name, build, pattern) => {
     expect(() => validateHavenWrite(build() as never)).toThrow(pattern);
+  });
+});
+
+describe('pin receipt handoff (locators never transit the model)', () => {
+  it('injects the receipt piece into a gated payload that omits it', () => {
+    const r = fullV1();
+    const payload = JSON.parse(new TextDecoder().decode(r.payload));
+    delete payload.piece;
+    const write = validateHavenWrite({
+      ...r,
+      payload: new TextEncoder().encode(JSON.stringify(payload)),
+      pinReceipt: parseHavenPinReceipt(PIN_RECEIPT),
+    });
+    expect(JSON.parse(new TextDecoder().decode(write.payload)).piece).toBe(PIECE);
+  });
+
+  it('injects the receipt root CID into a clear payload that omits fcid', () => {
+    const r = fullClear();
+    const write = validateHavenWrite({
+      ...r,
+      payload: new TextEncoder().encode(JSON.stringify({ size: 5 })),
+      pinReceipt: parseHavenPinReceipt(PIN_RECEIPT),
+    });
+    expect(JSON.parse(new TextDecoder().decode(write.payload)).fcid).toBe(ROOT_CID);
+  });
+
+  it('rejects a payload locator that disagrees with the receipt', () => {
+    const r = fullV1();
+    const other = { ...PIN_RECEIPT, pieceCid: 'bafkzcibcmubntvjcpgpa2qyxnufn7faxjn6xi6fybcpidg77pad2wces3hkk2my' };
+    expect(() => validateHavenWrite({ ...r, pinReceipt: parseHavenPinReceipt(other) })).toThrow(/pin receipt/);
+  });
+
+  it('rejects locator records when a receipt is required but absent', () => {
+    expect(() => validateHavenWrite({ ...fullV1(), requirePinReceipt: true })).toThrow(/pin receipt/);
+    expect(() => validateHavenWrite({ ...fullClear(), requirePinReceipt: true })).toThrow(/pin receipt/);
+    // Series payloads carry no locator — no receipt needed.
+    expect(() => validateHavenWrite({ ...dripSeries(), requirePinReceipt: true })).not.toThrow();
+  });
+
+  it('rejects receipts carrying a truncated or non-piece CID', () => {
+    expect(() => parseHavenPinReceipt({ ...PIN_RECEIPT, pieceCid: PIECE_TRUNCATED })).toThrow(/pieceCid/);
+    expect(() => parseHavenPinReceipt({ ...PIN_RECEIPT, pieceCid: ROOT_CID })).toThrow(/pieceCid/);
+    expect(() => parseHavenPinReceipt({ ...PIN_RECEIPT, cid: 'bafyclear' })).toThrow(/cid/);
+    expect(() => parseHavenPinReceipt({ version: 2, kind: 'haven.pin-receipt', cid: ROOT_CID, pieceCid: PIECE })).toThrow(/version/);
   });
 });
 
@@ -607,7 +672,19 @@ describe('haven runtime wiring', () => {
       payload: record.payload,
       contentType: record.contentType,
       attributes: { ...record.attributes, gate_type: '1' },
+      pinReceipt: PIN_RECEIPT,
     })).rejects.toThrow(/i32 number/);
+    expect(creates()).toBe(0);
+  });
+
+  it('locator records without a pin receipt throw before the backend is touched', async () => {
+    const { rt, creates } = wiredRuntime();
+    const record = fullV1();
+    await expect(rt.createEntity({
+      payload: record.payload,
+      contentType: record.contentType,
+      attributes: record.attributes,
+    })).rejects.toThrow(/pin receipt/);
     expect(creates()).toBe(0);
   });
 
@@ -615,7 +692,7 @@ describe('haven runtime wiring', () => {
     const { rt, seen } = wiredRuntime();
     const record = fullV1();
     record.attributes.gate_token = TOKEN.toUpperCase().replace('0X', '0x');
-    await rt.createEntity({ payload: record.payload, contentType: record.contentType, attributes: record.attributes });
+    await rt.createEntity({ payload: record.payload, contentType: record.contentType, attributes: record.attributes, pinReceipt: PIN_RECEIPT });
     expect(seen[0]?.attributes?.gate_token).toBe(TOKEN);
     expect(seen[0]?.expiresIn).toBe(HAVEN_BTL_FULL_S);
   });
@@ -625,8 +702,8 @@ describe('haven runtime wiring', () => {
     const a = fullV1();
     const b = fullV1();
     b.attributes.sha256_ct = `0x${SHA.toUpperCase()}`;
-    await rt.createEntity({ payload: a.payload, contentType: a.contentType, attributes: a.attributes });
-    await rt.createEntity({ payload: b.payload, contentType: b.contentType, attributes: b.attributes });
+    await rt.createEntity({ payload: a.payload, contentType: a.contentType, attributes: a.attributes, pinReceipt: PIN_RECEIPT });
+    await rt.createEntity({ payload: b.payload, contentType: b.contentType, attributes: b.attributes, pinReceipt: PIN_RECEIPT });
     expect(creates()).toBe(1);
   });
 
