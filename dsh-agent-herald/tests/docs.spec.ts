@@ -59,6 +59,8 @@ describe('agent docs', () => {
       'erc8004_register',
       'wallet_info',
       'opt-in journal',
+      'embedded player',
+      'Arkiv key <0x…>',
     ]) {
       expect(process).toContain(anchor)
     }

@@ -90,7 +90,12 @@ applies to that release only.
    first sweep path is clear.
 8. **Announce.** Over XMTP, to the community: what released, where
    (CID, Arkiv key), what it costs to open (threshold / rung /
-   epoch — or free), and how to verify. Then prove it opens:
+   epoch — or free), and how to verify. So the shoutbox can render
+   an embedded player from the announcement alone, put the release
+   title on the first line, then `Arkiv key <0x…>` and the locator
+   (`piece <bafkz…>` when gated, `fcid <bafk…>` when free) each on
+   their own line, copied exactly — never paraphrased or shortened.
+   Then prove it opens:
    gated releases get a **trial-decrypt** (`aol_gate_info`, then
    `aol_decrypt` to a scratch path); free releases get a
    **trial-fetch** (fetch the `fcid` bytes back and byte-compare) —
