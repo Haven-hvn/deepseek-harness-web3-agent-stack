@@ -24,8 +24,6 @@ export interface PinStatus {
   readonly redundancy: number
   /** CommP piece CID carrying the root (present when the ledger maps it) — gated-record writers address this, never the root. */
   readonly pieceCid?: string | undefined
-  /** Machine-written pin receipt path (present after a path upload) — catalog writers pass this, never a copied CID. */
-  readonly receiptPath?: string | undefined
 }
 
 export const internals: { fetch: typeof globalThis.fetch | undefined } = { fetch: undefined }

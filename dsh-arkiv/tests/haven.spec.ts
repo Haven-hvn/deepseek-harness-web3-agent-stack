@@ -18,7 +18,6 @@ import {
   HAVEN_BTL_PART_S,
   HAVEN_BTL_SERIES_S,
   normalizeHavenWhere,
-  parseHavenPinReceipt,
   validateHavenWrite,
 } from '../src/haven.ts';
 
@@ -28,7 +27,6 @@ const PIECE = 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewf
 const PIECE_TRUNCATED = 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4wk4qyi3ewfk';
 /** Real CAR root CID for the same upload. */
 const ROOT_CID = 'bafkreihcf3vmvf7q55lo54v6m26qpb2rhhnza6azkb24zwh3nvepl5ldwu';
-const PIN_RECEIPT = { version: 1, kind: 'haven.pin-receipt', cid: ROOT_CID, pieceCid: PIECE } as const;
 
 const TOKEN = `0x${'ab'.repeat(20)}`;
 const SHA = 'cd'.repeat(32);
@@ -567,50 +565,6 @@ describe('haven writes: fail-closed rejections', () => {
   });
 });
 
-describe('pin receipt handoff (locators never transit the model)', () => {
-  it('injects the receipt piece into a gated payload that omits it', () => {
-    const r = fullV1();
-    const payload = JSON.parse(new TextDecoder().decode(r.payload));
-    delete payload.piece;
-    const write = validateHavenWrite({
-      ...r,
-      payload: new TextEncoder().encode(JSON.stringify(payload)),
-      pinReceipt: parseHavenPinReceipt(PIN_RECEIPT),
-    });
-    expect(JSON.parse(new TextDecoder().decode(write.payload)).piece).toBe(PIECE);
-  });
-
-  it('injects the receipt root CID into a clear payload that omits fcid', () => {
-    const r = fullClear();
-    const write = validateHavenWrite({
-      ...r,
-      payload: new TextEncoder().encode(JSON.stringify({ size: 5 })),
-      pinReceipt: parseHavenPinReceipt(PIN_RECEIPT),
-    });
-    expect(JSON.parse(new TextDecoder().decode(write.payload)).fcid).toBe(ROOT_CID);
-  });
-
-  it('rejects a payload locator that disagrees with the receipt', () => {
-    const r = fullV1();
-    const other = { ...PIN_RECEIPT, pieceCid: 'bafkzcibcmubntvjcpgpa2qyxnufn7faxjn6xi6fybcpidg77pad2wces3hkk2my' };
-    expect(() => validateHavenWrite({ ...r, pinReceipt: parseHavenPinReceipt(other) })).toThrow(/pin receipt/);
-  });
-
-  it('rejects locator records when a receipt is required but absent', () => {
-    expect(() => validateHavenWrite({ ...fullV1(), requirePinReceipt: true })).toThrow(/pin receipt/);
-    expect(() => validateHavenWrite({ ...fullClear(), requirePinReceipt: true })).toThrow(/pin receipt/);
-    // Series payloads carry no locator — no receipt needed.
-    expect(() => validateHavenWrite({ ...dripSeries(), requirePinReceipt: true })).not.toThrow();
-  });
-
-  it('rejects receipts carrying a truncated or non-piece CID', () => {
-    expect(() => parseHavenPinReceipt({ ...PIN_RECEIPT, pieceCid: PIECE_TRUNCATED })).toThrow(/pieceCid/);
-    expect(() => parseHavenPinReceipt({ ...PIN_RECEIPT, pieceCid: ROOT_CID })).toThrow(/pieceCid/);
-    expect(() => parseHavenPinReceipt({ ...PIN_RECEIPT, cid: 'bafyclear' })).toThrow(/cid/);
-    expect(() => parseHavenPinReceipt({ version: 2, kind: 'haven.pin-receipt', cid: ROOT_CID, pieceCid: PIECE })).toThrow(/version/);
-  });
-});
-
 describe('haven query filters', () => {
   it('lowercases hex and passes the reference wire through', () => {
     expect(normalizeHavenWhere({ grp: 'haven.video.full', gate_token: TOKEN.toUpperCase().replace('0X', '0x') }))
@@ -672,19 +626,7 @@ describe('haven runtime wiring', () => {
       payload: record.payload,
       contentType: record.contentType,
       attributes: { ...record.attributes, gate_type: '1' },
-      pinReceipt: PIN_RECEIPT,
     })).rejects.toThrow(/i32 number/);
-    expect(creates()).toBe(0);
-  });
-
-  it('locator records without a pin receipt throw before the backend is touched', async () => {
-    const { rt, creates } = wiredRuntime();
-    const record = fullV1();
-    await expect(rt.createEntity({
-      payload: record.payload,
-      contentType: record.contentType,
-      attributes: record.attributes,
-    })).rejects.toThrow(/pin receipt/);
     expect(creates()).toBe(0);
   });
 
@@ -692,7 +634,7 @@ describe('haven runtime wiring', () => {
     const { rt, seen } = wiredRuntime();
     const record = fullV1();
     record.attributes.gate_token = TOKEN.toUpperCase().replace('0X', '0x');
-    await rt.createEntity({ payload: record.payload, contentType: record.contentType, attributes: record.attributes, pinReceipt: PIN_RECEIPT });
+    await rt.createEntity({ payload: record.payload, contentType: record.contentType, attributes: record.attributes });
     expect(seen[0]?.attributes?.gate_token).toBe(TOKEN);
     expect(seen[0]?.expiresIn).toBe(HAVEN_BTL_FULL_S);
   });
@@ -702,8 +644,8 @@ describe('haven runtime wiring', () => {
     const a = fullV1();
     const b = fullV1();
     b.attributes.sha256_ct = `0x${SHA.toUpperCase()}`;
-    await rt.createEntity({ payload: a.payload, contentType: a.contentType, attributes: a.attributes, pinReceipt: PIN_RECEIPT });
-    await rt.createEntity({ payload: b.payload, contentType: b.contentType, attributes: b.attributes, pinReceipt: PIN_RECEIPT });
+    await rt.createEntity({ payload: a.payload, contentType: a.contentType, attributes: a.attributes });
+    await rt.createEntity({ payload: b.payload, contentType: b.contentType, attributes: b.attributes });
     expect(creates()).toBe(1);
   });
 

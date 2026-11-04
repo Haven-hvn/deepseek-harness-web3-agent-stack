@@ -24,8 +24,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 // optional via `ctx.reflect.get`, so this plugin mounts cleanly unguarded).
 import type { CheckContext, CheckDecision } from 'dsh-exactly-once';
 import { ArkivBackend } from './arkiv.ts';
-import { normalizeHavenWhere, parseHavenPinReceipt, validateHavenWrite } from './haven.ts';
-import type { HavenPinReceipt } from './haven.ts';
+import { normalizeHavenWhere, validateHavenWrite } from './haven.ts';
 import type { ArkivEntityRecord } from './types.ts';
 
 export type { ArkivEntityRecord } from './types.ts';
@@ -39,52 +38,9 @@ export {
   HAVEN_GROUPS,
   MIME_TO_ENUM,
   normalizeHavenWhere,
-  parseHavenPinReceipt,
   validateHavenWrite,
 } from './haven.ts';
-export type { HavenGroupClass, HavenNormalizedWrite, HavenPinReceipt } from './haven.ts';
-
-/** Write parameters every Arkiv create/update accepts. */
-export interface HavenWriteParams {
-  payload: Uint8Array;
-  contentType: string;
-  attributes?: Record<string, unknown>;
-  expiresIn?: number;
-  /** Parsed pin receipt (programmatic callers). Injected/verified against the payload locator. */
-  pinReceipt?: HavenPinReceipt;
-  /** Path to a receipt file written by synapse_pin (tool callers — the model passes only this path). */
-  pinReceiptPath?: string;
-}
-
-/** Resolve a write's pin receipt from an inline object or a receipt file. */
-async function resolvePinReceipt(params: { pinReceipt?: HavenPinReceipt; pinReceiptPath?: string }): Promise<HavenPinReceipt | undefined> {
-  if (params.pinReceipt !== undefined) return params.pinReceipt;
-  if (params.pinReceiptPath === undefined) return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(await readFile(params.pinReceiptPath, 'utf8'));
-  } catch (e) {
-    throw new Error(`dsh-arkiv: cannot read pin receipt at ${params.pinReceiptPath}: ${e instanceof Error ? e.message : String(e)}`);
-  }
-  return parseHavenPinReceipt(parsed);
-}
-
-/**
- * Validate a write with its receipt resolved. Signing paths REQUIRE a
- * receipt for locator records; read-back hooks pass `requireReceipt: false`
- * (they sign nothing — the dispatch they verify already enforced it).
- */
-async function validateWrite(params: HavenWriteParams, requireReceipt = true): Promise<ReturnType<typeof validateHavenWrite>> {
-  const pinReceipt = await resolvePinReceipt(params);
-  return validateHavenWrite({
-    payload: params.payload,
-    contentType: params.contentType,
-    ...(params.attributes !== undefined ? { attributes: params.attributes } : {}),
-    ...(params.expiresIn !== undefined ? { expiresIn: params.expiresIn } : {}),
-    ...(pinReceipt !== undefined ? { pinReceipt } : {}),
-    requirePinReceipt: requireReceipt,
-  });
-}
+export type { HavenGroupClass, HavenNormalizedWrite } from './haven.ts';
 
 export const name = 'storage-arkiv';
 // 'credentials': resolvePrivateKey reads ctx.credentials (privateKeyRef) —
@@ -252,7 +208,7 @@ export class ArkivRuntime {
    */
   async checkCreate(input: unknown): Promise<CheckDecision> {
     this.hook();
-    const args = (input ?? {}) as { path?: unknown; payload?: unknown; contentType?: unknown; attributes?: unknown; expiresIn?: unknown; pinReceiptPath?: unknown };
+    const args = (input ?? {}) as { path?: unknown; payload?: unknown; contentType?: unknown; attributes?: unknown; expiresIn?: unknown };
     let payload: Uint8Array;
     try {
       if (typeof args.path === 'string' && args.path !== '') {
@@ -271,13 +227,12 @@ export class ArkivRuntime {
       : undefined);
     let write: { payload: Uint8Array; attributes: Record<string, unknown> };
     try {
-      write = await validateWrite({
+      write = validateHavenWrite({
         payload,
         contentType: args.contentType,
         ...(attributes !== undefined ? { attributes } : {}),
         ...(typeof args.expiresIn === 'number' ? { expiresIn: args.expiresIn } : {}),
-        ...(typeof args.pinReceiptPath === 'string' ? { pinReceiptPath: args.pinReceiptPath } : {}),
-      }, false);
+      });
     } catch {
       return { kind: 'unknown' };
     }
@@ -342,7 +297,7 @@ export class ArkivRuntime {
    */
   async checkUpdate(input: unknown): Promise<CheckDecision> {
     this.hook();
-    const args = (input ?? {}) as { key?: unknown; path?: unknown; payload?: unknown; contentType?: unknown; attributes?: unknown; expiresIn?: unknown; pinReceiptPath?: unknown };
+    const args = (input ?? {}) as { key?: unknown; path?: unknown; payload?: unknown; contentType?: unknown; attributes?: unknown; expiresIn?: unknown };
     if (typeof args.key !== 'string' || !args.key.startsWith('0x')) return { kind: 'unknown' };
     let payload: Uint8Array;
     try {
@@ -360,13 +315,12 @@ export class ArkivRuntime {
       : undefined);
     let write: { payload: Uint8Array; attributes: Record<string, unknown> };
     try {
-      write = await validateWrite({
+      write = validateHavenWrite({
         payload,
         contentType: args.contentType,
         ...(updateAttributes !== undefined ? { attributes: updateAttributes } : {}),
         ...(typeof args.expiresIn === 'number' ? { expiresIn: args.expiresIn } : {}),
-        ...(typeof args.pinReceiptPath === 'string' ? { pinReceiptPath: args.pinReceiptPath } : {}),
-      }, false);
+      });
     } catch {
       return { kind: 'unknown' };
     }
@@ -396,7 +350,7 @@ export class ArkivRuntime {
     if (!Array.isArray(args.entities) || args.entities.length === 0) return { kind: 'unknown' };
     const writes: Array<{ payload: Uint8Array; contentType: string; attributes: Record<string, unknown> }> = [];
     for (const entry of args.entities) {
-      const record = (entry ?? {}) as { path?: unknown; payload?: unknown; contentType?: unknown; attributes?: unknown; expiresIn?: unknown; pinReceiptPath?: unknown };
+      const record = (entry ?? {}) as { path?: unknown; payload?: unknown; contentType?: unknown; attributes?: unknown; expiresIn?: unknown };
       let payload: Uint8Array;
       try {
         if (typeof record.path === 'string' && record.path !== '') {
@@ -414,13 +368,12 @@ export class ArkivRuntime {
         ? record.attributes as Record<string, unknown>
         : undefined);
       try {
-        writes.push(await validateWrite({
+        writes.push(validateHavenWrite({
           payload,
           contentType: record.contentType,
           ...(attributes !== undefined ? { attributes } : {}),
           ...(typeof record.expiresIn === 'number' ? { expiresIn: record.expiresIn } : {}),
-          ...(typeof record.pinReceiptPath === 'string' ? { pinReceiptPath: record.pinReceiptPath } : {}),
-        }, false));
+        }));
       } catch {
         return { kind: 'unknown' };
       }
@@ -446,12 +399,11 @@ export class ArkivRuntime {
     }
   }
 
-  async createEntity(params: HavenWriteParams): Promise<ArkivEntityRecord> {
+  async createEntity(params: { payload: Uint8Array; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }): Promise<ArkivEntityRecord> {
     this.hook();
-    // Fail-closed Haven validation FIRST (receipt-resolved): invalid records
-    // throw before the ledger keys them, so no invalid attempt is ever
-    // replayed or sent.
-    const write = await validateWrite(params);
+    // Fail-closed Haven validation FIRST: invalid records throw before the
+    // ledger keys them, so no invalid attempt is ever replayed or sent.
+    const write = validateHavenWrite(params);
     const key = createKeyFor({ payload: write.payload, contentType: write.contentType, attributes: write.attributes });
     const prior = this.creates.get(key);
     if (prior !== undefined) return prior;
@@ -489,14 +441,15 @@ export class ArkivRuntime {
    * the whole batch. Singletons delegate to the single path (dedup
    * parity, like the reference `len == 1` short-circuit).
    */
-  async createEntities(records: HavenWriteParams[]): Promise<Array<{ key: `0x${string}`; txHash: `0x${string}` }>> {
+  async createEntities(records: Array<{ payload: Uint8Array; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }>): Promise<Array<{ key: `0x${string}`; txHash: `0x${string}` }>> {
     this.hook();
     if (records.length === 0) throw new Error('dsh-arkiv: batch needs at least one entity');
     if (records.length === 1) {
-      const record = await this.createEntity(records[0] as HavenWriteParams);
+      const only = records[0] as { payload: Uint8Array; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number };
+      const record = await this.createEntity(only);
       return [{ key: record.key, txHash: record.txHash as `0x${string}` }];
     }
-    const writes = await Promise.all(records.map(record => validateWrite(record)));
+    const writes = records.map(record => validateHavenWrite(record));
     const key = batchKeyFor(writes);
     const prior = this.batches.get(key);
     if (prior !== undefined) return prior;
@@ -526,11 +479,11 @@ export class ArkivRuntime {
     return results;
   }
 
-  async updateEntity(params: HavenWriteParams & { key: `0x${string}` }): Promise<{ txHash: `0x${string}` }> {
+  async updateEntity(params: { key: `0x${string}`; payload: Uint8Array; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }): Promise<{ txHash: `0x${string}` }> {
     this.hook();
     // Updates rewrite the whole record (like the reference patch path), so the
     // complete Haven record validates exactly like a create.
-    const write = await validateWrite(params);
+    const write = validateHavenWrite(params);
     const key = updateKeyFor({ key: params.key, payload: write.payload, contentType: write.contentType, attributes: write.attributes });
     const prior = this.updates.get(key);
     if (prior !== undefined) return prior;
@@ -651,17 +604,16 @@ export function apply(ctx: Context, config: Config): void {
     parameters: {
       path: { type: 'string', description: 'Local file holding the JSON payload. Exactly one of path or payload.' },
       payload: { type: 'string', description: 'JSON payload string (utf8) if no file. Exactly one of path or payload.' },
-      pinReceiptPath: { type: 'string', description: 'Path to the synapse_pin receipt (<file>.pin.json) for this upload. REQUIRED for piece/fcid records: the locator is injected from the receipt by machine — omit piece/fcid from the payload and never copy a CID by hand.' },
       contentType: { type: 'string', description: 'Must be application/json (Haven entities are JSON records)', required: true } as any,
       attributes: { type: 'object', additionalProperties: true, description: 'Haven attributes Record<string, unknown> (grp/title/gate corpus/sha256_ct/mime/dur_s or drip coordinates)', required: true } as any,
       expiresIn: { type: 'number', description: 'Seconds until expiry (default per group: 4w full/generic, 52w series, 12w parts)' } as any,
     },
     output: { schema: CREATE_RESULT_SCHEMA, render: (_args, value) => [{ type: 'text', text: `${(value as any).key}: created tx ${(value as any).txHash}` }] },
-    async execute(args: { path?: string; payload?: string; pinReceiptPath?: string; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }, exec): Promise<{ key: string; owner: string; txHash: string }> {
+    async execute(args: { path?: string; payload?: string; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }, exec): Promise<{ key: string; owner: string; txHash: string }> {
       if ((args.path === undefined) === (args.payload === undefined)) throw new Error('provide exactly one of path or payload');
       const payload = args.path !== undefined ? await readFile(args.path) : Buffer.from(args.payload as string, 'utf8');
       console.log(`[arkiv_create_entity] called src=${args.path ?? `inline(${payload.length}B)`} ${payloadPointer(payload)}`);
-      const record = await arkiv.createEntity({ payload, contentType: args.contentType, attributes: args.attributes, expiresIn: args.expiresIn, ...(args.pinReceiptPath !== undefined ? { pinReceiptPath: args.pinReceiptPath } : {}) });
+      const record = await arkiv.createEntity({ payload, contentType: args.contentType, attributes: args.attributes, expiresIn: args.expiresIn });
       // Project to the declared output shape: the full record carries payload
       // bytes that are neither JSON nor model-meaningful, and the registry
       // rejects undeclared keys under additionalProperties:false.
@@ -678,16 +630,15 @@ export function apply(ctx: Context, config: Config): void {
       key: { type: 'string', required: true, description: 'Entity key 0x...' },
       path: { type: 'string', description: 'Local file holding the new JSON payload' } as any,
       payload: { type: 'string', description: 'New JSON payload string if no file' } as any,
-      pinReceiptPath: { type: 'string', description: 'Path to the synapse_pin receipt (<file>.pin.json). REQUIRED for piece/fcid records — the locator is injected from the receipt, never copied by hand.' } as any,
       contentType: { type: 'string', required: true, description: 'Must be application/json' } as any,
       attributes: { type: 'object', additionalProperties: true, description: 'Complete Haven attributes for the rewritten record', required: true } as any,
       expiresIn: { type: 'number', description: 'Extend expiry seconds (default per group)' } as any,
     },
     output: { schema: { type: 'object', additionalProperties: true } as any, render: (_args, v) => [{ type: 'text', text: JSON.stringify(v) }] },
-    async execute(args: { key: string; path?: string; payload?: string; pinReceiptPath?: string; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }, exec) {
+    async execute(args: { key: string; path?: string; payload?: string; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }, exec) {
       const p = args.path !== undefined ? await readFile(args.path) : Buffer.from(args.payload ?? '', 'utf8');
       console.log(`[arkiv_update_entity] called key=${args.key} src=${args.path ?? `inline(${p.length}B)`} ${payloadPointer(p)}`);
-      const updated = await arkiv.updateEntity({ key: args.key as `0x${string}`, payload: p, contentType: args.contentType, attributes: args.attributes, expiresIn: args.expiresIn, ...(args.pinReceiptPath !== undefined ? { pinReceiptPath: args.pinReceiptPath } : {}) });
+      const updated = await arkiv.updateEntity({ key: args.key as `0x${string}`, payload: p, contentType: args.contentType, attributes: args.attributes, expiresIn: args.expiresIn });
       console.log(`[arkiv_update_entity] done key=${args.key} txHash=${updated.txHash} ${payloadPointer(p)}`);
       return updated;
     },
@@ -708,7 +659,6 @@ export function apply(ctx: Context, config: Config): void {
           properties: {
             path: { type: 'string', description: 'Local file holding the JSON payload. Exactly one of path or payload per record.' },
             payload: { type: 'string', description: 'JSON payload string (utf8) if no file.' },
-            pinReceiptPath: { type: 'string', description: 'synapse_pin receipt path for this record (required for piece/fcid records).' },
             contentType: { type: 'string', description: 'Must be application/json', required: true },
             attributes: { type: 'object', additionalProperties: true, description: 'Haven attributes for this record', required: true },
             expiresIn: { type: 'number', description: 'Seconds until expiry (default per group)' },
@@ -723,10 +673,10 @@ export function apply(ctx: Context, config: Config): void {
         text: (value as Array<{ key: string; txHash: string }>).map(hit => `${hit.key}: created tx ${hit.txHash}`).join('\n'),
       }],
     },
-    async execute(args: { entities: Array<{ path?: string; payload?: string; pinReceiptPath?: string; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }> }): Promise<Array<{ key: string; txHash: string }>> {
+    async execute(args: { entities: Array<{ path?: string; payload?: string; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }> }): Promise<Array<{ key: string; txHash: string }>> {
       if (!Array.isArray(args.entities) || args.entities.length === 0) throw new Error('provide at least one entity');
       console.log(`[arkiv_create_entities] called count=${args.entities.length}`);
-      const records: HavenWriteParams[] = [];
+      const records: Array<{ payload: Uint8Array; contentType: string; attributes?: Record<string, unknown>; expiresIn?: number }> = [];
       for (const [index, entry] of args.entities.entries()) {
         if ((entry.path === undefined) === (entry.payload === undefined)) {
           throw new Error(`entity ${index}: provide exactly one of path or payload`);
@@ -736,7 +686,6 @@ export function apply(ctx: Context, config: Config): void {
           contentType: entry.contentType,
           ...(entry.attributes !== undefined ? { attributes: entry.attributes } : {}),
           ...(entry.expiresIn !== undefined ? { expiresIn: entry.expiresIn } : {}),
-          ...(entry.pinReceiptPath !== undefined ? { pinReceiptPath: entry.pinReceiptPath } : {}),
         });
       }
       const results = await arkiv.createEntities(records);

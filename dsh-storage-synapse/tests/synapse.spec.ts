@@ -13,7 +13,7 @@
  *    never throws (ported Haven semantics).
  */
 
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -95,7 +95,7 @@ async function harness() {
   // Proves the gated wiring (wallet OWS resolved per operation) while keeping tests deterministic
   const synapse: any = ctx.synapse
   synapse.store = vi.fn(async (_data: Uint8Array, _signal?: AbortSignal) => {
-    return { cid: 'bafyfresh', pieceCid: PIECE }
+    return { cid: 'bafyfresh' }
   })
   synapse.pin = vi.fn(async (cid: string, _signal?: AbortSignal) => {
     ctx.emit('synapse/pinned', { cid } as any)
@@ -191,30 +191,12 @@ describe('synapse_pin through the executor (the harness natively pins)', () => {
     try {
       const result = await execute('synapse_pin', { path: file })
       expect(result.isError).toBe(false)
-      expect(result.content).toEqual([{ type: 'text', text: `bafyfresh: pinned (provider filecoin, piece ${PIECE}, receipt ${file}.pin.json)` }])
-      // The receipt is the machine handoff catalog writers consume.
-      const receipt = JSON.parse(await readFile(`${file}.pin.json`, 'utf8'))
-      expect(receipt).toEqual({
-        version: 1,
-        kind: 'haven.pin-receipt',
-        cid: 'bafyfresh',
-        pieceCid: PIECE,
-        provider: 'filecoin',
-        redundancy: 1,
-      })
+      expect(result.content).toEqual([{ type: 'text', text: `bafyfresh: pinned (provider filecoin, piece ${PIECE})` }])
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
   })
 
-  it('refuses to hand off a pin with no recorded PieceCID', async () => {
-    const { ctx, execute } = await harness()
-    const synapse: any = ctx.synapse
-    synapse.store = vi.fn(async () => ({ cid: 'bafynopiece' }))
-    synapse.pin = vi.fn(async (cid: string) => ({ cid, provider: 'filecoin', expiresAt: 0, redundancy: 1 }))
-    const result = await execute('synapse_pin', { cid: 'bafynopiece' })
-    expect(result.isError).toBe(true)
-  })
 
   it('rejects ambiguous arguments: exactly one of path or cid', async () => {
     const { execute } = await harness()

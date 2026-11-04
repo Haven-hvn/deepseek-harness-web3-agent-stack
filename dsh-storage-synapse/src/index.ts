@@ -26,7 +26,7 @@
  */
 
 import { createHash } from 'node:crypto'
-import { readFile, rename, writeFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { basename } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -103,7 +103,7 @@ export const Config: z<Config> = z.object({
 export class SynapseRuntime {
   private filecoin: import('./synapse.ts').FilecoinBackend | null = null
   /** Uploaded bytes by sha256: CIDs are content-deterministic, so a repeat stores once. */
-  private readonly uploads = new Map<string, { cid: Cid; pieceCid?: string | undefined }>()
+  private readonly uploads = new Map<string, Cid>()
   /** Disposer for the lazily registered exactly-once hook (none while unguarded). */
   private hookDisposer: (() => void) | undefined
   private readonly _rpcUrl: string
@@ -277,9 +277,9 @@ export class SynapseRuntime {
       } catch {
         return { kind: 'unknown' }
       }
-      const known = this.uploads.get(createHash('sha256').update(data).digest('hex'))
-      if (known === undefined) return { kind: 'unknown' }
-      return await this.checkPinned(known.cid)
+      const cid = this.uploads.get(createHash('sha256').update(data).digest('hex'))
+      if (cid === undefined) return { kind: 'unknown' }
+      return await this.checkPinned(cid)
     }
     return { kind: 'unknown' }
   }
@@ -310,14 +310,14 @@ export class SynapseRuntime {
    * @param signal - abort signal bounding the request.
    * @returns the content identifier.
    */
-  async store(data: Uint8Array, _signal?: AbortSignal, onProgress?: (event: unknown) => void): Promise<{ cid: Cid; pieceCid?: string | undefined }> {
+  async store(data: Uint8Array, _signal?: AbortSignal, onProgress?: (event: unknown) => void): Promise<{ cid: Cid }> {
     this.hook()
     const sha = createHash('sha256').update(data).digest('hex')
     const known = this.uploads.get(sha)
-    if (known !== undefined) return known
+    if (known !== undefined) return { cid: known }
     const be = await this.ensureBackend()
     const stored = await be.store(data, { signal: _signal, onProgress })
-    this.uploads.set(sha, stored)
+    this.uploads.set(sha, stored.cid)
     return stored
   }
 
@@ -372,7 +372,6 @@ const PIN_STATUS_SCHEMA = {
     expiresAt: { type: 'number', required: true, description: '0 = permanent, -1 = not pinned.' },
     redundancy: { type: 'number', required: true, description: 'Replica count; 0 = not pinned.' },
     pieceCid: { type: 'string', description: 'CommP piece CID carrying the root (present when the ledger maps it).' },
-    receiptPath: { type: 'string', description: 'Pin receipt file written by this upload — pass it as pinReceiptPath when cataloging; never copy a CID by hand.' },
   },
 } as const
 
@@ -380,28 +379,7 @@ const PIN_STATUS_SCHEMA = {
 function renderStatus(value: PinStatus): { type: 'text'; text: string }[] {
   const health = value.redundancy > 0 ? 'pinned' : 'not pinned'
   const piece = value.pieceCid !== undefined && value.pieceCid !== '' ? `, piece ${value.pieceCid}` : ''
-  const receipt = value.receiptPath !== undefined && value.receiptPath !== '' ? `, receipt ${value.receiptPath}` : ''
-  return [{ type: 'text', text: `${value.cid}: ${health} (provider ${value.provider}${piece}${receipt})` }]
-}
-
-/**
- * Write the pin receipt next to an uploaded file (atomic tmp + rename,
- * 0600). The receipt is the ONLY locator handoff to catalog writers: they
- * pass its path and the writer injects cid/pieceCid by machine.
- */
-async function writePinReceipt(receiptPath: string, status: PinStatus): Promise<string> {
-  const body = JSON.stringify({
-    version: 1,
-    kind: 'haven.pin-receipt',
-    cid: status.cid,
-    pieceCid: status.pieceCid,
-    provider: status.provider,
-    redundancy: status.redundancy,
-  }, null, 2)
-  const tmp = `${receiptPath}.tmp-${process.pid}`
-  await writeFile(tmp, body, { mode: 0o600 })
-  await rename(tmp, receiptPath)
-  return receiptPath
+  return [{ type: 'text', text: `${value.cid}: ${health} (provider ${value.provider}${piece})` }]
 }
 
 /**
@@ -428,16 +406,14 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'synapse_pin',
     description: 'Persist content on the Synapse storage node and pin it. '
-      + 'Give a local file path to upload and pin it (returns the new CID plus a pin receipt at <path>.pin.json — '
-      + 'pass that receipt path as pinReceiptPath when cataloging; never copy a CID by hand), or an existing CID to pin/renew it. '
+      + 'Give a local file path to upload and pin it (returns the new CID), or an existing CID to pin/renew it. '
       + 'Use this when a file or artifact must outlive this session.',
     parameters: {
       path: { type: 'string', description: 'Local file to upload and pin. Exactly one of path or cid.' },
       cid: { type: 'string', description: 'Existing content identifier to pin or renew. Exactly one of path or cid.' },
-      receiptPath: { type: 'string', description: 'With cid: also write the pin receipt to this path (path uploads always write <path>.pin.json).' },
     },
     output: { schema: PIN_STATUS_SCHEMA, render: (_args, value) => renderStatus(value) },
-    async execute(args: { path?: string; cid?: string; receiptPath?: string }, exec): Promise<PinStatus> {
+    async execute(args: { path?: string; cid?: string }, exec): Promise<PinStatus> {
       console.log(`[synapse_pin] called path=${args.path ?? ''} cid=${args.cid ?? ''}`)
       if ((args.path === undefined) === (args.cid === undefined)) {
         throw new Error('provide exactly one of path or cid')
@@ -449,22 +425,13 @@ export function apply(ctx: Context, config: Config): void {
         try { (synapse as any).ctx?.emit?.('synapse/progress', event as any); } catch {}
       }
       try {
-        const stored = args.path !== undefined
-          ? await synapse.store(await readFile(args.path), signal, onProgress)
-          : undefined
-        const cid = stored !== undefined ? stored.cid : args.cid as Cid
+        const cid = args.path !== undefined
+          ? (await synapse.store(await readFile(args.path), signal, onProgress)).cid
+          : args.cid as Cid
         console.log(`[synapse_pin] store done cid=${cid}, pinning...`)
-        const pinned = await synapse.pin(cid, signal)
-        const pieceCid = stored?.pieceCid ?? pinned.pieceCid
-        if (pieceCid === undefined || pieceCid === '') {
-          throw new Error(`synapse_pin: pin committed for ${cid} but no PieceCID was recorded — refusing to hand off an unverifiable locator; check synapse_pin_status before cataloging`)
-        }
-        const st: PinStatus = { ...pinned, pieceCid }
-        const receiptTarget = args.path !== undefined ? `${args.path}.pin.json` : args.receiptPath
-        const receiptPath = receiptTarget !== undefined ? await writePinReceipt(receiptTarget, st) : undefined
-        const out: PinStatus = receiptPath !== undefined ? { ...st, receiptPath } : st
-        console.log(`[synapse_pin] done ${JSON.stringify(out)}`)
-        return out
+        const st = await synapse.pin(cid, signal)
+        console.log(`[synapse_pin] done ${JSON.stringify(st)}`)
+        return st
       } catch (e: any) {
         console.log(`[synapse_pin] error ${e?.message ?? e} ${e?.stack?.slice(0,600) ?? ''}`)
         throw e

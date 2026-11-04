@@ -71,18 +71,15 @@ applies to that release only.
    signing, never silently stored): payload carries `fcid`/`piece`
    (Filecoin locator, exactly one — `piece` + `gate` when gated,
    `fcid` with no `gate` key when free), `gate` (gate-metadata
-   JSON, gated only), `vlm` (analysis CID when present). Locators
-   never transit your context: `synapse_pin` writes a pin receipt
-   (`<file>.pin.json`) beside every upload — pass its path as
-   `pinReceiptPath` and omit `piece`/`fcid` from the payload; the
-   writer injects the locator from the receipt by machine. Never
-   copy a CID by hand into a payload, a file, or an announcement
-   draft of the record — a shortened CommP still looks valid and
-   catalogs bytes no player can fetch (players fetch playback
-   bytes by CommP, never the UnixFS root). A locator record
-   without its receipt is rejected before signing; fix the
-   handoff (re-pin by path if the receipt is gone), never the
-   record by typing the CID. Attributes carry `grp`
+   JSON, gated only), `vlm` (analysis CID when present); on gated
+   records `piece` is the complete CommP piece CID (`bafk…`)
+   from the `synapse_pin` result, copied exactly — never the
+   UnixFS root (players fetch playback bytes by CommP). The
+   writer parse-validates every locator before signing: a
+   shortened or mistyped CID is rejected, never silently stored.
+   On a locator rejection, re-check `synapse_pin_status` for the
+   exact CID and resubmit — never guess, complete, or repair a
+   CID from memory. Attributes carry `grp`
    (`haven.video.full` for video, `haven.audio.full` for audio,
    or the generic-file / drip group),
    `title`, the gate corpus when gated (`gate_type` = the gate
