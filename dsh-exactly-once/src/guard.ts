@@ -51,6 +51,34 @@ interface SessionLike {
   snapshotEvents(): readonly unknown[]
 }
 
+/** Monotonic sequence number carried by one durable session event. */
+function eventSeq(event: unknown): number | null {
+  if (event === null || typeof event !== 'object') return null
+  const seq = (event as { seq?: unknown }).seq
+  return typeof seq === 'number' && Number.isFinite(seq) ? seq : null
+}
+
+/** Derived, mutable idempotency evidence for one session. */
+interface ColdState {
+  /** Call identities seen so far, keyed by session-local callId. */
+  readonly calls: Map<string, { name: string; argsKey: string }>
+  /** Last observed outcome per (agent, tool, canonical args). */
+  readonly lastByIdentity: Map<string, LastOutcome>
+  /** Last durable event sequence fully folded, or null when seq is unavailable. */
+  cursorSeq: number | null
+  /** Number of durable events folded so far (fallback when seq is unavailable). */
+  processedCount: number
+  /** Agent scope the index was built for. */
+  agentPart: string
+  /** Whether the index has been initialized. */
+  built: boolean
+}
+
+/** Per-session cold state. Folds are synchronous and therefore atomic in JS. */
+interface ColdEntry {
+  state: ColdState
+}
+
 /** Options for {@link ExactlyOnceRuntime}. */
 export interface GuardOptions {
   /** Compiled `*`-wildcard patterns selecting the guarded write tools. */
@@ -70,11 +98,6 @@ interface OutcomeEntry extends LastOutcome {
   readonly name: string
 }
 
-interface ColdIndex {
-  readonly seq: number | undefined
-  readonly lastByIdentity: ReadonlyMap<string, LastOutcome>
-}
-
 /** Lossless clone through JSON (results are lossless-JSON by contract). */
 function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
@@ -90,7 +113,7 @@ export class ExactlyOnceRuntime {
   private readonly settled = new Map<string, SettledEntry>()
   private readonly outcomes = new Map<string, OutcomeEntry>()
   private readonly agentIds = new WeakMap<object, string>()
-  private readonly cold = new WeakMap<object, ColdIndex>()
+  private readonly cold = new WeakMap<object, ColdEntry>()
   private agentSeq = 0
   private attempts = 0
 
@@ -245,21 +268,107 @@ export class ExactlyOnceRuntime {
   }
 
   /**
-   * Rebuild the cold index from one agent's session events, memoized by
-   * session seq so the steady state costs one WeakMap lookup. Sessions
-   * without a seq (never in production) rescan every call.
+   * Fold durable session events into cold repeat evidence incrementally.
+   *
+   * The session event log is the source of truth. The cold index is only a
+   * derived cache, so it is initialized once and then extended with events
+   * appended after its cursor. A full rebuild happens on first access, after
+   * a restart (empty cache), on cache eviction, or when the cursor no longer
+   * aligns with the append-only event log.
    */
-  private scanSession(exec: ToolDispatchExecution): ColdIndex | undefined {
+  private scanSession(exec: ToolDispatchExecution): ColdState | undefined {
     const holder = exec.agent as unknown as { session?: unknown } | undefined
     const session = holder?.session as SessionLike | undefined
     if (session === null || session === undefined || typeof session.snapshotEvents !== 'function') return undefined
     const sessionObj = session as unknown as object
-    const seq = typeof session.seq === 'number' ? session.seq : undefined
-    const cached = this.cold.get(sessionObj)
-    if (cached !== undefined && seq !== undefined && cached.seq === seq) return cached
-    const index: ColdIndex = { ...buildColdIndex(session.snapshotEvents(), this.agentPart(exec.agent)), seq }
-    this.cold.set(sessionObj, index)
-    return index
+    const entry = this.ensureColdEntry(sessionObj)
+    const agentPart = this.agentPart(exec.agent)
+    const events = session.snapshotEvents()
+    const state = entry.state
+
+    // A different agent scope means the identity keys would change; rebuild.
+    if (state.built && state.agentPart !== '' && state.agentPart !== agentPart) {
+      this.resetColdState(state)
+    }
+
+    // Validate the append-only cursor. Any mismatch or shrinkage forces a
+    // full rebuild instead of trusting a stale or misaligned index.
+    if (state.built) {
+      const prefixAligned =
+        state.processedCount <= events.length &&
+        (state.cursorSeq === null ||
+          events.slice(0, state.processedCount).every(event => {
+            const seq = eventSeq(event)
+            return seq === null || seq <= state.cursorSeq!
+          }))
+      if (!prefixAligned) this.resetColdState(state)
+    }
+
+    let toProcess: readonly unknown[]
+    if (!state.built) {
+      toProcess = events
+      this.resetColdState(state)
+    } else if (state.cursorSeq !== null) {
+      toProcess = events.filter(event => {
+        const seq = eventSeq(event)
+        return seq !== null && seq > state.cursorSeq!
+      })
+    } else {
+      toProcess = events.slice(state.processedCount)
+    }
+
+    // Fold only the unprocessed suffix. Preserve input order unless every
+    // new event carries a sequence number, in which case fold in seq order.
+    const allHaveSeq = toProcess.length > 0 && toProcess.every(event => eventSeq(event) !== null)
+    const ordered = allHaveSeq
+      ? [...toProcess].sort((a, b) => eventSeq(a)! - eventSeq(b)!)
+      : [...toProcess]
+    if (ordered.length > 0) {
+      state.agentPart = agentPart
+      foldColdEvents(ordered, state)
+    } else if (state.agentPart === '') {
+      state.agentPart = agentPart
+    }
+
+    state.processedCount = events.length
+    if (ordered.length > 0) {
+      const lastSeq = eventSeq(ordered[ordered.length - 1])
+      if (lastSeq !== null) state.cursorSeq = lastSeq
+    } else if (events.length > 0) {
+      const lastSeq = eventSeq(events[events.length - 1])
+      if (lastSeq !== null && (state.cursorSeq === null || lastSeq > state.cursorSeq)) {
+        state.cursorSeq = lastSeq
+      }
+    }
+    state.built = true
+    return entry.state
+  }
+
+  private ensureColdEntry(sessionObj: object): ColdEntry {
+    let entry = this.cold.get(sessionObj)
+    if (entry === undefined) {
+      entry = {
+        state: {
+          calls: new Map(),
+          lastByIdentity: new Map(),
+          cursorSeq: null,
+          processedCount: 0,
+          agentPart: '',
+          built: false,
+        },
+      }
+      this.cold.set(sessionObj, entry)
+    }
+    return entry
+  }
+
+  private resetColdState(state: ColdState): void {
+    state.calls.clear()
+    state.lastByIdentity.clear()
+    state.cursorSeq = null
+    state.processedCount = 0
+    state.agentPart = ''
+    state.built = false
   }
 }
 
@@ -268,10 +377,11 @@ export class ExactlyOnceRuntime {
  * retry identity. Result identity reads `toolCallId` (falling back to
  * `source.callId`, the repair-closer path) — the loop never stores a bare
  * `message.callId`.
+ *
+ * Synthetic repair results (`TOOL_NOT_STARTED`, `TOOL_OUTCOME_UNKNOWN`) are
+ * folded like any other `tool/result`, preserving the existing behavior.
  */
-function buildColdIndex(events: readonly unknown[], agentPart: string): Omit<ColdIndex, 'seq'> {
-  const calls = new Map<string, { name: string; argsKey: string }>()
-  const lastByIdentity = new Map<string, LastOutcome>()
+function foldColdEvents(events: readonly unknown[], state: ColdState): void {
   for (const event of events) {
     if (event === null || typeof event !== 'object') continue
     const record = event as { type?: unknown; data?: unknown }
@@ -279,29 +389,35 @@ function buildColdIndex(events: readonly unknown[], agentPart: string): Omit<Col
     const data = record.data as Record<string, unknown>
     if (record.type === 'tool/call') {
       if (typeof data['callId'] === 'string' && typeof data['name'] === 'string') {
-        calls.set(data['callId'], { name: data['name'], argsKey: canonicalize(data['arguments']) })
+        state.calls.set(data['callId'], {
+          name: data['name'],
+          argsKey: canonicalize(data['arguments']),
+        })
       }
     } else if (record.type === 'tool/result') {
       const message = data['message']
       if (message === null || typeof message !== 'object') continue
       const result = message as Record<string, unknown>
       const source = result['source']
-      const sourceCallId = source !== null && typeof source === 'object'
-        ? (source as Record<string, unknown>)['callId']
-        : undefined
-      const callId = typeof result['toolCallId'] === 'string'
-        ? result['toolCallId']
-        : typeof sourceCallId === 'string' ? sourceCallId : undefined
+      const sourceCallId =
+        source !== null && typeof source === 'object'
+          ? (source as Record<string, unknown>)['callId']
+          : undefined
+      const callId =
+        typeof result['toolCallId'] === 'string'
+          ? result['toolCallId']
+          : typeof sourceCallId === 'string'
+            ? sourceCallId
+            : undefined
       if (callId === undefined) continue
-      const call = calls.get(callId)
+      const call = state.calls.get(callId)
       if (call === undefined) continue
       const info = data['error'] as { code?: unknown } | null
-      lastByIdentity.set(`${agentPart}|${call.name}|${call.argsKey}`, {
+      state.lastByIdentity.set(`${state.agentPart}|${call.name}|${call.argsKey}`, {
         isError: result['isError'] === true,
         code: typeof info?.code === 'string' ? info.code : undefined,
         at: 0,
       })
     }
   }
-  return { lastByIdentity }
 }
