@@ -44,9 +44,9 @@
   "dependencies": {
     "@deepseek-ai/schemastery": "~3.19.0",
     "@arkiv-network/sdk": "=1.0.1",
-    "@filoz/synapse-core": "=0.11.0",
+    "@filoz/synapse-core": "=0.11.1",
     "multiformats": "=14.0.5",
-    "viem": "=2.56.9"
+    "viem": "=2.58.6"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.1.0",

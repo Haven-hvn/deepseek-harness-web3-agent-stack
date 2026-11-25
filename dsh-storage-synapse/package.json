@@ -40,11 +40,11 @@
   "dependencies": {
     "@deepseek-ai/schemastery": "~3.19.0",
     "filecoin-pin": "=2.1.1",
-    "@filoz/synapse-sdk": "=2.0.2",
-    "@filoz/synapse-core": "=0.11.0",
+    "@filoz/synapse-sdk": "=3.0.1",
+    "@filoz/synapse-core": "=0.11.1",
     "ethers": "=6.17.0",
     "multiformats": "=14.0.5",
-    "viem": "=2.56.9"
+    "viem": "=2.58.6"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.1.0",
