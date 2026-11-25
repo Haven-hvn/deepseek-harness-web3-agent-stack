@@ -148,7 +148,7 @@ describe('agent docs', () => {
   it('protocol anchors: three versions, derivation, math, errors', () => {
     const protocol = loadAgentDoc('reference/aol-protocol.md')
     for (const anchor of [
-      'gny6k-fqaaa-aaaab-ag3ra-cai',
+      '3gzy3-kaaaa-aaaan-q6y6q-cai',
       'accessol_v1',
       'accessol_v3',
       'accessol_v4',

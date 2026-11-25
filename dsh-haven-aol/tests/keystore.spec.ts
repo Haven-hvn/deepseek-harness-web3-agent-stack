@@ -50,7 +50,7 @@ async function dpkFixture(version: 1 | 3 | 4): Promise<Uint8Array> {
   const { MasterPublicKey } = await import('@icp-sdk/vetkeys')
   const { Principal } = await import('@icp-sdk/core/principal')
   const master = MasterPublicKey.productionKey()
-  const canister = Principal.fromText('gny6k-fqaaa-aaaab-ag3ra-cai').toUint8Array()
+  const canister = Principal.fromText('3gzy3-kaaaa-aaaan-q6y6q-cai').toUint8Array()
   return master.deriveCanisterKey(canister).deriveSubKey(new TextEncoder().encode(`accessol_v${version}`)).publicKeyBytes()
 }
 
@@ -64,7 +64,7 @@ function stubDpk(count: { calls: number }) {
 
 function runtime(keyStorePath?: string) {
   return new AolRuntime({
-    canisterId: 'gny6k-fqaaa-aaaab-ag3ra-cai',
+    canisterId: '3gzy3-kaaaa-aaaan-q6y6q-cai',
     icpHost: 'https://icp-api.io',
     fetchRootKey: false,
     ...(keyStorePath !== undefined ? { keyStorePath } : {}),
@@ -153,7 +153,7 @@ describe('vetKey persistence', () => {
       throw new Error('must not be called on a store hit')
     }) as never
     const rt2 = new AolRuntime({
-      canisterId: 'gny6k-fqaaa-aaaab-ag3ra-cai',
+      canisterId: '3gzy3-kaaaa-aaaan-q6y6q-cai',
       icpHost: 'https://icp-api.io',
       fetchRootKey: false,
       keyStorePath: path,

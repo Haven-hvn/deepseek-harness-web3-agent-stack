@@ -7,7 +7,7 @@ your memory of it.
 
 ## The shape of the system
 
-Haven-AOL ("Always Online") is an ICP canister (`gny6k-fqaaa-aaaab-ag3ra-cai`,
+Haven-AOL ("Always Online") is an ICP canister (`3gzy3-kaaaa-aaaan-q6y6q-cai`,
 host `https://icp-api.io`) that hands out decryption keys **only when
 on-chain policy is satisfied**. Flow per decrypt: the holder signs an
 EIP-712 gate request with their EVM wallet → the canister verifies the

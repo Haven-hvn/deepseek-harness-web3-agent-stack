@@ -44,7 +44,7 @@ async function harness(wallet: Record<string, unknown>) {
   ;(ctx as any).provide('wallet', wallet)
   await ctx.plugin(havenAol, {
     wallet: 'agent',
-    canisterId: 'gny6k-fqaaa-aaaab-ag3ra-cai',
+    canisterId: '3gzy3-kaaaa-aaaan-q6y6q-cai',
     icpHost: 'https://icp-api.io',
     fetchRootKey: false,
   })
@@ -256,7 +256,7 @@ describe('receipt ledger', () => {
 
   function runtime(receiptsPath?: string) {
     return new AolRuntime({
-      canisterId: 'gny6k-fqaaa-aaaab-ag3ra-cai',
+      canisterId: '3gzy3-kaaaa-aaaan-q6y6q-cai',
       icpHost: 'https://icp-api.io',
       fetchRootKey: false,
       signGate: signGateFromTestKey(TEST_KEY),

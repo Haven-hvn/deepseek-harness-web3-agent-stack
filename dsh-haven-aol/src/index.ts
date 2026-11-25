@@ -88,7 +88,7 @@ export interface Config {
 
 export const Config: z<Config> = z.object({
   wallet: z.string().required(),
-  canisterId: z.string().default('gny6k-fqaaa-aaaab-ag3ra-cai'),
+  canisterId: z.string().default('3gzy3-kaaaa-aaaan-q6y6q-cai'),
   icpHost: z.string().default('https://icp-api.io'),
   fetchRootKey: z.boolean().default(false),
   eip712ChainId: z.number(),
@@ -147,7 +147,7 @@ export function apply(ctx: Context, config: Config): void {
     testSignGate = signGateFromTestKey(testKey)
   }
   const aol = new AolRuntime({
-    canisterId: config.canisterId ?? 'gny6k-fqaaa-aaaab-ag3ra-cai',
+    canisterId: config.canisterId ?? '3gzy3-kaaaa-aaaan-q6y6q-cai',
     icpHost: config.icpHost ?? 'https://icp-api.io',
     fetchRootKey: config.fetchRootKey ?? false,
     ...(config.eip712ChainId !== undefined ? { eip712ChainId: BigInt(config.eip712ChainId) } : {}),
@@ -159,7 +159,7 @@ export function apply(ctx: Context, config: Config): void {
     // vault signDigest (or the TEST-ONLY key above) is available.
   })
   const baseOpts = {
-    canisterId: config.canisterId ?? 'gny6k-fqaaa-aaaab-ag3ra-cai',
+    canisterId: config.canisterId ?? '3gzy3-kaaaa-aaaan-q6y6q-cai',
     icpHost: config.icpHost ?? 'https://icp-api.io',
     fetchRootKey: config.fetchRootKey ?? false,
     ...(config.eip712ChainId !== undefined ? { eip712ChainId: BigInt(config.eip712ChainId) } : {}),

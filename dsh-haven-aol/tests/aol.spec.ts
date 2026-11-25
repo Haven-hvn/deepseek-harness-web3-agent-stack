@@ -57,7 +57,7 @@ async function harness() {
   })
   await ctx.plugin(havenAol, {
     wallet: 'agent',
-    canisterId: 'gny6k-fqaaa-aaaab-ag3ra-cai',
+    canisterId: '3gzy3-kaaaa-aaaan-q6y6q-cai',
     icpHost: 'https://icp-api.io',
     fetchRootKey: false,
   })
@@ -168,7 +168,7 @@ describe('gated decrypt', () => {
     // (spike stand-in: 65-byte canned signature).
     const { AolRuntime } = await import('../src/aol.ts')
     const rt = new AolRuntime({
-      canisterId: 'gny6k-fqaaa-aaaab-ag3ra-cai',
+      canisterId: '3gzy3-kaaaa-aaaan-q6y6q-cai',
       icpHost: 'https://icp-api.io',
       fetchRootKey: false,
       signGate: async () => ('0x' + 'ab'.repeat(65)) as `0x${string}`,
@@ -193,7 +193,7 @@ describe('gated decrypt', () => {
     }) as never
     const { AolRuntime } = await import('../src/aol.ts')
     const rt = new AolRuntime({
-      canisterId: 'gny6k-fqaaa-aaaab-ag3ra-cai',
+      canisterId: '3gzy3-kaaaa-aaaan-q6y6q-cai',
       icpHost: 'https://icp-api.io',
       fetchRootKey: false,
       signGate: async () => ('0x' + 'ab'.repeat(65)) as `0x${string}`,
@@ -220,7 +220,7 @@ describe('gated decrypt', () => {
     })) as never
     const { AolRuntime } = await import('../src/aol.ts')
     const rt = new AolRuntime({
-      canisterId: 'gny6k-fqaaa-aaaab-ag3ra-cai',
+      canisterId: '3gzy3-kaaaa-aaaan-q6y6q-cai',
       icpHost: 'https://icp-api.io',
       fetchRootKey: false,
       signGate: async () => ('0x' + 'ab'.repeat(65)) as `0x${string}`,
@@ -343,7 +343,7 @@ describe('seal (harness-native encrypt side)', () => {
     const { MasterPublicKey } = await import('@icp-sdk/vetkeys')
     const { Principal } = await import('@icp-sdk/core/principal')
     const master = MasterPublicKey.productionKey()
-    const canister = Principal.fromText('gny6k-fqaaa-aaaab-ag3ra-cai').toUint8Array()
+    const canister = Principal.fromText('3gzy3-kaaaa-aaaan-q6y6q-cai').toUint8Array()
     return master.deriveCanisterKey(canister).deriveSubKey(new TextEncoder().encode(`accessol_v${version}`)).publicKeyBytes()
   }
 
@@ -353,7 +353,7 @@ describe('seal (harness-native encrypt side)', () => {
 
   async function sealRuntime() {
     const { AolRuntime } = await import('../src/aol.ts')
-    return new AolRuntime({ canisterId: 'gny6k-fqaaa-aaaab-ag3ra-cai', icpHost: 'https://icp-api.io', fetchRootKey: false })
+    return new AolRuntime({ canisterId: '3gzy3-kaaaa-aaaan-q6y6q-cai', icpHost: 'https://icp-api.io', fetchRootKey: false })
   }
 
   it('seals v1/v3/v4 end to end: sealed bytes + parseable gate metadata', async () => {

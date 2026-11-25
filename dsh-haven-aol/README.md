@@ -1,6 +1,6 @@
 # dsh-haven-aol
 
-Haven-AOL token-gated seal/decrypt/attest for DeepSeek Harness: `ctx.aol` plus six model-facing tools over the `haven-aol` TypeScript SDK and the ICP backend canister (mainnet `gny6k-fqaaa-aaaab-ag3ra-cai`).
+Haven-AOL token-gated seal/decrypt/attest for DeepSeek Harness: `ctx.aol` plus six model-facing tools over the `haven-aol` TypeScript SDK and the ICP backend canister (mainnet `3gzy3-kaaaa-aaaan-q6y6q-cai`).
 
 > TEMP: `haven-aol` is not on npm despite its README claim, so `package.json`
 > uses `file:../../haven-aol/packages/typescript` (requires `npm install` +
@@ -42,7 +42,7 @@ Resolution: skip OWS for the signing wallet — `dsh-wallet-ethereum` with `prov
 - id: haven-aol
   config:
     wallet: agent
-    canisterId: gny6k-fqaaa-aaaab-ag3ra-cai
+    canisterId: 3gzy3-kaaaa-aaaan-q6y6q-cai
     icpHost: https://icp-api.io
     fetchRootKey: false
 ```
@@ -55,7 +55,7 @@ Without a wired `signDigest` (default OWS path), the `signGate` seam stays **uns
 - id: haven-aol
   config:
     wallet: agent
-    canisterId: gny6k-fqaaa-aaaab-ag3ra-cai
+    canisterId: 3gzy3-kaaaa-aaaan-q6y6q-cai
     icpHost: https://icp-api.io
     fetchRootKey: false   # local replica only — never mainnet
     keyStorePath: /data/haven-aol/keys.json  # optional; unset = memory-only
