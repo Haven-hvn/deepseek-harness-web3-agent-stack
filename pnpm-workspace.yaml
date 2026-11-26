@@ -16,3 +16,4 @@ packages:
   - dsh-exactly-once
   - dsh-agent-herald
   - '!dsh-treasury'
+  - "!dsh-storage-synapse"
