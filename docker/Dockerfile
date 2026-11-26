@@ -74,7 +74,6 @@ COPY dsh-wallet-ethereum/ /opt/stack/dsh-wallet-ethereum/
 COPY dsh-wallet-tools/ /opt/stack/dsh-wallet-tools/
 COPY dsh-haven-aol/ /opt/stack/dsh-haven-aol/
 COPY dsh-persona/ /opt/stack/dsh-persona/
-COPY dsh-tool-prowlarr/ /opt/stack/dsh-tool-prowlarr/
 COPY dsh-observatory/ /opt/stack/dsh-observatory/
 COPY dsh-agent-herald/ /opt/stack/dsh-agent-herald/
 
@@ -127,7 +126,7 @@ RUN dsh plugin --profile agent add \
       \
       \
       /opt/stack/dsh-haven-aol \
-      /opt/stack/dsh-persona /opt/stack/dsh-tool-prowlarr \
+      /opt/stack/dsh-persona \
       /opt/stack/dsh-observatory \
       /opt/stack/dsh-agent-herald \
     && dsh plugin --profile agent add @xmtp/node-sdk \
