@@ -114,9 +114,10 @@ jobs:
 
       - name: Smoke-test MausBot all-in-one container
         env:
-          IMAGE: ${{ env.DOCKERHUB_USER }}/dsh-haven-mausbot:sha-${GITHUB_SHA::7}
+          REPO: ${{ env.DOCKERHUB_USER }}/dsh-haven-mausbot
         run: |
           set -euo pipefail
+          IMAGE="$REPO:sha-${GITHUB_SHA::7}"
           cleanup() {
             docker logs smoke 2>&1 | tail -n 80 || true
             docker rm -f smoke >/dev/null 2>&1 || true

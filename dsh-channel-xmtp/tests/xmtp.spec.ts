@@ -701,9 +701,9 @@ describe('exactly-once across restarts', () => {
       await restart()
       channel.cursors.set('conv-1', -1) // cursor predates everything this process observed
       channel.scheduleFlush('conv-1')
+      await vi.waitFor(() => { expect(channel.cursors.get('conv-1')).toBeGreaterThan(-1) }) // jumped to the live edge
       await settle()
       expect(conversation.sent).toEqual(['agent reply'])
-      expect(channel.cursors.get('conv-1')).toBeGreaterThan(-1) // jumped to the live edge
     } finally {
       await tmp.cleanup()
     }
