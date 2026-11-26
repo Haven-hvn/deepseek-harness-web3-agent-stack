@@ -94,30 +94,24 @@ jobs:
           echo "$pass" | docker login -u "$user" --password-stdin
           echo "DOCKERHUB_USER=$user" >> "$GITHUB_ENV"
 
-      - name: Build MausBot all-in-one image
+      - name: Build amd64 MausBot image
         env:
           REPO: ${{ env.DOCKERHUB_USER }}/dsh-haven-mausbot
         run: |
           set -euo pipefail
-          tags=( "$REPO:sha-${GITHUB_SHA::7}" )
-          if [ "$GITHUB_REF" = "refs/heads/main" ]; then
-            tags+=( "$REPO:latest" )
-          fi
-          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
-            tags+=( "$REPO:$GITHUB_REF_NAME" )
-          fi
-          args=( -f docker/Dockerfile.mausbot --load )
-          for tag in "${tags[@]}"; do
-            args+=( -t "$tag" )
-          done
-          docker buildx build "${args[@]}" .
+          # Native x86 build: fast, and identical to what x86 users get today.
+          # Pushed as a per-arch tag; the public tags are assembled from both
+          # per-arch images at the end of the job.
+          docker buildx build --platform linux/amd64 \
+            -f docker/Dockerfile.mausbot --load \
+            -t "$REPO:sha-${GITHUB_SHA::7}-amd64" .
 
-      - name: Smoke-test MausBot all-in-one container
+      - name: Smoke-test amd64 MausBot container
         env:
           REPO: ${{ env.DOCKERHUB_USER }}/dsh-haven-mausbot
         run: |
           set -euo pipefail
-          IMAGE="$REPO:sha-${GITHUB_SHA::7}"
+          IMAGE="$REPO:sha-${GITHUB_SHA::7}-amd64"
           cleanup() {
             docker logs smoke 2>&1 | tail -n 80 || true
             docker rm -f smoke >/dev/null 2>&1 || true
@@ -223,19 +217,110 @@ jobs:
             });
           '
 
-      - name: Push MausBot all-in-one image
+      - name: Push amd64 MausBot image
         env:
           REPO: ${{ env.DOCKERHUB_USER }}/dsh-haven-mausbot
         run: |
           set -euo pipefail
-          docker push "$REPO:sha-${GITHUB_SHA::7}"
+          docker push "$REPO:sha-${GITHUB_SHA::7}-amd64"
+
+      # No marketplace actions are available in this org, so QEMU is installed
+      # from the plain tonistiigi/binfmt image. It only affects this x86 CI
+      # runner: the published arm64 image runs natively on an arm64 host.
+      - name: Enable arm64 emulation
+        run: docker run --privileged --rm tonistiigi/binfmt --install arm64
+
+      - name: Build arm64 MausBot image
+        env:
+          REPO: ${{ env.DOCKERHUB_USER }}/dsh-haven-mausbot
+        run: |
+          set -euo pipefail
+          docker buildx build --platform linux/arm64 \
+            -f docker/Dockerfile.mausbot --load \
+            -t "$REPO:sha-${GITHUB_SHA::7}-arm64" .
+
+      - name: Smoke-test arm64 MausBot container
+        env:
+          REPO: ${{ env.DOCKERHUB_USER }}/dsh-haven-mausbot
+        run: |
+          set -euo pipefail
+          IMAGE="$REPO:sha-${GITHUB_SHA::7}-arm64"
+          cleanup() {
+            docker logs smoke-arm64 2>&1 | tail -n 60 || true
+            docker rm -f smoke-arm64 >/dev/null 2>&1 || true
+            docker volume rm -f smoke-arm64-data >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker volume create smoke-arm64-data >/dev/null
+          docker run -d --name smoke-arm64 --shm-size=512m \
+            -v smoke-arm64-data:/data \
+            -e ACCEPT_HOT_WALLET_RISK=yes \
+            -e MODEL_BASE_URL=https://example.invalid/v1 \
+            -e MODEL_ID=test-model \
+            -e MODEL_API_KEY=dummy-key \
+            "$IMAGE"
+
+          # Emulated arm64 boots more slowly; allow longer for each service.
+          ready=0
+          for _ in $(seq 1 120); do
+            if docker exec smoke-arm64 curl -sf http://127.0.0.1:8799/api/health | grep -q openmausbot; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          test "$ready" = "1"
+
+          docker exec smoke-arm64 curl -sf http://127.0.0.1:8787/health | grep -q status
+          prowlarr_ok=0
+          for _ in $(seq 1 60); do
+            if docker exec smoke-arm64 curl -sf http://127.0.0.1:9696/ping >/dev/null; then
+              prowlarr_ok=1
+              break
+            fi
+            sleep 2
+          done
+          test "$prowlarr_ok" = "1"
+          qbit_ok=0
+          for _ in $(seq 1 45); do
+            if docker exec smoke-arm64 curl -sf http://127.0.0.1:8080/api/v2/app/version >/dev/null; then
+              qbit_ok=1
+              break
+            fi
+            sleep 2
+          done
+          test "$qbit_ok" = "1"
+
+          # Catches a wrong-arch native addon even when the JS layer starts.
+          ver=$(docker exec -u maus smoke-arm64 /opt/agent/dsh-acp-wrapper.sh --version)
+          echo "arm64 dsh-acp-wrapper --version: $ver"
+          echo "$ver" | grep -qE '^0\.2\.2-rc\.5'
+
+      - name: Push arm64 MausBot image
+        env:
+          REPO: ${{ env.DOCKERHUB_USER }}/dsh-haven-mausbot
+        run: |
+          set -euo pipefail
+          docker push "$REPO:sha-${GITHUB_SHA::7}-arm64"
+
+      - name: Publish multi-arch MausBot tags
+        env:
+          REPO: ${{ env.DOCKERHUB_USER }}/dsh-haven-mausbot
+        run: |
+          set -euo pipefail
+          SHA_TAG="$REPO:sha-${GITHUB_SHA::7}"
+          AMD64="$REPO:sha-${GITHUB_SHA::7}-amd64"
+          ARM64="$REPO:sha-${GITHUB_SHA::7}-arm64"
+          # One index under each public tag; pullers get their own platform.
+          docker buildx imagetools create -t "$SHA_TAG" "$AMD64" "$ARM64"
           if [ "$GITHUB_REF" = "refs/heads/main" ]; then
-            docker push "$REPO:latest"
+            docker buildx imagetools create -t "$REPO:latest" "$AMD64" "$ARM64"
           fi
           if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
-            docker push "$REPO:$GITHUB_REF_NAME"
+            docker buildx imagetools create -t "$REPO:$GITHUB_REF_NAME" "$AMD64" "$ARM64"
           fi
-          docker buildx imagetools inspect "$REPO:sha-${GITHUB_SHA::7}"
+          docker buildx imagetools inspect "$SHA_TAG"
 
       - name: Sync Docker Hub description and Overview
         if: github.ref == 'refs/heads/main'
