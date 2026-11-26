@@ -1095,7 +1095,7 @@ describe('error turns (model/provider failures must not vanish silently)', () =>
     try {
       for (const replyMode of ['turn', 'message'] as const) {
         log.mockClear()
-        const { ctx, world, llm, conversation, outbounds, agent } = await harness({ replyMode })
+        const { world, llm, conversation, outbounds, agent } = await harness({ replyMode })
         try {
           llm.script.push(
             { error: { code: 'MALFORMED_RESPONSE', message: 'invalid tool call JSON' } },
@@ -1118,7 +1118,7 @@ describe('error turns (model/provider failures must not vanish silently)', () =>
             expect(conversation.sent).toEqual([channelXmtp.DEFAULT_TURN_ERROR_MESSAGE, 'recovered reply'])
           })
         } finally {
-          await ctx.stop()
+          await runtime()?.stop()
         }
       }
     } finally {
