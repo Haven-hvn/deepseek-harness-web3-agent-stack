@@ -1,4 +1,15 @@
-# All-in-one agent container
+# All-in-one agent containers
+
+Two Docker Hub images are built from this directory:
+
+| Docker Hub Image | Communication Surface | Torrent Clients | Best For |
+|---|---|---|---|
+| [`havencto/dsh-haven-web3-agent:latest`](https://hub.docker.com/r/havencto/dsh-haven-web3-agent) (`docker/Dockerfile`) | Convos / XMTP (QR invite) + Observatory (`:8787`) | qBittorrent + Transmission | Lightweight headless autonomous agent |
+| [`havencto/dsh-haven-mausbot:latest`](https://hub.docker.com/r/havencto/dsh-haven-mausbot) (`docker/Dockerfile.mausbot`) | OpenMausBot Web / Desktop / Mobile GUI (`:8799`) + Observatory (`:8787`) | qBittorrent only | Single-container GUI all-in-one (`wslc`, Docker, Podman — no compose) |
+
+---
+
+## Headless XMTP/Convos image (`havencto/dsh-haven-web3-agent`)
 
 Single fat image: dsh CLI + web3 agent stack + Prowlarr, qBittorrent,
 Transmission, ffmpeg, yt-dlp, and the Convos CLI. First boot instantiates
@@ -119,3 +130,74 @@ reads are free).
 `MODEL_API_PROTOCOL` optionally overrides the wire protocol
 (`openai-completions` default; also `openai-responses`,
 `anthropic-messages`).
+
+---
+
+## All-in-one GUI image (`havencto/dsh-haven-mausbot` — OpenMausBot + dsh + Prowlarr + qBittorrent)
+
+Built from `docker/Dockerfile.mausbot` and published as a standalone Docker Hub
+repository: **`havencto/dsh-haven-mausbot:latest`** (full overview in
+`docker/mausbot/README.md`). Bundles the **OpenMausBot Web/Desktop/Mobile GUI**
+on top of the Haven web3 `dsh` stack, Prowlarr, qBittorrent, `yt-dlp`, `ffmpeg`,
+and Observatory in a **single container** — no `docker compose`, no Transmission,
+and no XMTP/Convos (OpenMausBot is the communication surface and sole wallet
+owner; works cleanly on `wslc`, plain `docker run`, or `podman run`).
+
+### Run (single command)
+
+```sh
+docker run -d --name haven-mausbot \
+  --shm-size=512m \
+  -p 8799:8799 \
+  -p 8787:8787 \
+  -v haven-data:/data \
+  -e ACCEPT_HOT_WALLET_RISK=yes \
+  -e MODEL_BASE_URL=https://your-openai-compatible-endpoint/v1 \
+  -e MODEL_ID=your-model-id \
+  -e MODEL_API_KEY=your-key \
+  havencto/dsh-haven-mausbot:latest
+
+docker logs -f haven-mausbot   # prints wallet addresses and OpenMausBot pairing link
+```
+
+Or build locally:
+
+```sh
+docker build -f docker/Dockerfile.mausbot -t dsh-haven-mausbot:latest .
+```
+
+- **OpenMausBot GUI**: open the one-time sign-in link printed in container logs
+  (`http://localhost:8799/pair#code=...`), or mint a fresh code any time with
+  `docker exec haven-mausbot openmausbot pair`.
+- **Observatory dashboard**: `http://127.0.0.1:8787`.
+- **Internal services** (stay container-local, do not `-p` them): Prowlarr
+  (`:9696`) and qBittorrent (`:8080`).
+- **Pre-wired engine**: OpenMausBot's **Haven Web3 (dsh)** engine runs the
+  container's `acp` profile (all 15 web3 plugins, with `acp-stdout-guard.mjs`
+  routing plugin logs to stderr so ACP JSON-RPC stays clean).
+- **Model configuration**:
+  - Pass `MODEL_BASE_URL` + `MODEL_ID` + `MODEL_API_KEY` for any
+    OpenAI-compatible endpoint (`spark/<MODEL_ID>`), **or**
+  - Pass `-e DEEPSEEK_API_KEY=sk-...` (without `MODEL_BASE_URL`) to run against
+    DeepSeek's official API directly, **or**
+  - Omit both and configure keys inside OpenMausBot **Settings → AI → Providers**.
+- **LAN / remote pairing**: pass `-e OMB_PUBLIC_URL=http://<lan-ip>:8799` so
+  printed pairing links and QR codes work from the OpenMausBot desktop/mobile
+  apps on your local network (or Tailscale).
+- **Volume upgrade**: an existing headless `:latest` `/data` volume upgrades in
+  place to `:mausbot` (keeps wallets, downloads, and Prowlarr indexers; adds the
+  `acp` profile and seeds `/data/openmausbot/config.json`).
+
+### MausBot variant layout
+
+| Path | Contents |
+|---|---|
+| `docker/Dockerfile.mausbot` | all-in-one GUI image layered on `ghcr.io/milind-soni/openmausbot:latest` |
+| `docker/mausbot/agent.package.json` | minimal helper deps (`viem` only; no `@xmtp/node-sdk`) |
+| `docker/mausbot/entrypoint.sh` | risk gate → keys (`--no-xmtp`) → `acp` profile → seed OpenMausBot → `supervisord` under `tini` |
+| `docker/mausbot/supervisord.conf` | prowlarr, qbittorrent, setup-indexers, openmausbot, pair-link printer, observatory |
+| `docker/mausbot/profile.acp.patch.yml` | ACP profile user layer (testnet wallets, Prowlarr + qBittorrent-only acquisition, web3 plugins) |
+| `docker/mausbot/dsh-acp-wrapper.sh` | CLI wrapper for OpenMausBot's `deepseekAgent` driver (loads keys, guards stdout only on ACP runs) |
+| `docker/mausbot/acp-stdout-guard.mjs` | routes plugin `console.log` diagnostics to stderr while keeping ACP `process.stdout` pure JSON-RPC |
+| `docker/mausbot/seed-openmausbot.mjs` | idempotent first-boot seeder for `/data/openmausbot/config.json` and `/data/keys/model.env` |
+| `docker/mausbot/mausbot-pair.sh` | prints the initial OpenMausBot sign-in link + QR once `:8799` is healthy |

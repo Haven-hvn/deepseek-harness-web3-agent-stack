@@ -100,9 +100,15 @@ function writePublic(path, data) {
 }
 
 async function main() {
-  const outdir = process.argv[2];
+  const args = process.argv.slice(2);
+  let skipXmtp = false;
+  let outdir;
+  for (const arg of args) {
+    if (arg === '--no-xmtp') skipXmtp = true;
+    else if (!outdir) outdir = arg;
+  }
   if (!outdir) {
-    console.error('usage: node keys.mjs <outdir>');
+    console.error('usage: node keys.mjs [--no-xmtp] <outdir>');
     process.exit(2);
   }
   mkdirSync(outdir, { recursive: true, mode: 0o700 });
@@ -129,15 +135,18 @@ async function main() {
   writePublic(join(outdir, 'icp.principal'), `${principal}\n`);
 
   // ── XMTP inbox id (offline derivation from the EVM address) ───────
-  const { generateInboxId, IdentifierKind } = await import('@xmtp/node-sdk');
-  const inboxId = generateInboxId({ identifier: evmAddress.toLowerCase(), identifierKind: IdentifierKind.Ethereum });
-  if (!/^[0-9a-f]{64}$/.test(inboxId)) throw new Error(`derived invalid inbox id: ${String(inboxId).slice(0, 32)}`);
-  writePublic(join(outdir, 'inbox.id'), `${inboxId}\n`);
+  let inboxId;
+  if (!skipXmtp) {
+    const { generateInboxId, IdentifierKind } = await import('@xmtp/node-sdk');
+    inboxId = generateInboxId({ identifier: evmAddress.toLowerCase(), identifierKind: IdentifierKind.Ethereum });
+    if (!/^[0-9a-f]{64}$/.test(inboxId)) throw new Error(`derived invalid inbox id: ${String(inboxId).slice(0, 32)}`);
+    writePublic(join(outdir, 'inbox.id'), `${inboxId}\n`);
+  }
 
   // Refuse to run twice into a populated dir (never silently rotate keys).
   // (Checked implicitly: callers test existence first; kept documented here.)
 
-  console.log(JSON.stringify({ evmAddress, icpPrincipal: principal, inboxId }));
+  console.log(JSON.stringify(inboxId ? { evmAddress, icpPrincipal: principal, inboxId } : { evmAddress, icpPrincipal: principal }));
 }
 
 const invokedAsMain = process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);

@@ -57,3 +57,192 @@ jobs:
           docker buildx build --push "${args[@]}" .
           # Verify the pushed digest resolves on the registry.
           docker buildx imagetools inspect "$REPO:sha-${GITHUB_SHA::7}"
+
+      - name: Sync Docker Hub description and Overview
+        if: github.ref == 'refs/heads/main'
+        env:
+          DOCKERHUB: ${{ secrets.DOCKERHUB }}
+          REPO: ${{ env.DOCKERHUB_USER }}/dsh-haven-web3-agent
+        run: |
+          python3 docker/sync-dockerhub-overview.py \
+            "$REPO" \
+            "All-in-one headless DeepSeek Harness web3 agent (XMTP/Convos, Prowlarr, qBittorrent, Transmission)" \
+            docker/README.md
+
+  push-mausbot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to Docker Hub
+        env:
+          DOCKERHUB: ${{ secrets.DOCKERHUB }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DOCKERHUB:-}" ]; then
+            echo "DOCKERHUB secret is empty" >&2
+            exit 1
+          fi
+          if printf '%s' "$DOCKERHUB" | grep -q ':'; then
+            user=${DOCKERHUB%%:*}
+            pass=${DOCKERHUB#*:}
+          else
+            user=havencto
+            pass=$DOCKERHUB
+          fi
+          echo "::add-mask::$pass"
+          echo "$pass" | docker login -u "$user" --password-stdin
+          echo "DOCKERHUB_USER=$user" >> "$GITHUB_ENV"
+
+      - name: Build MausBot all-in-one image
+        env:
+          REPO: ${{ env.DOCKERHUB_USER }}/dsh-haven-mausbot
+        run: |
+          set -euo pipefail
+          tags=( "$REPO:sha-${GITHUB_SHA::7}" )
+          if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            tags+=( "$REPO:latest" )
+          fi
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            tags+=( "$REPO:$GITHUB_REF_NAME" )
+          fi
+          args=( -f docker/Dockerfile.mausbot --load )
+          for tag in "${tags[@]}"; do
+            args+=( -t "$tag" )
+          done
+          docker buildx build "${args[@]}" .
+
+      - name: Smoke-test MausBot all-in-one container
+        env:
+          IMAGE: ${{ env.DOCKERHUB_USER }}/dsh-haven-mausbot:sha-${GITHUB_SHA::7}
+        run: |
+          set -euo pipefail
+          cleanup() {
+            docker logs smoke 2>&1 | tail -n 80 || true
+            docker rm -f smoke >/dev/null 2>&1 || true
+            docker volume rm -f smoke-data >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker volume create smoke-data >/dev/null
+          docker run -d --name smoke --shm-size=512m \
+            -v smoke-data:/data \
+            -e ACCEPT_HOT_WALLET_RISK=yes \
+            -e MODEL_BASE_URL=https://example.invalid/v1 \
+            -e MODEL_ID=test-model \
+            -e MODEL_API_KEY=dummy-key \
+            "$IMAGE"
+
+          # Wait for OpenMausBot GUI health endpoint inside the container.
+          ready=0
+          for _ in $(seq 1 60); do
+            if docker exec smoke curl -sf http://127.0.0.1:8799/api/health | grep -q openmausbot; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          test "$ready" = "1"
+
+          # Verify Observatory dashboard, Prowlarr, and qBittorrent (no 403).
+          docker exec smoke curl -sf http://127.0.0.1:8787/health | grep -q status
+          prowlarr_ok=0
+          for _ in $(seq 1 30); do
+            if docker exec smoke curl -sf http://127.0.0.1:9696/ping >/dev/null; then
+              prowlarr_ok=1
+              break
+            fi
+            sleep 2
+          done
+          test "$prowlarr_ok" = "1"
+          qbit_ok=0
+          for _ in $(seq 1 15); do
+            if docker exec smoke curl -sf http://127.0.0.1:8080/api/v2/app/version >/dev/null; then
+              qbit_ok=1
+              break
+            fi
+            sleep 2
+          done
+          test "$qbit_ok" = "1"
+
+          # Verify `openmausbot pair` works from docker exec (root -> maus drop).
+          pair_out=$(docker exec smoke openmausbot pair)
+          echo "$pair_out" | grep -q '/pair#code='
+
+          # Verify wrapper --version probe stays clean on stdout.
+          ver=$(docker exec -u maus smoke /opt/agent/dsh-acp-wrapper.sh --version)
+          echo "dsh-acp-wrapper --version: $ver"
+          echo "$ver" | grep -qE '^0\.2\.2-rc\.5'
+
+          # Verify ACP stdio JSON-RPC initialize + session/new answer cleanly on
+          # stdout with zero stray non-JSON output and advertise `spark/test-model`.
+          docker exec -u maus smoke node -e '
+            const { spawn } = require("node:child_process");
+            const child = spawn("/opt/agent/dsh-acp-wrapper.sh", ["--profile", "acp"], { stdio: ["pipe", "pipe", "pipe"] });
+            let buf = "", stderr = "";
+            const timer = setTimeout(() => { console.error("ACP smoke timeout; stderr:", stderr); process.exit(1); }, 45000);
+            child.stderr.on("data", c => { stderr += c.toString(); });
+            const send = (id, method, params) => child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+            child.stdout.on("data", chunk => {
+              buf += chunk.toString();
+              let nl;
+              while ((nl = buf.indexOf("\n")) >= 0) {
+                const line = buf.slice(0, nl).trim();
+                buf = buf.slice(nl + 1);
+                if (!line) continue;
+                let msg;
+                try { msg = JSON.parse(line); } catch (e) {
+                  console.error("Non-JSON stdout pollution:", line);
+                  process.exit(1);
+                }
+                if (msg.id === 1) {
+                  if (!msg.result) { console.error("initialize failed:", msg); process.exit(1); }
+                  send(2, "session/new", { cwd: "/data", mcpServers: [] });
+                } else if (msg.id === 2) {
+                  if (!msg.result || !msg.result.sessionId) { console.error("session/new failed:", msg); process.exit(1); }
+                  const modelOpt = (msg.result.configOptions || []).find(o => o.id === "model");
+                  console.log("ACP session/new OK; current model:", modelOpt && modelOpt.currentValue);
+                  if (!modelOpt || modelOpt.currentValue !== JSON.stringify(["spark", "test-model"])) {
+                    console.error("Unexpected model configOption:", JSON.stringify(modelOpt));
+                    process.exit(1);
+                  }
+                  send(3, "session/close", { sessionId: msg.result.sessionId });
+                } else if (msg.id === 3) {
+                  clearTimeout(timer);
+                  child.stdin.end();
+                  process.exit(0);
+                }
+              }
+            });
+            child.on("exit", code => { if (code !== 0) { console.error("ACP exited:", code, stderr); process.exit(1); } });
+            send(1, "initialize", {
+              protocolVersion: 1,
+              clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
+              clientInfo: { name: "ci-smoke", version: "1" },
+            });
+          '
+
+      - name: Push MausBot all-in-one image
+        env:
+          REPO: ${{ env.DOCKERHUB_USER }}/dsh-haven-mausbot
+        run: |
+          set -euo pipefail
+          docker push "$REPO:sha-${GITHUB_SHA::7}"
+          if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            docker push "$REPO:latest"
+          fi
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            docker push "$REPO:$GITHUB_REF_NAME"
+          fi
+          docker buildx imagetools inspect "$REPO:sha-${GITHUB_SHA::7}"
+
+      - name: Sync Docker Hub description and Overview
+        if: github.ref == 'refs/heads/main'
+        env:
+          DOCKERHUB: ${{ secrets.DOCKERHUB }}
+          REPO: ${{ env.DOCKERHUB_USER }}/dsh-haven-mausbot
+        run: |
+          python3 docker/sync-dockerhub-overview.py \
+            "$REPO" \
+            "All-in-one DeepSeek Harness web3 agent with OpenMausBot GUI, Prowlarr, qBittorrent & Observatory" \
+            docker/mausbot/README.md

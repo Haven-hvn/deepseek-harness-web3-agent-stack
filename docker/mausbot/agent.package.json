@@ -1,0 +1,10 @@
+{
+  "name": "dsh-mausbot-agent-runtime",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Runtime deps for /opt/agent helpers in the OpenMausBot image (keys.mjs --no-xmtp; no XMTP SDK).",
+  "dependencies": {
+    "viem": "=2.56.9"
+  }
+}
