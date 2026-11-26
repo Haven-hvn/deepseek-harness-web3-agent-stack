@@ -8,7 +8,10 @@
 # plain docker run, podman run) get the entire stack in one pull.
 #
 # All state lives in /data. See docker/README.md for run instructions.
-ARG OMB_IMAGE=ghcr.io/milind-soni/openmausbot:latest
+# Pin the base by digest so an upstream `:latest` move cannot silently change
+# MausBot beneath a released image. Override with --build-arg OMB_IMAGE=... to
+# move to a newer verified MausBot (this digest is 0.1.181, verified 2026-11-25).
+ARG OMB_IMAGE=ghcr.io/milind-soni/openmausbot@sha256:f1af2655d7a13ad8dea146d342e4ec70c638071fb841ab7a1b3039b16df5ecc3
 FROM ${OMB_IMAGE}
 
 USER root
@@ -74,6 +77,7 @@ COPY docker/keys.mjs docker/setup-indexers.mjs \
      docker/mausbot/entrypoint.sh docker/mausbot/supervisord.conf \
      docker/mausbot/profile.acp.patch.yml \
      docker/mausbot/dsh-acp-wrapper.sh docker/mausbot/acp-stdout-guard.mjs \
+     docker/mausbot/no-body-timeout.cjs \
      docker/mausbot/seed-openmausbot.mjs docker/mausbot/mausbot-pair.sh \
      /opt/agent/
 RUN sed -i 's/\r$//' \
@@ -176,6 +180,8 @@ RUN DSH_HOME=/opt/dsh-skel dsh plugin --profile acp add \
     && DSH_HOME=/opt/dsh-skel PROWLARR_API_KEY=dummy \
        dsh --profile acp --patch /opt/agent/profile.acp.patch.yml --dump-config > /dev/null \
     && node --input-type=module -e "await import('/opt/stack/dsh-wallet/lib/index.js'); await import('/opt/stack/dsh-tool-acquisition/lib/index.js'); await import('/opt/stack/dsh-observatory/lib/index.js'); await import('/opt/stack/dsh-exactly-once/lib/index.js'); await import('/opt/stack/dsh-agent-herald/lib/index.js'); await import('/opt/agent/seed-openmausbot.mjs'); await import('/opt/agent/acp-stdout-guard.mjs'); console.log('mausbot stack import gate: OK')" \
+    && node --require /opt/agent/no-body-timeout.cjs \
+       -e "console.log('body-timeout preload gate: OK')" \
     && { dsh --version; \
          sha256sum /opt/dsh-skel/profiles/acp/package.json \
                    /opt/stack/pnpm-lock.yaml; \

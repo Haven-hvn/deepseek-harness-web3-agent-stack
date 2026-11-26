@@ -35,9 +35,44 @@ docker exec haven-mausbot openmausbot pair
 
 ## Model options
 
-- **Any OpenAI-compatible endpoint (default `spark` provider)**: pass `MODEL_BASE_URL`, `MODEL_ID`, and `MODEL_API_KEY` (optional `MODEL_API_PROTOCOL`: `openai-completions`, `openai-responses`, or `anthropic-messages`).
+- **Any OpenAI-compatible endpoint (`spark` provider)**: pass `MODEL_BASE_URL` and `MODEL_ID`. `MODEL_API_KEY` is optional — local servers such as LM Studio need no key and get a harmless placeholder. `MODEL_API_PROTOCOL` defaults to `openai-completions` (`openai-responses` / `anthropic-messages` also accepted).
 - **DeepSeek API directly**: omit `MODEL_BASE_URL` and pass `-e DEEPSEEK_API_KEY=sk-...`.
 - **Configure in GUI**: omit model env vars, boot with `-e ACCEPT_HOT_WALLET_RISK=yes`, and add providers under **Settings → AI → Providers**.
+
+| Env | Meaning | Default |
+|---|---|---|
+| `MODEL_BASE_URL` | OpenAI-compatible base URL (enables `spark`) | unset → native DeepSeek |
+| `MODEL_ID` | Model id served by that endpoint | required with `MODEL_BASE_URL` |
+| `MODEL_API_KEY` | Bearer key; optional for local endpoints | `local-endpoint-no-key` |
+| `MODEL_API_PROTOCOL` | pi-ai API family | `openai-completions` |
+| `MODEL_CONTEXT_WINDOW` | Context window DSH should assume | `131072` |
+| `MODEL_MAX_OUTPUT_TOKENS` | Max completion tokens | `32768` |
+| `MODEL_REASONING_EFFORT` | `none` / `low` / `medium`; enables reasoning verbs | unset (no reasoning options) |
+
+`MODEL_REASONING_EFFORT` maps to Upstage's verbs (`off→none`, `low→low`, `medium→medium`); other endpoints may use different strings, so leave it unset unless you know yours accepts `reasoning_effort`.
+
+### Local endpoints (LM Studio etc.) — read this first
+
+`127.0.0.1` **inside** the container is the container itself, not your host. Use the host's address as seen from the container, and bind LM Studio to `0.0.0.0:1234`:
+
+- **wslc** (verified): `-e MODEL_BASE_URL=http://host.wslc.internal:1234/v1`
+- **Docker on Linux**: add `--add-host host.docker.internal:host-gateway`, then `-e MODEL_BASE_URL=http://host.docker.internal:1234/v1`
+- **podman / Linux**: run with `--network host`, then `-e MODEL_BASE_URL=http://127.0.0.1:1234/v1`
+
+Example (wslc):
+
+```sh
+wslc run -d --name haven-mausbot \
+  -p 8799:8799 -p 8787:8787 -v haven-data:/data \
+  -e ACCEPT_HOT_WALLET_RISK=yes \
+  -e MODEL_BASE_URL=http://host.wslc.internal:1234/v1 \
+  -e MODEL_ID=bonsai27b \
+  havencto/dsh-haven-mausbot:latest
+```
+
+Local-model turns are protected: pi-ai sends neither `store` nor the `developer` role, uses `max_tokens`, has one-hour idle/total provider timeouts, and the agent process preloads a one-hour undici body-timeout override. MausBot's turn timers are seeded to 60 minutes (`OMB_TURN_STALL_MS`, `OPENMAUS_ACP_PROMPT_IDLE_TIMEOUT_MS`, `rooms.turnTimeoutMinutes`); `OMB_TOOL_STALL_MS` keeps its two-hour default. Set `MODEL_CONTEXT_WINDOW=65536` for a 64K local model instead of the 128K default.
+
+Environment lives in the container config, not the `/data` volume — re-pass the same `-e` flags when recreating after an image upgrade (the model settings are persisted in `/data/keys/model.env` for the agent, but the container still needs its env on recreate).
 
 ## Ports & surfaces
 

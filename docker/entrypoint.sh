@@ -160,13 +160,19 @@ EOF
     exit 3
   fi
 
-  for v in MODEL_BASE_URL MODEL_ID MODEL_API_KEY; do
+  for v in MODEL_BASE_URL MODEL_ID; do
     eval "val=\${$v:-}"
     if [ -z "$val" ]; then
-      echo "entrypoint: $v is required (the user provides baseURL + model id + key)" >&2
+      echo "entrypoint: $v is required (the user provides baseURL + model id)" >&2
       exit 3
     fi
   done
+  # Local OpenAI-compatible servers (e.g. LM Studio) need no key. Keep the
+  # spark provider's apiKeyEnv satisfied with a harmless placeholder.
+  if [ -z "${MODEL_API_KEY:-}" ]; then
+    MODEL_API_KEY='local-endpoint-no-key'
+    export MODEL_API_KEY
+  fi
 
   log "generating hot wallets (EVM + ICP)..."
   SUMMARY_JSON=$(node /opt/agent/keys.mjs /data/keys)

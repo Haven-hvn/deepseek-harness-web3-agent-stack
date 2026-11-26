@@ -174,9 +174,18 @@ mkdir -p /data/logs /data/keys /data/downloads/acquire /data/downloads/torrents 
   /data/home /data/observatory /data/prowlarr /data/home/.config/qBittorrent \
   "$OMB_DATA_DIR" /data/openmausbot-home
 
-if [ -n "${MODEL_BASE_URL:-}" ] && { [ -z "${MODEL_ID:-}" ] || [ -z "${MODEL_API_KEY:-}" ]; }; then
-  echo "entrypoint: MODEL_BASE_URL is set, so MODEL_ID and MODEL_API_KEY are also required" >&2
+if [ -n "${MODEL_BASE_URL:-}" ] && [ -z "${MODEL_ID:-}" ]; then
+  echo "entrypoint: MODEL_BASE_URL is set, so MODEL_ID is also required" >&2
   exit 3
+fi
+
+# Local OpenAI-compatible servers (e.g. LM Studio) need no API key. Keep the
+# provider's apiKeyEnv satisfied with a placeholder so users don't have to
+# invent a credential just to boot the container; a real key still overrides.
+if [ -n "${MODEL_BASE_URL:-}" ] && [ -z "${MODEL_API_KEY:-}" ]; then
+  MODEL_API_KEY='local-endpoint-no-key'
+  export MODEL_API_KEY
+  log "MODEL_API_KEY not set; using a local placeholder (harmless for LM Studio and similar servers)"
 fi
 
 if [ ! -f "$DATA/.instantiated" ]; then

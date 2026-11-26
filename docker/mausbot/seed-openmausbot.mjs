@@ -23,6 +23,12 @@ const MODEL_ENV_KEYS = [
   'MODEL_ID',
   'MODEL_API_KEY',
   'MODEL_API_PROTOCOL',
+  // Optional size/reasoning knobs consumed by profile.acp.patch.yml's `spark`
+  // provider. Persisted here so they survive container recreation alongside
+  // the rest of the MODEL_* set.
+  'MODEL_CONTEXT_WINDOW',
+  'MODEL_MAX_OUTPUT_TOKENS',
+  'MODEL_REASONING_EFFORT',
   'DEEPSEEK_API_KEY',
 ];
 
@@ -97,6 +103,10 @@ export function buildInitialOpenMausBotConfig(env = process.env) {
         modelSelection: selection,
       },
     },
+    // One-hour room turn timeout: matches OMB_TURN_STALL_MS /
+    // OPENMAUS_ACP_PROMPT_IDLE_TIMEOUT_MS and the `spark` provider timeouts
+    // so a slow JIT-loaded local model is never cut off mid-turn.
+    rooms: { turnTimeoutMinutes: 60 },
     instances: {
       deepseek: {
         driver: 'deepseekAgent',
