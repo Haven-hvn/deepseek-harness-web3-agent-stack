@@ -15,3 +15,4 @@ packages:
   - dsh-observatory
   - dsh-exactly-once
   - dsh-agent-herald
+  - '!dsh-treasury'
