@@ -11,8 +11,8 @@ Designed for single-container runtimes with **no `docker compose` required** (`w
 ```sh
 docker run -d --name haven-mausbot \
   --shm-size=512m \
-  -p 8799:8799 \
-  -p 8787:8787 \
+  -p 0.0.0.0:8799:8799 \
+  -p 0.0.0.0:8787:8787 \
   -v haven-data:/data \
   -e ACCEPT_HOT_WALLET_RISK=yes \
   -e MODEL_BASE_URL=https://your-openai-compatible-endpoint/v1 \
@@ -73,7 +73,7 @@ Example (wslc):
 
 ```sh
 wslc run -d --name haven-mausbot \
-  -p 8799:8799 -p 8787:8787 -v haven-data:/data \
+  -p 0.0.0.0:8799:8799 -p 0.0.0.0:8787:8787 -v haven-data:/data \
   -e ACCEPT_HOT_WALLET_RISK=yes \
   -e MODEL_BASE_URL=http://host.wslc.internal:1234/v1 \
   -e MODEL_ID=bonsai27b \
