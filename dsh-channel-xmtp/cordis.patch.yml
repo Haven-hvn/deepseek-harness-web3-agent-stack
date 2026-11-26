@@ -27,4 +27,7 @@
         # replyMode: turn          # turn (one reply per turn) | message (every assistant message, live)
         # busyInbound: queue       # queue (own turn after the running one) | steer (joins the running turn)
         # busyAck: "..."           # sent once when an inbound queues behind a running turn; '' disables
+        # busyAckDelayMs: 90000    # timed ack for turns still running this long; repeats per busyAckRepeatMs (900000)
+        # turnStallMs: 3600000     # cancel after this much zero progress (streaming turns never trip it); 0 disables
+        # stallMessage: "..."      # sent when the stall watchdog cancels a turn; '' cancels silently
         # outboxPath: /var/lib/dsh/xmtp-outbox.json   # exactly-once across restarts (inbound + outbound cursor)

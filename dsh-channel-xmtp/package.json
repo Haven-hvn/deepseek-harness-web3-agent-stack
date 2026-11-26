@@ -1,7 +1,7 @@
 {
   "name": "dsh-channel-xmtp",
   "description": "XMTP channel for DeepSeek Harness: direct agent\u2194user messaging over the XMTP network \u2014 Ethereum identity signed per-operation through dsh-wallet, one dsh agent per conversation observed as a session, assistant output (replies and background-turn results) sent back to the conversation",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",

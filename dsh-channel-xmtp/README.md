@@ -75,6 +75,11 @@ agent-running profile.
     # replyMode: turn          # turn: one reply per turn | message: every assistant message live
     # busyInbound: queue       # queue: own turn after the running one | steer: joins the running turn
     # busyAck: "Still working on the previous request — I'll get to this next."  # '' disables
+    # busyAckDelayMs: 90000    # timed ack when a turn still runs this long (even if it started idle)
+    # busyAckRepeatMs: 900000  # repeat spacing while the same turn keeps running; 0 = once
+    # turnStallMs: 3600000     # cancel a turn after this much ZERO progress (not slow-but-streaming);
+                             # 60 min suits local LLMs, cloud profiles should use ~900000; 0 disables
+    # stallMessage: "That request got stuck and I reset it — please resend."  # '' cancels silently
 
 # Recommended alongside: bound background-job wakes per conversation agent.
 - id: tool-jobs

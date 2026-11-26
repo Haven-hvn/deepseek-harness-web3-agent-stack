@@ -92,6 +92,9 @@
     replyMode: turn
     busyInbound: queue
     busyAck: "Still working on the previous request — I'll answer this next."
+    # Cloud model: 15 min of zero progress is a wedge (plugin default is
+    # 60 min, sized for local LLMs whose silent turns can run ~30 min).
+    turnStallMs: 900000
 
 # Background-job completions wake an idle conversation agent, and that
 # turn's output now reaches XMTP. Cap the self-exciting chain (a woken

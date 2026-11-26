@@ -78,8 +78,8 @@ class FakeWalletAdapter implements CryptoAdapter {
   }
 }
 
-/** One scripted model response: plain text (`''` = no text), or text released by a gate. */
-type ScriptStep = string | { text: string; gate: Promise<void> }
+/** One scripted model response: plain text (`''` = no text), text released by a gate, or text streamed in timed chunks. */
+type ScriptStep = string | { text: string; gate: Promise<void> } | { text: string; ticks: number; tickMs: number }
 
 /** A gate a test opens to let a "long" turn finish. */
 function gate(): { promise: Promise<void>; open: () => void } {
@@ -103,8 +103,29 @@ class MockLlmAdapter extends LlmAdapter {
     let text: string
     if (typeof step === 'string') {
       text = step
+    } else if ('ticks' in step) {
+      text = step.text
+      if (text !== '') {
+        yield { type: 'block-start', index: 0, blockType: 'text' }
+        const chunk = Math.ceil(text.length / step.ticks)
+        for (let i = 0; i < text.length; i += chunk) {
+          await new Promise(done => setTimeout(done, step.tickMs))
+          yield { type: 'text-delta', index: 0, text: text.slice(i, i + chunk) }
+        }
+        yield { type: 'block-end', index: 0, block: { type: 'text', text } }
+      }
+      yield { type: 'usage', usage: { inputTokens: 10, outputTokens: text.length } }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+      return
     } else {
-      await step.gate
+      // Adapters must honor `options.signal`: a gated step settles on abort.
+      await new Promise<void>((resolve, reject) => {
+        void step.gate.then(resolve)
+        const signal = options.signal
+        if (signal === undefined) return
+        if (signal.aborted) { reject(signal.reason ?? new Error('aborted')); return }
+        signal.addEventListener('abort', () => reject(signal.reason ?? new Error('aborted')), { once: true })
+      })
       text = step.text
     }
     if (text !== '') {
@@ -929,5 +950,98 @@ describe('deliver timeout (a stuck send must not wedge its conversation)', () =>
     // retry and msg-b's follows: both arrive, nothing wedges.
     await vi.waitFor(() => { expect(conversation.sent).toHaveLength(2) }, { timeout: 10_000 })
     expect(conversation.sent).toEqual(['agent reply', 'agent reply'])
+  })
+})
+
+// ── 8. Long turns: timed busy ack + no-progress watchdog ────────────────────
+
+const STALL = 'That request got stuck and I reset it — please resend.'
+
+describe('timed busy ack (a long turn admitted while idle must not look dead)', () => {
+  it('acks after the delay even though the agent was idle at admit, then answers', async () => {
+    const { world, llm, conversation } = await harness({
+      busyAck: ACK, busyAckDelayMs: 50, busyAckRepeatMs: 10_000,
+    })
+    const slow = gate()
+    llm.script.push({ text: 'first answer', gate: slow.promise })
+
+    world.onValue!(inbound({ id: 'msg-1' }))
+    await vi.waitFor(() => { expect(llm.requests).toHaveLength(1) })
+
+    // No mid-turn inbound ever arrives, yet the ack still lands.
+    await vi.waitFor(() => { expect(conversation.sent).toEqual([ACK]) })
+    slow.open()
+    await vi.waitFor(() => { expect(conversation.sent).toEqual([ACK, 'first answer']) })
+  })
+
+  it('repeats the ack on the repeat interval while the turn keeps running', async () => {
+    const { world, llm, conversation } = await harness({
+      busyAck: ACK, busyAckDelayMs: 40, busyAckRepeatMs: 50,
+    })
+    const slow = gate()
+    llm.script.push({ text: 'first answer', gate: slow.promise })
+
+    world.onValue!(inbound({ id: 'msg-1' }))
+    await vi.waitFor(() => { expect(llm.requests).toHaveLength(1) })
+    await vi.waitFor(() => { expect(conversation.sent.filter(text => text === ACK).length).toBeGreaterThanOrEqual(2) })
+
+    slow.open()
+    await vi.waitFor(() => { expect(conversation.sent.at(-1)).toBe('first answer') })
+  })
+})
+
+describe('turn stall watchdog (no progress, not merely slow)', () => {
+  it('defaults accommodate local LLMs: a 60-minute no-progress bound', () => {
+    expect(channelXmtp.DEFAULT_TURN_STALL_MS).toBe(60 * 60_000)
+    expect(channelXmtp.DEFAULT_BUSY_ACK_DELAY_MS).toBe(90_000)
+    expect(channelXmtp.DEFAULT_BUSY_ACK_REPEAT_MS).toBe(15 * 60_000)
+  })
+
+  it('cancels a turn with no progress past the bound, tells the user, and the next message runs', async () => {
+    const { world, llm, conversation, agent } = await harness({
+      busyAck: '', turnStallMs: 150, stallMessage: STALL,
+    })
+    const never = gate() // never opened: a stream that stalls forever
+    llm.script.push({ text: 'lost answer', gate: never.promise }, 'second answer')
+
+    world.onValue!(inbound({ id: 'msg-1' }))
+    await vi.waitFor(() => { expect(llm.requests).toHaveLength(1) })
+
+    await vi.waitFor(() => { expect(conversation.sent).toEqual([STALL]) }, { timeout: 10_000 })
+    const subject = await agent()
+    await vi.waitFor(() => { expect(subject.status).toBe('idle') }, { timeout: 10_000 })
+
+    world.onValue!(inbound({ id: 'msg-2', content: 'again?' }))
+    await vi.waitFor(() => { expect(conversation.sent).toEqual([STALL, 'second answer']) }, { timeout: 10_000 })
+    expect(llm.requests).toHaveLength(2)
+  }, 15_000)
+
+  it('a slow turn that keeps streaming progress is never cancelled', async () => {
+    const { world, llm, conversation } = await harness({
+      busyAck: '', turnStallMs: 150, stallMessage: STALL,
+    })
+    // Total stream time (~400ms) exceeds the stall bound, but chunks land
+    // every ~50ms, so no-progress never reaches the bound.
+    llm.script.push({ text: 'slow streamed answer', ticks: 8, tickMs: 50 })
+
+    world.onValue!(inbound({ id: 'msg-1' }))
+    await vi.waitFor(() => { expect(conversation.sent).toEqual(['slow streamed answer']) }, { timeout: 10_000 })
+    await settle()
+    expect(conversation.sent).toEqual(['slow streamed answer'])
+  })
+
+  it('a silent turn shorter than the bound (local-LLM shape) completes untouched', async () => {
+    const { world, llm, conversation } = await harness({
+      busyAck: '', turnStallMs: 5_000, stallMessage: STALL,
+    })
+    const slow = gate()
+    llm.script.push({ text: 'local answer', gate: slow.promise })
+
+    world.onValue!(inbound({ id: 'msg-1' }))
+    await vi.waitFor(() => { expect(llm.requests).toHaveLength(1) })
+    await settle(250) // silent, mid-turn, well under the bound
+    expect(conversation.sent).toEqual([])
+    slow.open()
+    await vi.waitFor(() => { expect(conversation.sent).toEqual(['local answer']) })
   })
 })

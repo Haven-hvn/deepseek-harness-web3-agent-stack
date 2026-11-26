@@ -85,6 +85,25 @@ export const SWEEP_BACKOFF_MAX_MS = 30 * 60_000
 export const MAX_DEDUP_SIZE = 5_000
 /** Default busy acknowledgment; `busyAck: ''` disables it. */
 export const DEFAULT_BUSY_ACK = "Still working on the previous request — I'll get to this next."
+/**
+ * How long a turn may run before the timed busy ack fires. The admit-time
+ * ack only covers inbounds that arrive mid-turn; a turn that STARTS from an
+ * idle agent (the common case) would otherwise look dead for its whole run.
+ */
+export const DEFAULT_BUSY_ACK_DELAY_MS = 90_000
+/** Spacing between repeated timed busy acks while one turn keeps running. */
+export const DEFAULT_BUSY_ACK_REPEAT_MS = 15 * 60_000
+/**
+ * No-progress bound for one running interval: a turn that produces no
+ * session event and no stream chunk for this long is wedged, not slow, and
+ * its turn is cancelled (queued inbox work survives). The default is sized
+ * for local LLMs, where a single silent turn can legitimately take ~30
+ * minutes; cloud profiles should set `turnStallMs` tighter (e.g. 15 min).
+ * `turnStallMs: 0` disables the watchdog.
+ */
+export const DEFAULT_TURN_STALL_MS = 60 * 60_000
+/** Default text sent when the stall watchdog cancels a wedged turn; `stallMessage: ''` cancels silently. */
+export const DEFAULT_STALL_MESSAGE = 'That request got stuck and I reset it — please resend.'
 /** Outbox value for an inbound admitted to its agent but not yet answered. */
 export const OUTBOX_ACCEPTED = 'accepted'
 /**
@@ -175,6 +194,29 @@ export interface Config {
    *   answer instead of a queue of stale one-by-one replies.
    */
   busyInbound?: 'queue' | 'steer' | 'drop' | 'coalesce'
+  /**
+   * Delay before the timed busy ack: a turn still running this long after
+   * it started gets the `busyAck` text even when no mid-turn inbound
+   * triggered the admit-time ack. Defaults to
+   * {@link DEFAULT_BUSY_ACK_DELAY_MS}.
+   */
+  busyAckDelayMs?: number
+  /**
+   * Repeat spacing for the timed busy ack while one turn keeps running.
+   * Defaults to {@link DEFAULT_BUSY_ACK_REPEAT_MS}; `0` acks once per turn.
+   */
+  busyAckRepeatMs?: number
+  /**
+   * No-progress bound: a running turn with no session event and no stream
+   * chunk for this long is cancelled (`keepInbox`, so queued messages run
+   * next) and the user gets `stallMessage`. Progress, not wall-clock turn
+   * length, is the signal — a slow turn that keeps streaming never trips
+   * it. Defaults to {@link DEFAULT_TURN_STALL_MS} (60 min, sized for local
+   * LLMs); cloud profiles should set ~15 min. `0` disables.
+   */
+  turnStallMs?: number
+  /** Text sent when the stall watchdog cancels a turn; empty cancels silently. */
+  stallMessage?: string
 }
 
 /** Config schema. */
@@ -193,6 +235,10 @@ export const Config: z<Config> = z.object({
   replyMode: z.union(['turn', 'message']).default('turn'),
   busyAck: z.string().default(DEFAULT_BUSY_ACK),
   busyInbound: z.union(['queue', 'steer', 'drop', 'coalesce']).default('queue'),
+  busyAckDelayMs: z.number().step(1).min(0).default(DEFAULT_BUSY_ACK_DELAY_MS),
+  busyAckRepeatMs: z.number().step(1).min(0).default(DEFAULT_BUSY_ACK_REPEAT_MS),
+  turnStallMs: z.number().step(1).min(0).default(DEFAULT_TURN_STALL_MS),
+  stallMessage: z.string().default(DEFAULT_STALL_MESSAGE),
 })
 
 /** One image block an assistant message carried. */
@@ -253,6 +299,24 @@ function foldMarkdown(text: string): string {
     .replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,!?;:]|$)/gm, '$1$2')
     .replace(/(^|[\s(])_([^_\n]+)_(?=[\s).,!?;:]|$)/gm, '$1$2')
     .replace(/`([^`\n]+)`/g, '$1')
+}
+
+/**
+ * One running interval's progress record: drives the timed busy ack and
+ * the no-progress stall watchdog. Progress is any session event or stream
+ * chunk for the conversation — never turn wall-clock time alone.
+ */
+interface TurnTracker {
+  /** When this running interval began. */
+  startedAt: number
+  /** Last session-event / stream-chunk time for this conversation. */
+  lastProgressAt: number
+  /** Current turn number, when a session event has named one. */
+  turn?: number
+  /** True after the watchdog fired; cleared by fresh progress or idle. */
+  stalled: boolean
+  ackTimer?: ReturnType<typeof setTimeout> | undefined
+  stallTimer?: ReturnType<typeof setTimeout> | undefined
 }
 
 /** Assistant output accumulated for one turn under `replyMode: turn`. */
@@ -348,6 +412,10 @@ class XmtpChannelRuntime {
   private readonly coalesced = new Map<string, { contents: unknown[]; lastInboundId: string }>()
   /** Conversations already acked during their agent's current running interval. */
   private readonly acked = new Set<string>()
+  /** Per-conversation running-interval progress (timed ack + stall watchdog). */
+  private readonly turnTrackers = new Map<string, TurnTracker>()
+  /** Last busy-ack send time per conversation (repeat spacing). */
+  private readonly lastAckAt = new Map<string, number>()
   /** Serialized outbox persistence (one writer at a time; last state wins). */
   private persistTail: Promise<void> = Promise.resolve()
   private persistPending = false
@@ -463,6 +531,8 @@ class XmtpChannelRuntime {
     this.stopped = true
     for (const timer of this.timers) clearTimeout(timer)
     this.timers.clear()
+    this.turnTrackers.clear()
+    this.lastAckAt.clear()
     if (this.sweepTimer !== undefined) clearInterval(this.sweepTimer)
     this.sweepTimer = undefined
     await this.stream?.end().catch(() => undefined)
@@ -673,12 +743,25 @@ class XmtpChannelRuntime {
       if (conversationId === undefined) return
       // A same-id impostor or a retired Session is not ours to project.
       if (this.liveAgent(conversationId)?.session !== session) return
+      // Every committed event is turn progress for the watchdog, not just
+      // the output-shaped ones the send path buffers below.
+      const eventTurn = (event.data as { turn?: unknown } | undefined)?.turn
+      this.noteProgress(conversationId, typeof eventTurn === 'number' ? eventTurn : undefined)
       if (!OUTPUT_EVENT_TYPES.has(event.type)) return
       this.observe(conversationId, session, Number(event.seq)).events.push(event)
       const relevant = this.config.replyMode === 'message'
         ? event.type === 'assistant/message' || event.type === 'turn/end'
         : event.type === 'turn/end'
       if (relevant) this.scheduleFlush(conversationId)
+    })
+
+    // Stream chunks are progress too: a turn can stream for minutes
+    // between committed session events, and must never look wedged.
+    this.ctx.on('agent/assistant-stream', ({ agent }) => {
+      if (this.stopped) return
+      const conversationId = this.conversationOf(agent)
+      if (conversationId === undefined) return
+      this.noteProgress(conversationId)
     })
 
     this.ctx.on('agent/inbox/claimed', ({ agent, message, turn }) => {
@@ -696,7 +779,13 @@ class XmtpChannelRuntime {
     this.ctx.on('agent/status', ({ agent, status }) => {
       const conversationId = this.conversationOf(agent)
       if (conversationId === undefined) return
+      if (status === 'running') {
+        this.startTracking(conversationId)
+        return
+      }
       if (status === 'idle') {
+        this.clearTracking(conversationId)
+        this.lastAckAt.delete(conversationId)
         this.acked.delete(conversationId)
         // Coalesced lines become one follow-up turn now that we're idle.
         const buf = this.coalesced.get(conversationId)
@@ -713,6 +802,147 @@ class XmtpChannelRuntime {
         // Safety net: anything committed but not yet flushed goes out now.
         this.scheduleFlush(conversationId)
       }
+    })
+  }
+
+  // ── Turn progress: timed busy ack + stall watchdog ───────────────────────
+
+  /** One-shot timer registered for plugin teardown. */
+  private scheduleTimer(callback: () => void, ms: number): ReturnType<typeof setTimeout> {
+    const timer = setTimeout(() => {
+      this.timers.delete(timer)
+      callback()
+    }, ms)
+    this.timers.add(timer)
+    return timer
+  }
+
+  private clearTrackerTimer(tracker: TurnTracker, key: 'ackTimer' | 'stallTimer'): void {
+    const timer = tracker[key]
+    if (timer === undefined) return
+    clearTimeout(timer)
+    this.timers.delete(timer)
+    tracker[key] = undefined
+  }
+
+  /** Begin tracking a running interval (idempotent while it lasts). */
+  private startTracking(conversationId: string): void {
+    if (this.turnTrackers.has(conversationId)) return
+    const now = Date.now()
+    const tracker: TurnTracker = { startedAt: now, lastProgressAt: now, stalled: false }
+    this.turnTrackers.set(conversationId, tracker)
+    const delayMs = this.config.busyAckDelayMs ?? DEFAULT_BUSY_ACK_DELAY_MS
+    if ((this.config.busyAck ?? DEFAULT_BUSY_ACK) !== '') {
+      tracker.ackTimer = this.scheduleTimer(() => this.onAckTimer(conversationId), delayMs)
+    }
+    this.scheduleStallTimer(conversationId, tracker)
+  }
+
+  /** Stop tracking: the agent went idle or the channel is stopping. */
+  private clearTracking(conversationId: string): void {
+    const tracker = this.turnTrackers.get(conversationId)
+    if (tracker === undefined) return
+    this.clearTrackerTimer(tracker, 'ackTimer')
+    this.clearTrackerTimer(tracker, 'stallTimer')
+    this.turnTrackers.delete(conversationId)
+  }
+
+  /** Record progress (session event or stream chunk) and re-arm the watchdog. */
+  private noteProgress(conversationId: string, turn?: number): void {
+    if (!this.turnTrackers.has(conversationId)) {
+      if (this.liveAgent(conversationId)?.status !== 'running') return
+      this.startTracking(conversationId)
+    }
+    const tracker = this.turnTrackers.get(conversationId)!
+    tracker.lastProgressAt = Date.now()
+    if (turn !== undefined) tracker.turn = turn
+    tracker.stalled = false
+    this.scheduleStallTimer(conversationId, tracker)
+  }
+
+  private scheduleStallTimer(conversationId: string, tracker: TurnTracker): void {
+    this.clearTrackerTimer(tracker, 'stallTimer')
+    const stallMs = this.config.turnStallMs ?? DEFAULT_TURN_STALL_MS
+    if (stallMs <= 0 || this.stopped) return
+    tracker.stallTimer = this.scheduleTimer(() => this.onStallTimer(conversationId), stallMs)
+  }
+
+  /** Whether an XMTP inbound is still waiting on this conversation's agent. */
+  private hasUnansweredInbound(conversationId: string): boolean {
+    for (const pending of this.pendingInbound.values()) {
+      if (pending.conversationId === conversationId) return true
+    }
+    for (const key of this.turnInbound.keys()) {
+      if (key.startsWith(`${conversationId}\n`)) return true
+    }
+    const prefix = `${conversationId}\n`
+    for (const [key, value] of this.outbox) {
+      if (key.startsWith(prefix) && value === OUTBOX_ACCEPTED) return true
+    }
+    return false
+  }
+
+  /** Timed busy ack: fires even when the turn started from an idle agent. */
+  private onAckTimer(conversationId: string): void {
+    const tracker = this.turnTrackers.get(conversationId)
+    if (tracker === undefined || this.stopped) return
+    tracker.ackTimer = undefined
+    if (this.liveAgent(conversationId)?.status === 'running' && this.hasUnansweredInbound(conversationId)) {
+      const repeatMs = this.config.busyAckRepeatMs ?? DEFAULT_BUSY_ACK_REPEAT_MS
+      const lastAck = this.lastAckAt.get(conversationId)
+      if (lastAck === undefined || Date.now() - lastAck >= repeatMs) this.sendAck(conversationId)
+      if (repeatMs > 0) {
+        tracker.ackTimer = this.scheduleTimer(() => this.onAckTimer(conversationId), repeatMs)
+      }
+    }
+  }
+
+  /** Watchdog check: cancel only on a full bound of zero progress. */
+  private onStallTimer(conversationId: string): void {
+    const tracker = this.turnTrackers.get(conversationId)
+    if (tracker === undefined || this.stopped) return
+    tracker.stallTimer = undefined
+    const stallMs = this.config.turnStallMs ?? DEFAULT_TURN_STALL_MS
+    const silentMs = Date.now() - tracker.lastProgressAt
+    if (silentMs < stallMs) {
+      // Progress landed just before the check; wait out the remainder.
+      tracker.stallTimer = this.scheduleTimer(() => this.onStallTimer(conversationId), stallMs - silentMs)
+      return
+    }
+    if (tracker.stalled) return
+    tracker.stalled = true
+    void this.handleStall(conversationId, tracker, silentMs)
+  }
+
+  /**
+   * Cancel a wedged turn. `keepInbox` preserves queued follow-ups, which
+   * run as fresh turns once this one converges to idle; the user is told
+   * plainly instead of the conversation going silently mute. No auto-retry
+   * of the cancelled turn: its tools may have partially acted.
+   */
+  private async handleStall(conversationId: string, tracker: TurnTracker, silentMs: number): Promise<void> {
+    const agent = this.liveAgent(conversationId)
+    if (agent === undefined || agent.status !== 'running') return
+    const stallMs = this.config.turnStallMs ?? DEFAULT_TURN_STALL_MS
+    console.log(
+      `[xmtp] turn stall ${conversationId.slice(0, 8)} turn=${tracker.turn ?? '?'} `
+      + `no-progress=${silentMs}ms bound=${stallMs}ms; cancelling turn (queued inbox preserved)`,
+    )
+    try {
+      agent.cancel({ kind: 'hook', reason: `xmtp stall watchdog: no progress for ${silentMs}ms` }, { keepInbox: true })
+    } catch (error) {
+      console.log(`[xmtp] stall cancel failed ${conversationId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    const message = this.config.stallMessage ?? DEFAULT_STALL_MESSAGE
+    if (message === '' || !this.hasUnansweredInbound(conversationId)) return
+    const inboundMessageId = tracker.turn !== undefined
+      ? this.turnInbound.get(`${conversationId}\n${tracker.turn}`)
+      : undefined
+    await this.enqueueSend(conversationId, async () => {
+      const conversation = await this.conversation(conversationId)
+      if (conversation === undefined) return
+      await conversation.sendText(toPlainText(message))
+      this.emitOutbound(conversationId, inboundMessageId === undefined ? 'proactive' : 'reply', tracker.turn, inboundMessageId)
     })
   }
 
@@ -1107,9 +1337,16 @@ class XmtpChannelRuntime {
 
   /** Send the busy ack once per running interval (reset when the agent goes idle). */
   private sendBusyAck(conversationId: string): void {
+    if (this.acked.has(conversationId)) return
+    this.sendAck(conversationId)
+  }
+
+  /** Send the busy ack now (admit-time and timed paths share the send tail). */
+  private sendAck(conversationId: string): void {
     const text = this.config.busyAck ?? DEFAULT_BUSY_ACK
-    if (text === '' || this.acked.has(conversationId)) return
+    if (text === '') return
     this.acked.add(conversationId)
+    this.lastAckAt.set(conversationId, Date.now())
     void this.enqueueSend(conversationId, async () => {
       const conversation = await this.conversation(conversationId)
       if (conversation === undefined) return
