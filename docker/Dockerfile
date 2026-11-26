@@ -72,18 +72,10 @@ COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json .npmrc /
 COPY dsh-wallet/ /opt/stack/dsh-wallet/
 COPY dsh-wallet-ethereum/ /opt/stack/dsh-wallet-ethereum/
 COPY dsh-wallet-tools/ /opt/stack/dsh-wallet-tools/
-COPY dsh-treasury//
-COPY dsh-channel-xmtp//
-COPY dsh-storage-synapse//
-COPY dsh-arkiv//
-COPY dsh-erc8004//
-COPY dsh-royalty-router//
 COPY dsh-haven-aol/ /opt/stack/dsh-haven-aol/
 COPY dsh-persona/ /opt/stack/dsh-persona/
 COPY dsh-tool-prowlarr/ /opt/stack/dsh-tool-prowlarr/
-COPY dsh-tool-acquisition//
 COPY dsh-observatory/ /opt/stack/dsh-observatory/
-COPY dsh-exactly-once//
 COPY dsh-agent-herald/ /opt/stack/dsh-agent-herald/
 
 # haven-aol source: dsh-haven-aol depends on it via
