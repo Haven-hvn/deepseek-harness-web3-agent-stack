@@ -72,7 +72,6 @@ COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json .npmrc /
 COPY dsh-wallet/ /opt/stack/dsh-wallet/
 COPY dsh-wallet-ethereum/ /opt/stack/dsh-wallet-ethereum/
 COPY dsh-wallet-tools/ /opt/stack/dsh-wallet-tools/
-COPY dsh-treasury/ /opt/stack/dsh-treasury/
 COPY dsh-channel-xmtp/ /opt/stack/dsh-channel-xmtp/
 COPY dsh-storage-synapse/ /opt/stack/dsh-storage-synapse/
 COPY dsh-arkiv/ /opt/stack/dsh-arkiv/
@@ -131,7 +130,7 @@ ENV DSH_HOME=/opt/dsh-skel
 RUN dsh plugin --profile agent add \
       /opt/stack/dsh-exactly-once \
       /opt/stack/dsh-wallet /opt/stack/dsh-wallet-ethereum \
-      /opt/stack/dsh-wallet-tools /opt/stack/dsh-treasury \
+      /opt/stack/dsh-wallet-tools \
       /opt/stack/dsh-channel-xmtp /opt/stack/dsh-storage-synapse \
       /opt/stack/dsh-arkiv /opt/stack/dsh-erc8004 \
       /opt/stack/dsh-royalty-router /opt/stack/dsh-haven-aol \
