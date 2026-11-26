@@ -115,7 +115,7 @@ RUN git init -q /opt/mint-glue-graduate && cd /opt/mint-glue-graduate \
 # resolve from /opt/stack, not from the global dsh install. Peers live in
 # devDependencies, so do not `pnpm prune --prod` — that removes cordis and
 # every bundle fails to import.
-RUN cd /opt/stack && pnpm install --frozen-lockfile --ignore-scripts \
+RUN cd /opt/stack && pnpm install --no-frozen-lockfile --ignore-scripts \
     && pnpm -r build
 
 # Profile skeleton: base bundles + all stack packages + xmtp runtime dep.
