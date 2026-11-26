@@ -18,3 +18,4 @@ packages:
   - '!dsh-treasury'
   - "!dsh-storage-synapse"
   - "!dsh-exactly-once"
+  - "!dsh-arkiv"
