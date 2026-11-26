@@ -16,3 +16,10 @@ packages:
   - dsh-exactly-once
   - dsh-agent-herald
   - "!dsh-treasury"
+  - "!dsh-channel-xmtp"
+  - "!dsh-storage-synapse"
+  - "!dsh-arkiv"
+  - "!dsh-erc8004"
+  - "!dsh-royalty-router"
+  - "!dsh-tool-acquisition"
+  - "!dsh-exactly-once"
