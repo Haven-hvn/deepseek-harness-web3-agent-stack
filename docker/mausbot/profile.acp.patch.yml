@@ -6,8 +6,8 @@
 # stack minus dsh-channel-xmtp). Secrets live in $DSH_HOME/.credentials.yaml
 # or process env — NEVER baked here.
 
-# ── Model (custom OpenAI-compatible `spark` when MODEL_BASE_URL is set,
-#    otherwise native `deepseek-official`) ───────────────────────────────
+# ── Models (custom OpenAI-compatible `spark` when MODEL_BASE_URL is set,
+#    otherwise native `deepseek-official`; plus selectable `lmstudio`) ────
 # `spark` is deliberately hardened for generic OpenAI-compatible servers:
 #   - pi-ai's `store` default is on for unknown hosts; Upstage 400s on it.
 #   - its `developer` role default and `max_completion_tokens` field break
@@ -34,18 +34,25 @@
 - id: llm-pi-ai
   config:
     providers: !!js >-
-      (process.env.MODEL_BASE_URL
-        ? { spark: {
+      (() => {
+        // Shared hardening for every OpenAI-compatible provider: no store
+        // field, no developer role, max_tokens, one-hour idle/total timeouts
+        // and backoff. Keeps a slow JIT-loaded local model from dying mid-turn.
+        const hardening = {
+          streamIdleTimeoutMs: 3600000,
+          timeoutMs: 3600000,
+          retryPolicy: { mode: 'normal', maxRetries: 4, backoff: { initialDelayMs: 10000, maxDelayMs: 180000 } },
+          compat: { supportsStore: false, supportsDeveloperRole: false, maxTokensField: 'max_tokens' },
+        };
+        const providers = {};
+        if (process.env.MODEL_BASE_URL) {
+          providers.spark = {
+            ...hardening,
             apiKeyEnv: 'MODEL_API_KEY',
             baseURL: process.env.MODEL_BASE_URL,
             api: process.env.MODEL_API_PROTOCOL || 'openai-completions',
-            streamIdleTimeoutMs: 3600000,
-            timeoutMs: 3600000,
-            retryPolicy: { mode: 'normal', maxRetries: 4, backoff: { initialDelayMs: 10000, maxDelayMs: 180000 } },
             compat: {
-              supportsStore: false,
-              supportsDeveloperRole: false,
-              maxTokensField: 'max_tokens',
+              ...hardening.compat,
               supportsReasoningEffort: Boolean(process.env.MODEL_REASONING_EFFORT),
             },
             reasoning: process.env.MODEL_REASONING_EFFORT || undefined,
@@ -55,8 +62,22 @@
               maxTokens: Number(process.env.MODEL_MAX_OUTPUT_TOKENS) || 32768,
               reasoningEfforts: process.env.MODEL_REASONING_EFFORT ? { off: 'none', low: 'low', medium: 'medium' } : undefined,
             }],
-          } }
-        : {})
+          };
+        }
+        // Additional selectable local model (LM Studio). wslc-friendly default;
+        // point LMSTUDIO_BASE_URL at a LAN host once its TCP 1234 is reachable.
+        providers.lmstudio = {
+          ...hardening,
+          baseURL: process.env.LMSTUDIO_BASE_URL || 'http://host.wslc.internal:1234/v1',
+          api: 'openai-completions',
+          models: [{
+            id: process.env.LMSTUDIO_MODEL_ID || 'bonsai27b',
+            contextWindow: Number(process.env.LMSTUDIO_CONTEXT_WINDOW) || 65536,
+            maxTokens: Number(process.env.LMSTUDIO_MAX_OUTPUT_TOKENS) || 32768,
+          }],
+        };
+        return providers;
+      })()
 
 # ── Wallets: hot, internal, agent-managed (raw keyRef, no OWS vault) ────
 - id: wallet

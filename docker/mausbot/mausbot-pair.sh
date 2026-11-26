@@ -1,8 +1,9 @@
 #!/bin/sh
 # mausbot-pair.sh — Wait for the OpenMausBot server on container loopback, then
 # mint and print a fresh one-time pairing code + sign-in link (and QR when
-# applicable). Non-fatal: logs diagnostics and exits 0 always so the container
-# stays healthy. Re-run any time with: docker exec <container> openmausbot pair
+# OMB_PUBLIC_URL is set to the host address reachable by phone/desktop).
+# Non-fatal: logs diagnostics and exits 0 always so the container stays
+# healthy. Re-run any time with: docker exec <container> openmausbot pair
 set -eu
 
 PORT="${OMB_PORT:-8799}"
@@ -27,6 +28,12 @@ echo "================================================================"
 echo "OpenMausBot Web GUI is ready."
 echo "Mint a new code later with:  docker exec <container> openmausbot pair"
 echo "================================================================"
-/usr/local/bin/openmausbot pair --port "$PORT" || log "pair command returned non-zero (run 'openmausbot pair' manually)"
+set -- --port "$PORT"
+# Without a non-loopback public URL the CLI prints a code but no phone
+# link/QR. Pass it explicitly so the initial code works from another device.
+if [ -n "${OMB_PUBLIC_URL:-}" ]; then
+  set -- "$@" --public-url "$OMB_PUBLIC_URL"
+fi
+/usr/local/bin/openmausbot pair "$@" || log "pair command returned non-zero (run 'openmausbot pair' manually)"
 echo ""
 exit 0

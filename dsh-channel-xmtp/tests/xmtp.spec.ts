@@ -28,7 +28,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import LlmRuntime, { createUserMessage, LlmAdapter } from '@deepseek-ai/dsh-llm'
 import type { ContextFormed, GenerateOptions, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
-import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
+import SessionStore, { SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
@@ -78,8 +78,12 @@ class FakeWalletAdapter implements CryptoAdapter {
   }
 }
 
-/** One scripted model response: plain text (`''` = no text), text released by a gate, or text streamed in timed chunks. */
-type ScriptStep = string | { text: string; gate: Promise<void> } | { text: string; ticks: number; tickMs: number }
+/** One scripted model response: plain text (`''` = no text), text released by a gate, text streamed in timed chunks, or a terminal stream error. */
+type ScriptStep =
+  | string
+  | { text: string; gate: Promise<void> }
+  | { text: string; ticks: number; tickMs: number }
+  | { error: { code: string; message: string } }
 
 /** A gate a test opens to let a "long" turn finish. */
 function gate(): { promise: Promise<void>; open: () => void } {
@@ -103,6 +107,9 @@ class MockLlmAdapter extends LlmAdapter {
     let text: string
     if (typeof step === 'string') {
       text = step
+    } else if ('error' in step) {
+      yield { type: 'finish', reason: { kind: 'error', failure: { code: step.error.code, message: step.error.message } } }
+      return
     } else if ('ticks' in step) {
       text = step.text
       if (text !== '') {
@@ -1043,5 +1050,92 @@ describe('turn stall watchdog (no progress, not merely slow)', () => {
     expect(conversation.sent).toEqual([])
     slow.open()
     await vi.waitFor(() => { expect(conversation.sent).toEqual(['local answer']) })
+  })
+})
+
+// ── 9. Error turns never vanish silently ────────────────────────────────────
+
+describe('error turns (model/provider failures must not vanish silently)', () => {
+  it('turnErrorDetail extracts code and message from error turn/end events and ignores non-error events', () => {
+    const { turnErrorDetail } = channelXmtp
+    expect(turnErrorDetail({
+      type: 'turn/end',
+      seq: SessionSeq(1),
+      time: 0,
+      data: { turn: 1, reason: { kind: 'error', error: { code: 'MALFORMED_RESPONSE', message: 'invalid tool call JSON' } } },
+    })).toBe('MALFORMED_RESPONSE: invalid tool call JSON')
+    expect(turnErrorDetail({
+      type: 'turn/end',
+      seq: SessionSeq(2),
+      time: 0,
+      data: { turn: 2, reason: { kind: 'error', error: { code: '', message: 'upstream 502' } } },
+    })).toBe('upstream 502')
+    expect(turnErrorDetail({
+      type: 'turn/end',
+      seq: SessionSeq(3),
+      time: 0,
+      data: { turn: 3, reason: { kind: 'error', error: { code: 'MALFORMED_RESPONSE', message: '' } } },
+    })).toBe('MALFORMED_RESPONSE')
+    expect(turnErrorDetail({
+      type: 'turn/end',
+      seq: SessionSeq(4),
+      time: 0,
+      data: { turn: 4, reason: { kind: 'completed' } },
+    })).toBeUndefined()
+    expect(turnErrorDetail({
+      type: 'turn/start',
+      seq: SessionSeq(5),
+      time: 0,
+      data: { turn: 5 },
+    })).toBeUndefined()
+  })
+
+  it('error turn with no reply sends turnErrorMessage, logs the detail, and answers the outbox', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      for (const replyMode of ['turn', 'message'] as const) {
+        log.mockClear()
+        const { ctx, world, llm, conversation, outbounds, agent } = await harness({ replyMode })
+        try {
+          llm.script.push(
+            { error: { code: 'MALFORMED_RESPONSE', message: 'invalid tool call JSON' } },
+            'recovered reply',
+          )
+
+          world.onValue!(inbound({ id: 'msg-err' }))
+          await vi.waitFor(() => { expect(outbounds).toHaveLength(1) })
+          await (await agent()).whenIdle()
+          expect(conversation.sent).toEqual([channelXmtp.DEFAULT_TURN_ERROR_MESSAGE])
+          expect(runtime().outbox.get('conv-1\nmsg-err')).toBe('sent-1')
+          expect(outbounds).toEqual([
+            { conversationId: 'conv-1', kind: 'reply', turn: 1, inboundMessageId: 'msg-err' },
+          ])
+          expect(log).toHaveBeenCalledWith('[xmtp] turn error conv-1 turn=1: MALFORMED_RESPONSE: invalid tool call JSON')
+
+          // A follow-up message runs normally after the error turn.
+          world.onValue!(inbound({ id: 'msg-ok', content: 'try again' }))
+          await vi.waitFor(() => {
+            expect(conversation.sent).toEqual([channelXmtp.DEFAULT_TURN_ERROR_MESSAGE, 'recovered reply'])
+          })
+        } finally {
+          await ctx.stop()
+        }
+      }
+    } finally {
+      log.mockRestore()
+    }
+  })
+
+  it("turnErrorMessage: '' preserves silent behavior on error turns", async () => {
+    const { world, llm, conversation, outbounds, agent } = await harness({ turnErrorMessage: '' })
+    llm.script.push({ error: { code: 'MALFORMED_RESPONSE', message: 'invalid tool call JSON' } })
+
+    world.onValue!(inbound({ id: 'msg-silent' }))
+    await vi.waitFor(() => { expect(llm.requests).toHaveLength(1) })
+    await (await agent()).whenIdle()
+    await settle()
+    expect(conversation.sent).toEqual([])
+    expect(outbounds).toEqual([])
+    expect(runtime().outbox.get('conv-1\nmsg-silent')).toBe(channelXmtp.OUTBOX_ACCEPTED)
   })
 })

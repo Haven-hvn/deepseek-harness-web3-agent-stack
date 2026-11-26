@@ -30,4 +30,5 @@
         # busyAckDelayMs: 90000    # timed ack for turns still running this long; repeats per busyAckRepeatMs (900000)
         # turnStallMs: 3600000     # cancel after this much zero progress (streaming turns never trip it); 0 disables
         # stallMessage: "..."      # sent when the stall watchdog cancels a turn; '' cancels silently
+        # turnErrorMessage: "..."  # sent when an error turn produces no reply; '' stays silent
         # outboxPath: /var/lib/dsh/xmtp-outbox.json   # exactly-once across restarts (inbound + outbound cursor)

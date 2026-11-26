@@ -80,6 +80,7 @@ agent-running profile.
     # turnStallMs: 3600000     # cancel a turn after this much ZERO progress (not slow-but-streaming);
                              # 60 min suits local LLMs, cloud profiles should use ~900000; 0 disables
     # stallMessage: "That request got stuck and I reset it — please resend."  # '' cancels silently
+    # turnErrorMessage: "I hit an error working on that request — please try resending it."  # '' stays silent
 
 # Recommended alongside: bound background-job wakes per conversation agent.
 - id: tool-jobs

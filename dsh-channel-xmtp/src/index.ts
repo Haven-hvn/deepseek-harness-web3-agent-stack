@@ -104,6 +104,8 @@ export const DEFAULT_BUSY_ACK_REPEAT_MS = 15 * 60_000
 export const DEFAULT_TURN_STALL_MS = 60 * 60_000
 /** Default text sent when the stall watchdog cancels a wedged turn; `stallMessage: ''` cancels silently. */
 export const DEFAULT_STALL_MESSAGE = 'That request got stuck and I reset it — please resend.'
+/** Default text sent when a turn ends with `reason.kind: 'error'` and produced no reply; `turnErrorMessage: ''` stays silent. */
+export const DEFAULT_TURN_ERROR_MESSAGE = 'I hit an error working on that request — please try resending it.'
 /** Outbox value for an inbound admitted to its agent but not yet answered. */
 export const OUTBOX_ACCEPTED = 'accepted'
 /**
@@ -217,6 +219,13 @@ export interface Config {
   turnStallMs?: number
   /** Text sent when the stall watchdog cancels a turn; empty cancels silently. */
   stallMessage?: string
+  /**
+   * Text sent when a turn ends with `reason.kind: 'error'` and produced no
+   * assistant output (e.g. a malformed model response or provider failure),
+   * answering the outbox instead of leaving it stuck at `accepted`.
+   * Defaults to {@link DEFAULT_TURN_ERROR_MESSAGE}; empty string stays silent.
+   */
+  turnErrorMessage?: string
 }
 
 /** Config schema. */
@@ -239,6 +248,7 @@ export const Config: z<Config> = z.object({
   busyAckRepeatMs: z.number().step(1).min(0).default(DEFAULT_BUSY_ACK_REPEAT_MS),
   turnStallMs: z.number().step(1).min(0).default(DEFAULT_TURN_STALL_MS),
   stallMessage: z.string().default(DEFAULT_STALL_MESSAGE),
+  turnErrorMessage: z.string().default(DEFAULT_TURN_ERROR_MESSAGE),
 })
 
 /** One image block an assistant message carried. */
@@ -254,6 +264,23 @@ function assistantContent(event: SessionEvent): { text: string; images: ImageBlo
     .join('')
   const images = blocks.filter((block): block is ImageBlock => block.type === 'image' && block.attachment !== undefined)
   return { text, images }
+}
+
+/**
+ * Diagnostic detail of an error `turn/end` event (`reason.error.code` and
+ * `reason.error.message`), or `undefined` for non-error turns and other events.
+ */
+export function turnErrorDetail(event: SessionEvent): string | undefined {
+  if (event.type !== 'turn/end') return undefined
+  const reason = event.data.reason
+  if (reason.kind !== 'error') return undefined
+  const error = reason.error as { code?: unknown; message?: unknown } | undefined
+  const code = typeof error?.code === 'string' ? error.code.trim() : ''
+  const message = typeof error?.message === 'string' ? error.message.trim() : ''
+  if (code !== '' && message !== '') return `${code}: ${message}`
+  if (message !== '') return message
+  if (code !== '') return code
+  return 'unknown error'
 }
 
 /**
@@ -408,6 +435,8 @@ class XmtpChannelRuntime {
   private readonly pendingInbound = new Map<string, { conversationId: string; inboundMessageId: string }>()
   /** `conversationId\nturn` → the XMTP inbound that turn answers. */
   private readonly turnInbound = new Map<string, string>()
+  /** `conversationId\nturn` keys that already sent assistant output under `replyMode: message`. */
+  private readonly turnReplied = new Set<string>()
   /** Buffered mid-turn lines under `busyInbound: coalesce`, per conversation. */
   private readonly coalesced = new Map<string, { contents: unknown[]; lastInboundId: string }>()
   /** Conversations already acked during their agent's current running interval. */
@@ -532,6 +561,7 @@ class XmtpChannelRuntime {
     for (const timer of this.timers) clearTimeout(timer)
     this.timers.clear()
     this.turnTrackers.clear()
+    this.turnReplied.clear()
     this.lastAckAt.clear()
     if (this.sweepTimer !== undefined) clearInterval(this.sweepTimer)
     this.sweepTimer = undefined
@@ -1096,7 +1126,8 @@ class XmtpChannelRuntime {
           }
           cursor = Number(event.seq)
         } else if (event.type === 'turn/end') {
-          this.settleTurn(conversationId, event.data.turn)
+          const replied = this.turnReplied.delete(`${conversationId}\n${event.data.turn}`)
+          await this.closeTurn(conversationId, event, replied)
           cursor = Number(event.seq)
         } else {
           continue
@@ -1116,10 +1147,13 @@ class XmtpChannelRuntime {
         if (event.type !== 'turn/end') continue
         const turn = event.data.turn
         if (buffer !== undefined && buffer.turn === turn && (buffer.text !== '' || buffer.images.length > 0)) {
+          const errorDetail = turnErrorDetail(event)
+          if (errorDetail !== undefined) {
+            console.log(`[xmtp] turn error ${conversationId.slice(0, 8)} turn=${turn}: ${errorDetail}`)
+          }
           await this.sendOutput(conversationId, turn, buffer.text, buffer.images, true)
         } else {
-          // Silence convention: a turn that produced no assistant output sends nothing.
-          this.settleTurn(conversationId, turn)
+          await this.closeTurn(conversationId, event, false)
         }
         buffer = undefined
         cursor = Number(event.seq)
@@ -1128,6 +1162,27 @@ class XmtpChannelRuntime {
       this.pruneObserved(conversationId)
       await this.persist()
     }
+  }
+
+  /**
+   * Settle a closing turn that did not send a final reply at `turn/end`:
+   * log any turn error, and send `turnErrorMessage` when an error turn
+   * produced no reply so the outbox is answered instead of stuck at `accepted`.
+   */
+  private async closeTurn(conversationId: string, event: SessionEvent<'turn/end'>, replied: boolean): Promise<void> {
+    const turn = event.data.turn
+    const errorDetail = turnErrorDetail(event)
+    if (errorDetail !== undefined) {
+      console.log(`[xmtp] turn error ${conversationId.slice(0, 8)} turn=${turn}: ${errorDetail}`)
+      const errorNotice = this.config.turnErrorMessage ?? DEFAULT_TURN_ERROR_MESSAGE
+      if (!replied && errorNotice !== '') {
+        await this.sendOutput(conversationId, turn, errorNotice, [], true)
+        return
+      }
+    }
+    // Silence convention: a non-error turn with no assistant output (or an
+    // error turn with `turnErrorMessage: ''`) sends nothing.
+    this.settleTurn(conversationId, turn)
   }
 
   /** Forget a closed turn's inbound correlation without sending. */
@@ -1161,6 +1216,7 @@ class XmtpChannelRuntime {
     const inboundMessageId = this.turnInbound.get(key)
     if (closesTurn) this.turnInbound.delete(key)
     if (!sentAny) return
+    if (!closesTurn) this.turnReplied.add(key)
     if (inboundMessageId !== undefined) {
       this.outbox.set(XmtpChannelRuntime.outboxKey(conversationId, inboundMessageId), XmtpChannelRuntime.sentId(sent))
       this.pruneOutbox()

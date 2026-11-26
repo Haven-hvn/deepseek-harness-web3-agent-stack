@@ -121,6 +121,23 @@ describe('seed-openmausbot', () => {
   })
 })
 
+describe('phone pairing & selectable local model', () => {
+  it('forwards OMB_PUBLIC_URL to the pair CLI so phones get a link and QR', () => {
+    const script = readFileSync(new URL('../mausbot/mausbot-pair.sh', import.meta.url), 'utf8')
+    expect(script).toContain('--public-url "$OMB_PUBLIC_URL"')
+    expect(script).toContain('openmausbot pair "$@"')
+  })
+
+  it('ships an lmstudio provider alongside spark in the ACP patch', () => {
+    const patch = readFileSync(new URL('../mausbot/profile.acp.patch.yml', import.meta.url), 'utf8')
+    expect(patch).toContain('providers.lmstudio')
+    expect(patch).toContain('process.env.LMSTUDIO_BASE_URL')
+    expect(patch).toContain("process.env.LMSTUDIO_MODEL_ID || 'bonsai27b'")
+    // The default model selection remains the configured spark endpoint.
+    expect(patch).toContain("process.env.MODEL_BASE_URL ? 'spark' : 'deepseek-official'")
+  })
+})
+
 describe('no-body-timeout preload', () => {
   it('uses one-hour undici timers and the wrapper marker', async () => {
     const preload = await import('../mausbot/no-body-timeout.cjs')
