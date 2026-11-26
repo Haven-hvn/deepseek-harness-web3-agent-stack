@@ -157,7 +157,13 @@ RUN git init -q /opt/mint-glue-graduate && cd /opt/mint-glue-graduate \
     && chmod -R a+rX /opt/mint-glue-graduate
 
 # Build the stack in-image. Do NOT `pnpm prune --prod` (peers live in devDeps).
+# pnpm-workspace.yaml sets verifyDepsBeforeRun: false and ignoreScripts: true,
+# so `pnpm -r build` cannot spawn an implicit install that re-runs `prepare`
+# (tsdown) under QEMU. Ensure every .bin shim is executable before the explicit
+# build too: emulated arm64 can skip pnpm's bin chmod and then fail with
+# `tsdown: Permission denied` (exit 126).
 RUN cd /opt/stack && pnpm install --no-frozen-lockfile --ignore-scripts \
+    && (find /opt/stack -path '*/node_modules/.bin/*' -type l -exec chmod +x {} + 2>/dev/null || true) \
     && pnpm -r build \
     && chmod -R a+rX /opt/stack
 

@@ -15,3 +15,14 @@ packages:
   - dsh-observatory
   - dsh-exactly-once
   - dsh-agent-herald
+
+# pnpm 11 defaults verifyDepsBeforeRun to `install`. A `pnpm install
+# --no-frozen-lockfile` can rewrite this file (minimumReleaseAgeExclude),
+# which makes pnpm consider node_modules stale; the next `pnpm -r build`
+# then spawns a second install WITHOUT --ignore-scripts. That install runs
+# each workspace package's `prepare` (`tsdown`), which fails under the
+# emulated arm64 image build with `tsdown: Permission denied` (exit 126).
+# The Dockerfile builds everything explicitly with `pnpm -r build`, so no
+# implicit installs or install-time lifecycle scripts are wanted here.
+verifyDepsBeforeRun: false
+ignoreScripts: true
