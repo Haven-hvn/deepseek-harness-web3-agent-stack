@@ -34,8 +34,8 @@
     "prepare": "tsdown"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "~3.19.0",
-    "ethers": "=6.17.0"
+    "@deepseek-ai/schemastery": "3.19.0",
+    "ethers": "6.17.0"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.1.0",
@@ -48,12 +48,12 @@
     }
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "~4.1.0",
-    "@deepseek-ai/dsh-credentials": "=0.2.2-rc.4",
+    "@deepseek-ai/cordis": "4.1.0",
+    "@deepseek-ai/dsh-credentials": "0.0.1-rc.1",
     "dsh-wallet": "workspace:=0.1.0",
-    "tsdown": "=0.23.0",
-    "typescript": "=7.0.2",
-    "vitest": "=5.0.2",
-    "ethers": "=6.17.0"
+    "tsdown": "0.23.7",
+    "typescript": "7.0.2",
+    "vitest": "5.1.2",
+    "ethers": "6.17.0"
   }
 }

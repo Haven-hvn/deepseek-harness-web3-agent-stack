@@ -29,7 +29,7 @@
     }
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "~3.19.0"
+    "@deepseek-ai/schemastery": "3.19.0"
   },
   "scripts": {
     "build": "tsdown",

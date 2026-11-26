@@ -38,13 +38,13 @@
     "prepare": "tsdown"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "~3.19.0",
-    "filecoin-pin": "=2.1.1",
-    "@filoz/synapse-sdk": "=3.0.1",
-    "@filoz/synapse-core": "=0.11.1",
-    "ethers": "=6.17.0",
-    "multiformats": "=14.0.5",
-    "viem": "=2.58.6"
+    "@deepseek-ai/schemastery": "3.19.0",
+    "filecoin-pin": "2.4.0",
+    "@filoz/synapse-sdk": "3.0.1",
+    "@filoz/synapse-core": "0.11.1",
+    "ethers": "6.17.0",
+    "multiformats": "14.0.8",
+    "viem": "2.58.6"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.1.0",
@@ -52,18 +52,18 @@
     "dsh-wallet": "workspace:*"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "~4.1.0",
-    "@deepseek-ai/dsh-credentials": "=0.2.2-rc.4",
-    "@deepseek-ai/dsh-llm": "=0.2.2-rc.4",
-    "@deepseek-ai/dsh-session": "=0.2.2-rc.4",
-    "@deepseek-ai/dsh-session-projection": "=0.2.2-rc.4",
-    "@deepseek-ai/dsh-system-prompt": "=0.2.2-rc.4",
-    "@deepseek-ai/dsh-tool-executor-native": "=0.2.2-rc.4",
-    "@deepseek-ai/dsh-tools": "=0.2.2-rc.4",
+    "@deepseek-ai/cordis": "4.1.0",
+    "@deepseek-ai/dsh-credentials": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-llm": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-session": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-session-projection": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-system-prompt": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-tool-executor-native": "0.2.2-alpha.2",
+    "@deepseek-ai/dsh-tools": "0.0.1-rc.1",
     "dsh-exactly-once": "workspace:=0.1.0",
     "dsh-wallet": "workspace:=0.1.0",
-    "tsdown": "=0.23.0",
-    "typescript": "=7.0.2",
-    "vitest": "=5.0.2"
+    "tsdown": "0.23.7",
+    "typescript": "7.0.2",
+    "vitest": "5.1.2"
   }
 }
