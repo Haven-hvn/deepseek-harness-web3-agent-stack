@@ -16,6 +16,13 @@ export interface ArkivBackendOpts {
   rpcUrl: string;
   chainId?: number;
   /**
+   * Arkiv RPC access key, spliced into the Rabdi chain's RPC path so
+   * requests leave the heavily rate-limited public endpoint. Not a secret
+   * (it ships with any app that talks to the chain); `""` keeps the public
+   * endpoint and the SDK's one-time warning.
+   */
+  accessKey?: string;
+  /**
    * Optional fixed schema for every write. Unset: `schemaForGrp` picks the
    * Haven media schema from the record's `grp`. dsh-board passes its
    * BOARD_SCHEMA here — board attributes are not HavenFullSchema columns.
@@ -142,7 +149,7 @@ export class ArkivBackend {
     const chains = await import('@arkiv-network/sdk/chains');
     const pk = (await this.opts.getPrivateKey()) as Hex;
     const account = privateKeyToAccount(pk);
-    const chain = resolveChainForRpcUrl(this.opts.rpcUrl, chains, '');
+    const chain = resolveChainForRpcUrl(this.opts.rpcUrl, chains, this.opts.accessKey ?? '');
     const transport = (await import('viem')).http(this.opts.rpcUrl);
     // Use createWalletClient from @arkiv-network/sdk which extends viem with Arkiv actions
     const client = createWalletClient({
@@ -156,7 +163,7 @@ export class ArkivBackend {
   private async getPublicClient(): Promise<any> {
     const { createPublicClient } = await import('@arkiv-network/sdk');
     const chains = await import('@arkiv-network/sdk/chains');
-    const chain = resolveChainForRpcUrl(this.opts.rpcUrl, chains, '');
+    const chain = resolveChainForRpcUrl(this.opts.rpcUrl, chains, this.opts.accessKey ?? '');
     const client = createPublicClient({
       chain,
       transport: (await import('viem')).http(this.opts.rpcUrl),

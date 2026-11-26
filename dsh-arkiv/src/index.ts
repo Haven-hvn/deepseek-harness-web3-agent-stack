@@ -53,6 +53,13 @@ export interface Config {
   privateKeyRef: string;
   rpcUrl: string;
   chainId?: number;
+  /**
+   * Name of the credential/env var holding the Arkiv RPC access key. When
+   * set, requests use the keyed Rabdi endpoint instead of the heavily
+   * rate-limited public one. Not a secret; `""`/unset keeps the public
+   * endpoint.
+   */
+  accessKeyRef?: string;
 }
 
 export const Config: z<Config> = z.object({
@@ -60,6 +67,7 @@ export const Config: z<Config> = z.object({
   privateKeyRef: z.string().required(),
   rpcUrl: z.string().required(),
   chainId: z.number().default(8453),
+  accessKeyRef: z.string(),
 });
 
 /** Stable stringify with sorted object keys (retry-identical args hash identically). */
@@ -141,12 +149,14 @@ export class ArkivRuntime {
   private readonly _privateKeyRef: string;
   private readonly _rpcUrl: string;
   private readonly _chainId?: number;
+  private readonly _accessKeyRef?: string;
 
-  constructor(private readonly ctx: Context, private readonly wallet: string, opts: { privateKeyRef: string; rpcUrl: string; chainId?: number }) {
+  constructor(private readonly ctx: Context, private readonly wallet: string, opts: { privateKeyRef: string; rpcUrl: string; chainId?: number; accessKeyRef?: string }) {
     if (!opts.privateKeyRef || !opts.rpcUrl) throw new Error('dsh-arkiv: privateKeyRef+rpcUrl required');
     this._privateKeyRef = opts.privateKeyRef;
     this._rpcUrl = opts.rpcUrl;
     this._chainId = opts.chainId;
+    this._accessKeyRef = opts.accessKeyRef;
   }
 
   private async resolvePrivateKey(): Promise<string> {
@@ -164,10 +174,32 @@ export class ArkivRuntime {
     return v;
   }
 
+  /**
+   * Resolve the Arkiv RPC access key (not a secret). Unlike the signing key
+   * this is best-effort: a missing key falls back to `''` (public endpoint,
+   * rate limited) rather than failing the plugin — Arkiv still works, just
+   * slower. The SDK prints a one-time warning in that case.
+   */
+  private async resolveAccessKey(): Promise<string> {
+    const ref = this._accessKeyRef;
+    if (!ref) return '';
+    const creds: any = (this.ctx as any).credentials;
+    let v: string | undefined;
+    if (creds?.resolve) {
+      try {
+        const resolved = await creds.resolve(ref);
+        v = typeof resolved === 'string' ? resolved : resolved?.value;
+      } catch {}
+    }
+    if (!v) v = process.env[ref];
+    return v ?? '';
+  }
+
   private async ensureBackend(): Promise<ArkivBackend> {
     if (this.backend) return this.backend;
     const getPrivateKey = () => this.resolvePrivateKey();
-    this.backend = new ArkivBackend({ privateKeyRef: this._privateKeyRef, getPrivateKey, rpcUrl: this._rpcUrl, chainId: this._chainId });
+    const accessKey = await this.resolveAccessKey();
+    this.backend = new ArkivBackend({ privateKeyRef: this._privateKeyRef, getPrivateKey, rpcUrl: this._rpcUrl, chainId: this._chainId, accessKey });
     return this.backend;
   }
 
@@ -634,7 +666,7 @@ export const BATCH_RESULT_SCHEMA = {
 } as const;
 
 export function apply(ctx: Context, config: Config): void {
-  const arkiv = new ArkivRuntime(ctx, config.wallet, { privateKeyRef: config.privateKeyRef, rpcUrl: config.rpcUrl, chainId: config.chainId });
+  const arkiv = new ArkivRuntime(ctx, config.wallet, { privateKeyRef: config.privateKeyRef, rpcUrl: config.rpcUrl, chainId: config.chainId, accessKeyRef: config.accessKeyRef });
   ctx.provide('arkiv', arkiv);
 
   // The read-back hooks register lazily from the runtime's write paths
