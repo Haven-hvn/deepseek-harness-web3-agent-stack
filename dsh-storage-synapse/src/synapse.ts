@@ -322,8 +322,11 @@ export class FilecoinBackend {
   }
 
   async pin(cid: Cid): Promise<PinStatus> {
-    const status = await this.checkPin(cid)
-    if (status.redundancy > 0) return status
-    return { cid, provider: 'filecoin', expiresAt: 0, redundancy: 1 }
+    // Honest liveness read: report the real pin status. A freshly uploaded
+    // piece may not be findable yet (PDP finalization / IPNI validation
+    // pending), so returning a forced redundancy:1 here would mask that and
+    // make the tool disagree with synapse_pin_status. Callers that need the
+    // piece live should poll synapse_pin_status until redundancy > 0.
+    return await this.checkPin(cid)
   }
 }
