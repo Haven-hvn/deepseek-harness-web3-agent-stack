@@ -1,6 +1,6 @@
 {
   "name": "dsh-wallet",
-  "description": "Wallet capability seam for DeepSeek Harness (ctx.wallet): named wallets over pluggable chain adapters, with secrets resolved through ctx.credentials at each operation — configuration carries credential references, never keys",
+  "description": "Wallet capability seam for DeepSeek Harness (ctx.wallet): named wallets over pluggable chain adapters, with secrets resolved through ctx.credentials at each operation \u2014 configuration carries credential references, never keys",
   "version": "0.1.0",
   "type": "module",
   "main": "lib/index.js",
@@ -38,11 +38,11 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.1.0",
-    "@deepseek-ai/dsh-credentials": "0.2.2-rc.4"
+    "@deepseek-ai/dsh-credentials": "0.2.2-rc.5"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.1.0",
-    "@deepseek-ai/dsh-credentials": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-credentials": "0.2.2-rc.5",
     "tsdown": "0.23.7",
     "typescript": "7.0.2",
     "vitest": "5.1.2"

@@ -1,6 +1,6 @@
 {
   "name": "dsh-wallet-tools",
-  "description": "Wallet tools for DeepSeek Harness: exposes ctx.wallet address/balances as model-facing tools (wallet_info) via dsh-tools seam — proper harness tool bundle, no profile persona shortcut",
+  "description": "Wallet tools for DeepSeek Harness: exposes ctx.wallet address/balances as model-facing tools (wallet_info) via dsh-tools seam \u2014 proper harness tool bundle, no profile persona shortcut",
   "version": "0.1.0",
   "type": "module",
   "main": "lib/index.js",
@@ -34,15 +34,15 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.1.0",
-    "@deepseek-ai/dsh-tools": "0.2.2-rc.4",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.5",
     "dsh-wallet": "workspace:*"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.1.0",
-    "@deepseek-ai/dsh-llm": "0.0.1-rc.1",
-    "@deepseek-ai/dsh-system-prompt": "0.0.1-rc.1",
-    "@deepseek-ai/dsh-tool-executor-native": "0.2.2-alpha.2",
-    "@deepseek-ai/dsh-tools": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-llm": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-system-prompt": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-tool-executor-native": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.5",
     "vitest": "5.1.2"
   }
 }

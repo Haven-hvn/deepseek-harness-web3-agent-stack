@@ -43,7 +43,7 @@ RUN case "${TARGETARCH}" in \
 # Published CLIs (pinned) + pnpm for profile assembly. dsh gates every
 # plugin's @deepseek-ai/dsh-* peers against this runtime version at
 # `dsh plugin add` and profile boot, so this pin must equal the stack's peers.
-RUN npm i -g @deepseek-ai/dsh@0.2.2-rc.4 @xmtp/convos-cli@0.10.23 pnpm@11.7.0 \
+RUN npm i -g @deepseek-ai/dsh@0.2.2-rc.5 @xmtp/convos-cli@0.10.23 pnpm@11.7.0 \
     && npm cache clean --force
 
 # Agent helper runtime: keys.mjs resolves these from sibling node_modules
@@ -66,15 +66,24 @@ RUN sed -i 's/\r$//' /opt/agent/entrypoint.sh /opt/agent/convos-qr.sh \
     && sh -n /opt/agent/convos-qr.sh
 
 # Web3 agent stack workspace root (for in-image install + build).
-COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json .npmrc /opt/stack/
+COPY package.json pnpm-workspace.yaml tsconfig.base.json .npmrc /opt/stack/
 # Web3 agent stack source (node_modules/lib excluded via .dockerignore).
 # One COPY per package: multi-source COPY merges directory contents.
 COPY dsh-wallet/ /opt/stack/dsh-wallet/
 COPY dsh-wallet-ethereum/ /opt/stack/dsh-wallet-ethereum/
 COPY dsh-wallet-tools/ /opt/stack/dsh-wallet-tools/
+COPY dsh-treasury/ /opt/stack/dsh-treasury/
+COPY dsh-channel-xmtp/ /opt/stack/dsh-channel-xmtp/
+COPY dsh-storage-synapse/ /opt/stack/dsh-storage-synapse/
+COPY dsh-arkiv/ /opt/stack/dsh-arkiv/
+COPY dsh-erc8004/ /opt/stack/dsh-erc8004/
+COPY dsh-royalty-router/ /opt/stack/dsh-royalty-router/
 COPY dsh-haven-aol/ /opt/stack/dsh-haven-aol/
 COPY dsh-persona/ /opt/stack/dsh-persona/
+COPY dsh-tool-prowlarr/ /opt/stack/dsh-tool-prowlarr/
+COPY dsh-tool-acquisition/ /opt/stack/dsh-tool-acquisition/
 COPY dsh-observatory/ /opt/stack/dsh-observatory/
+COPY dsh-exactly-once/ /opt/stack/dsh-exactly-once/
 COPY dsh-agent-herald/ /opt/stack/dsh-agent-herald/
 
 # haven-aol source: dsh-haven-aol depends on it via
@@ -120,18 +129,18 @@ ENV DSH_HOME=/opt/dsh-skel
 # dsh-exactly-once installs first so its tools/execute wrapper registers
 # outermost: redelivered calls replay before any other wrapper runs.
 RUN dsh plugin --profile agent add \
-      \
+      /opt/stack/dsh-exactly-once \
       /opt/stack/dsh-wallet /opt/stack/dsh-wallet-ethereum \
-      /opt/stack/dsh-wallet-tools \
-      \
-      \
-      /opt/stack/dsh-haven-aol \
-      /opt/stack/dsh-persona \
-      /opt/stack/dsh-observatory \
+      /opt/stack/dsh-wallet-tools /opt/stack/dsh-treasury \
+      /opt/stack/dsh-channel-xmtp /opt/stack/dsh-storage-synapse \
+      /opt/stack/dsh-arkiv /opt/stack/dsh-erc8004 \
+      /opt/stack/dsh-royalty-router /opt/stack/dsh-haven-aol \
+      /opt/stack/dsh-persona /opt/stack/dsh-tool-prowlarr \
+      /opt/stack/dsh-tool-acquisition /opt/stack/dsh-observatory \
       /opt/stack/dsh-agent-herald \
     && dsh plugin --profile agent add @xmtp/node-sdk \
     && dsh --profile agent --dump-default-config > /dev/null \
-    && node --input-type=module -e "await import('/opt/stack/dsh-wallet/lib/index.js'); await import('/opt/stack/dsh-observatory/lib/index.js'); await import('/opt/stack/dsh-agent-herald/lib/index.js'); console.log('stack import gate: OK')" \
+    && node --input-type=module -e "await import('/opt/stack/dsh-wallet/lib/index.js'); await import('/opt/stack/dsh-channel-xmtp/lib/index.js'); await import('/opt/stack/dsh-tool-acquisition/lib/index.js'); await import('/opt/stack/dsh-observatory/lib/index.js'); await import('/opt/stack/dsh-exactly-once/lib/index.js'); await import('/opt/stack/dsh-agent-herald/lib/index.js'); console.log('stack import gate: OK')" \
     && { dsh --version; \
          sha256sum /opt/dsh-skel/profiles/agent/package.json /opt/stack/pnpm-lock.yaml; \
          [ ! -f /opt/dsh-skel/profiles/agent/pnpm-lock.yaml ] || sha256sum /opt/dsh-skel/profiles/agent/pnpm-lock.yaml; \

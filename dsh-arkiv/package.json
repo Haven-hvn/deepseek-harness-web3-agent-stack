@@ -1,6 +1,6 @@
 {
   "name": "dsh-arkiv",
-  "description": "Arkiv entity storage for DeepSeek Harness: ctx.arkiv (create/query via @arkiv-network/sdk) — gated Filecoin-style, haven-spec entity definition",
+  "description": "Arkiv entity storage for DeepSeek Harness: ctx.arkiv (create/query via @arkiv-network/sdk) \u2014 gated Filecoin-style, haven-spec entity definition",
   "version": "0.1.0",
   "type": "module",
   "main": "lib/index.js",
@@ -50,12 +50,12 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.1.0",
-    "@deepseek-ai/dsh-tools": "0.2.2-rc.4",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.5",
     "dsh-wallet": "workspace:*"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.1.0",
-    "@deepseek-ai/dsh-tools": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.5",
     "dsh-exactly-once": "workspace:=0.1.0",
     "dsh-wallet": "workspace:=0.1.0",
     "tsdown": "0.23.7",

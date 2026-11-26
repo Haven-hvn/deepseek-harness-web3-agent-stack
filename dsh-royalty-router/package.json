@@ -1,6 +1,6 @@
 {
   "name": "dsh-royalty-router",
-  "description": "mint.club graduation advisor + launcher for DeepSeek Harness: rr_advise (model-backed launch params), rr_venue (curve-vs-pool quotes), rr_build (launch dry-run), rr_launch, rr_sweep, rr_heartbeat over @royalty-router/sdk — reads are free, execute tools sign per operation through ctx.wallet",
+  "description": "mint.club graduation advisor + launcher for DeepSeek Harness: rr_advise (model-backed launch params), rr_venue (curve-vs-pool quotes), rr_build (launch dry-run), rr_launch, rr_sweep, rr_heartbeat over @royalty-router/sdk \u2014 reads are free, execute tools sign per operation through ctx.wallet",
   "version": "0.1.0",
   "type": "module",
   "main": "lib/index.js",
@@ -36,11 +36,11 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.1.0",
-    "@deepseek-ai/dsh-tools": "0.2.2-rc.4"
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.5"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.1.0",
-    "@deepseek-ai/dsh-tools": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.5",
     "dsh-exactly-once": "workspace:=0.1.0",
     "tsdown": "0.23.7",
     "typescript": "7.0.2",
