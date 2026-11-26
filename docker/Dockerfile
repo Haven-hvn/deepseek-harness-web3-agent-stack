@@ -59,6 +59,7 @@ RUN cd /opt/agent && npm i --omit=dev --no-audit --no-fund \
 # Normalising here keeps the build correct regardless of host git settings.
 COPY docker/keys.mjs docker/entrypoint.sh docker/convos-qr.sh \
      docker/setup-indexers.mjs docker/profile.patch.yml \
+     docker/mausbot/no-body-timeout.cjs \
      docker/supervisord.conf /opt/agent/
 RUN sed -i 's/\r$//' /opt/agent/entrypoint.sh /opt/agent/convos-qr.sh \
     && chmod +x /opt/agent/entrypoint.sh /opt/agent/convos-qr.sh \

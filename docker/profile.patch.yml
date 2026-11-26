@@ -21,8 +21,30 @@
         apiKeyEnv: MODEL_API_KEY
         baseURL: !!js process.env.MODEL_BASE_URL
         api: !!js process.env.MODEL_API_PROTOCOL || 'openai-completions'
+        # pi-ai sends `store` to unknown OpenAI-compatible hosts by default;
+        # Upstage 400s on it. Its `developer` role and `max_completion_tokens`
+        # field also break several local servers. One-hour timeouts keep slow
+        # local models from being killed mid-turn (see no-body-timeout.cjs).
+        streamIdleTimeoutMs: 3600000
+        timeoutMs: 3600000
+        retryPolicy:
+          mode: normal
+          maxRetries: 4
+          backoff:
+            initialDelayMs: 10000
+            maxDelayMs: 180000
+        compat:
+          supportsStore: false
+          supportsDeveloperRole: false
+          maxTokensField: max_tokens
+          supportsReasoningEffort: !!js Boolean(process.env.MODEL_REASONING_EFFORT)
+        reasoning: !!js process.env.MODEL_REASONING_EFFORT || undefined
         models:
           - id: !!js process.env.MODEL_ID
+            contextWindow: !!js Number(process.env.MODEL_CONTEXT_WINDOW) || 131072
+            maxTokens: !!js Number(process.env.MODEL_MAX_OUTPUT_TOKENS) || 32768
+            reasoningEfforts: !!js >-
+              process.env.MODEL_REASONING_EFFORT ? { off: 'none', low: 'low', medium: 'medium' } : undefined
 
 # ── Wallets: hot, internal, agent-managed (raw keyRef, no OWS vault) ────
 - id: wallet

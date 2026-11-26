@@ -56,6 +56,8 @@ describe('seed-openmausbot', () => {
     expect(cfg.computerName).toBe('My Haven Box')
     expect(cfg.defaultModelSelection).toEqual({ instanceId: 'deepseek', model: 'spark/my-model' })
     expect(cfg.newBotDefaults.profile.modelSelection).toEqual({ instanceId: 'deepseek', model: 'spark/my-model' })
+    // Matches the one-hour DSH/ACP timers for slow local-model turns.
+    expect(cfg.rooms).toEqual({ turnTimeoutMinutes: 60 })
     expect(cfg.instances.deepseek).toEqual({
       driver: 'deepseekAgent',
       displayName: 'Haven Web3 (dsh)',
@@ -97,16 +99,35 @@ describe('seed-openmausbot', () => {
       MODEL_BASE_URL: 'https://example.invalid/v1',
       MODEL_ID: 'org/model:free',
       MODEL_API_KEY: `sk-test'$100`,
+      MODEL_CONTEXT_WINDOW: '65536',
+      MODEL_MAX_OUTPUT_TOKENS: '32768',
+      MODEL_REASONING_EFFORT: 'low',
     })
     expect(text).toContain(`MODEL_BASE_URL='https://example.invalid/v1'`)
     expect(text).toContain(`MODEL_ID='org/model:free'`)
     expect(text).toContain(`MODEL_API_KEY='sk-test'\\''$100'`)
+    // Size/effort knobs must survive container recreation with the rest.
+    expect(text).toContain(`MODEL_CONTEXT_WINDOW='65536'`)
+    expect(text).toContain(`MODEL_MAX_OUTPUT_TOKENS='32768'`)
+    expect(text).toContain(`MODEL_REASONING_EFFORT='low'`)
+    // Local endpoints need no key; the entrypoint supplies a placeholder.
+    expect(formatModelEnv({ MODEL_ID: 'bonsai27b' })).toBe(`MODEL_ID='bonsai27b'\n`)
 
     const dir = makeTempDir()
     const envPath = join(dir, 'model.env')
     expect(writeModelEnv(envPath, { MODEL_ID: 'test-model' })).toBe(true)
     expect(readFileSync(envPath, 'utf8')).toBe(`MODEL_ID='test-model'\n`)
     expect(writeModelEnv(join(dir, 'empty.env'), {})).toBe(false)
+  })
+})
+
+describe('no-body-timeout preload', () => {
+  it('uses one-hour undici timers and the wrapper marker', async () => {
+    const preload = await import('../mausbot/no-body-timeout.cjs')
+    expect(preload.ONE_HOUR_MS).toBe(3_600_000)
+    expect(preload.MARKER).toBe('--require /opt/agent/no-body-timeout.cjs')
+    // Importing without the marker must not install a global dispatcher.
+    expect(typeof preload.install).toBe('function')
   })
 })
 

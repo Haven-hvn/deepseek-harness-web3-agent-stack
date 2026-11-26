@@ -8,6 +8,8 @@
 #   settings) without overriding values explicitly set in OpenMausBot Settings.
 # - Preloads `acp-stdout-guard.mjs` when running the `acp` profile so plugin
 #   `console.log` calls go to stderr and never corrupt ACP JSON-RPC framing.
+# - Preloads `no-body-timeout.cjs` so undici's 300 s body/header timeout never
+#   kills a slow local-model turn (the one-hour OMB_* timers bound it instead).
 set -eu
 
 export DSH_HOME="${DSH_HOME:-/data/dsh}"
@@ -56,7 +58,7 @@ for arg in "$@"; do
 done
 
 if [ "$is_acp" = "1" ] && [ "$is_meta" = "0" ]; then
-  export NODE_OPTIONS="--import /opt/agent/acp-stdout-guard.mjs ${NODE_OPTIONS:-}"
+  export NODE_OPTIONS="--import /opt/agent/acp-stdout-guard.mjs --require /opt/agent/no-body-timeout.cjs ${NODE_OPTIONS:-}"
 fi
 
 exec dsh "$@"

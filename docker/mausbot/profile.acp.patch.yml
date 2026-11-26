@@ -8,6 +8,15 @@
 
 # ── Model (custom OpenAI-compatible `spark` when MODEL_BASE_URL is set,
 #    otherwise native `deepseek-official`) ───────────────────────────────
+# `spark` is deliberately hardened for generic OpenAI-compatible servers:
+#   - pi-ai's `store` default is on for unknown hosts; Upstage 400s on it.
+#   - its `developer` role default and `max_completion_tokens` field break
+#     several local servers (LM Studio) and Upstage as well.
+#   - one-hour idle/total timeouts match the OMB_* turn timers below, so a
+#     slow JIT-loaded local model is not killed mid-turn.
+# MODEL_REASONING_EFFORT (none|low|medium) optionally enables Upstage-style
+# reasoning verbs; MODEL_CONTEXT_WINDOW / MODEL_MAX_OUTPUT_TOKENS declare the
+# model's real size (local 27B models are usually 64K, not 512K).
 - id: agent-default-model
   config:
     provider: !!js >-
@@ -26,7 +35,27 @@
   config:
     providers: !!js >-
       (process.env.MODEL_BASE_URL
-        ? { spark: { apiKeyEnv: 'MODEL_API_KEY', baseURL: process.env.MODEL_BASE_URL, api: process.env.MODEL_API_PROTOCOL || 'openai-completions', models: [{ id: process.env.MODEL_ID || 'default' }] } }
+        ? { spark: {
+            apiKeyEnv: 'MODEL_API_KEY',
+            baseURL: process.env.MODEL_BASE_URL,
+            api: process.env.MODEL_API_PROTOCOL || 'openai-completions',
+            streamIdleTimeoutMs: 3600000,
+            timeoutMs: 3600000,
+            retryPolicy: { mode: 'normal', maxRetries: 4, backoff: { initialDelayMs: 10000, maxDelayMs: 180000 } },
+            compat: {
+              supportsStore: false,
+              supportsDeveloperRole: false,
+              maxTokensField: 'max_tokens',
+              supportsReasoningEffort: Boolean(process.env.MODEL_REASONING_EFFORT),
+            },
+            reasoning: process.env.MODEL_REASONING_EFFORT || undefined,
+            models: [{
+              id: process.env.MODEL_ID || 'default',
+              contextWindow: Number(process.env.MODEL_CONTEXT_WINDOW) || 131072,
+              maxTokens: Number(process.env.MODEL_MAX_OUTPUT_TOKENS) || 32768,
+              reasoningEfforts: process.env.MODEL_REASONING_EFFORT ? { off: 'none', low: 'low', medium: 'medium' } : undefined,
+            }],
+          } }
         : {})
 
 # ── Wallets: hot, internal, agent-managed (raw keyRef, no OWS vault) ────
