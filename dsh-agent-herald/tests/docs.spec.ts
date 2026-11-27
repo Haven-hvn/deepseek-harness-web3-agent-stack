@@ -61,6 +61,10 @@ describe('agent docs', () => {
       'opt-in journal',
       'embedded player',
       'Arkiv key <0x…>',
+      'Playback is the shoutbox\'s job, not yours',
+      'client-side app',
+      'Never stand up a local or loopback HTTP server',
+      'announcement is the whole deliverable',
       'writer parse-validates every locator before signing',
       'never guess, complete, or repair a',
     ]) {

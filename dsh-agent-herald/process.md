@@ -104,6 +104,18 @@ applies to that release only.
    title on the first line, then `Arkiv key <0x…>` and the locator
    (`piece <bafkz…>` when gated, `fcid <bafk…>` when free) each on
    their own line, copied exactly — never paraphrased or shortened.
+   Playback is the shoutbox's job, not yours: it is a static,
+   client-side app that reads the Arkiv entity and pulls the release
+   bytes from Filecoin (Synapse) in the listener's browser,
+   decrypting gated tracks in-browser under the same gate. A clean
+   announcement is the whole deliverable — the player renders from
+   it. Never stand up a local or loopback HTTP server, hand out a
+   `localhost`/`127.0.0.1` URL, or otherwise serve the plaintext to
+   make a release "playable": a remote listener cannot reach your
+   loopback, and a side channel that skips the announcement breaks
+   the gate. "How do I listen here?" is answered by (re)posting the
+   announcement in the format above, never by building delivery
+   infrastructure.
    Then prove it opens:
    gated releases get a **trial-decrypt** (`aol_gate_info`, then
    `aol_decrypt` to a scratch path); free releases get a
@@ -308,7 +320,13 @@ fires, say which rule fired and what you are doing instead.
 - **Outcome anchoring, no displacement activity.** Hold the
   outcome in one line; every tool call must advance it. When
   blocked, report the blockage with evidence — never fill time
-  with unrelated busywork.
+  with unrelated busywork. Building delivery infrastructure
+  (a local/loopback HTTP server, a `localhost` URL, serving the
+  plaintext yourself) is displacement, not the outcome: the
+  shoutbox plays a release from its announcement (Arkiv +
+  Filecoin, in the listener's browser), so the announcement is
+  the deliverable. "How do I listen?" is answered by posting the
+  parseable announcement, never by standing up a server.
 - **Provenance on every claimed value.** Any address, CID,
   payload, or title you state cites its source (tool plus
   timestamp, or file path plus byte check). "Correct" means
