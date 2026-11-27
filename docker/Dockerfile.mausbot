@@ -162,9 +162,13 @@ RUN git init -q /opt/mint-glue-graduate && cd /opt/mint-glue-graduate \
 # (tsdown) under QEMU. Ensure every .bin shim is executable before the explicit
 # build too: emulated arm64 can skip pnpm's bin chmod and then fail with
 # `tsdown: Permission denied` (exit 126).
+# Serialize the package builds: 16 concurrent tsdown/rolldown-plugin-dts runs
+# exhaust the 2-vCPU GitHub runner's memory under QEMU and turn a ~5-minute arm64
+# build into hours. `--workspace-concurrency=1` trades wall-clock time on the
+# fast native amd64 leg for a predictable, non-thrashing emulated arm64 leg.
 RUN cd /opt/stack && pnpm install --no-frozen-lockfile --ignore-scripts \
     && (find /opt/stack -path '*/node_modules/.bin/*' -type l -exec chmod +x {} + 2>/dev/null || true) \
-    && pnpm -r build \
+    && pnpm -r --workspace-concurrency=1 build \
     && chmod -R a+rX /opt/stack
 
 # Build the `acp` profile skeleton in `/opt/dsh-skel`:

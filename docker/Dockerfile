@@ -117,7 +117,7 @@ RUN git init -q /opt/mint-glue-graduate && cd /opt/mint-glue-graduate \
 # devDependencies, so do not `pnpm prune --prod` — that removes cordis and
 # every bundle fails to import.
 RUN cd /opt/stack && pnpm install --no-frozen-lockfile --ignore-scripts \
-    && pnpm -r build
+    && pnpm -r --workspace-concurrency=1 build
 
 # Profile skeleton: base bundles + all stack packages + xmtp runtime dep.
 # Built once here; first boot copies it into /data, and a later image whose
