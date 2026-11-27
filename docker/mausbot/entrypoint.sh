@@ -172,6 +172,7 @@ sync_dsh_credentials_deepseek() {
 
 mkdir -p /data/logs /data/keys /data/downloads/acquire /data/downloads/torrents \
   /data/home /data/observatory /data/prowlarr /data/home/.config/qBittorrent \
+  /data/haven-aol \
   "$OMB_DATA_DIR" /data/openmausbot-home
 
 if [ -n "${MODEL_BASE_URL:-}" ] && [ -z "${MODEL_ID:-}" ]; then
@@ -316,7 +317,8 @@ node /opt/agent/seed-openmausbot.mjs "$OMB_DATA_DIR" > /dev/null
 # completed downloads on every restart.
 chown maus:maus /data /data/downloads /data/downloads/acquire /data/downloads/torrents
 chown -R maus:maus /data/logs /data/keys /data/dsh /data/home \
-  /data/observatory /data/prowlarr "$OMB_DATA_DIR" /data/openmausbot-home
+  /data/observatory /data/prowlarr /data/haven-aol \
+  "$OMB_DATA_DIR" /data/openmausbot-home
 
 log "starting supervisor tree..."
 exec /usr/bin/supervisord -c /opt/agent/supervisord.conf

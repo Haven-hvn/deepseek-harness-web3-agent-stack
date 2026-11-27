@@ -129,6 +129,29 @@
     privateKeyRef: AGENT_EVM_KEY
     rpcUrl: https://rpc.rabdi.db-chain.testnet.arkiv.network
 
+# Filecoin Onchain Cloud pinning behind wallet-signed auth. Storage deals are
+# paid in USDFC locked in Warm Storage, not native FIL — the agent needs that
+# deposit before synapse_pin can commit (see dsh-storage-synapse).
+- id: storage-synapse
+  config:
+    wallet: agent
+    rpcUrl: https://api.calibration.node.glif.io/rpc/v1
+    networkMode: calibration
+    withCDN: true
+    copies: 1
+    excludeProviderIds: []
+
+# Token-gated decrypt over the Haven-AOL ICP canister. Raw EIP-712 gate
+# signatures come from ctx.wallet via dsh-wallet-ethereum (provider: raw).
+# keyStorePath keeps epoch/vetKeys across restarts; encryption is deferred.
+- id: haven-aol
+  config:
+    wallet: agent
+    canisterId: 3gzy3-kaaaa-aaaan-q6y6q-cai
+    icpHost: https://icp-api.io
+    fetchRootKey: false
+    keyStorePath: /data/haven-aol/keys.json
+
 - id: royalty-router
   config:
     chainId: 8453
