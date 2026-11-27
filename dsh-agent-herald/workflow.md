@@ -72,7 +72,12 @@ match what §2 decided. Evidence: sealed path, metadata JSON.
 
 `synapse_pin` by path (sealed bytes when gated, plaintext when
 free; by CID only for re-pins), then
-`synapse_pin_status` until the pin is confirmed. The returned
+`synapse_pin_status` until the pin is confirmed. Storage is paid
+in USDFC deposited in Filecoin Pay (separate from wallet USDFC
+and native FIL gas): `synapse_pin` preflights readiness and
+auto-funds Warm Storage from wallet USDFC when short; inspect
+contract runway any time with `synapse_payment_status` or top up
+explicitly with `synapse_fund`. The returned
 CID is the release's permanent address — record it exactly;
 every downstream record points at it. A pin that errors may
 still have landed: status-check before re-pinning.

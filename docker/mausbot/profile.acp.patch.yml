@@ -114,7 +114,15 @@
         nativeToken: tFIL
         nativeDecimals: 18
         label: 'Filecoin calibration'
-    tokens: []
+    tokens:
+      - chain: sepolia
+        token: USDC
+        address: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238'
+        decimals: 6
+      - chain: filecoin-calibration
+        token: USDFC
+        address: '0xb3042734b608a1B16e9e86B374A3f3e389B4cDf0'
+        decimals: 18
 
 # ── Background jobs ────────────────────────────────────────────────────
 - id: tool-jobs
@@ -130,8 +138,9 @@
     rpcUrl: https://rpc.rabdi.db-chain.testnet.arkiv.network
 
 # Filecoin Onchain Cloud pinning behind wallet-signed auth. Storage deals are
-# paid in USDFC locked in Warm Storage, not native FIL — the agent needs that
-# deposit before synapse_pin can commit (see dsh-storage-synapse).
+# paid in USDFC deposited in Filecoin Pay (Warm Storage), not native FIL gas;
+# autoFund approves Warm Storage and deposits from wallet USDFC automatically
+# up to maxAutoFundUsdfc when short (see dsh-storage-synapse).
 - id: storage-synapse
   config:
     wallet: agent
@@ -140,6 +149,10 @@
     withCDN: true
     copies: 1
     excludeProviderIds: []
+    pieceLedgerPath: /data/synapse/pieces.json
+    autoFund: true
+    maxAutoFundUsdfc: '10'
+    autoFundRunwayDays: 30
 
 # Token-gated decrypt over the Haven-AOL ICP canister. Raw EIP-712 gate
 # signatures come from ctx.wallet via dsh-wallet-ethereum (provider: raw).

@@ -33,9 +33,11 @@ import {
   DEFAULT_CHAINS,
   DEFAULT_TOKENS,
   fetchAllLiveBalances,
+  filecoinPayToTreasuryRow,
   formatLiveAmount,
   toTreasuryBalances,
   type Erc20TokenConfig,
+  type FilecoinPaySnapshot,
   type LiveFetchResult,
   type RpcChainConfig,
 } from './live-balances.ts'
@@ -111,6 +113,10 @@ interface WalletSeam {
   address(name: string): Promise<string>
   list(): Array<{ name: string; chain: string; wallet: string }>
 }
+/** Optional read seam on `ctx.synapse` (never hard-required — bundles stay isolated). */
+interface SynapsePaymentSeam {
+  paymentStatus?: () => Promise<FilecoinPaySnapshot>
+}
 
 /** Safely retrieve seams — throws a diagnosable error if the bundle is mis-mounted. */
 function requireWallet(ctx: Context): WalletSeam {
@@ -122,6 +128,63 @@ function requireTreasury(ctx: Context): TreasurySeam | undefined {
   const t = (ctx as unknown as { treasury?: TreasurySeam }).treasury
   if (!t || typeof t.report !== 'function') return undefined
   return t
+}
+function optionalSynapse(ctx: Context): SynapsePaymentSeam | undefined {
+  try {
+    const reflected = (ctx as unknown as { reflect?: { get?: (k: string) => unknown } }).reflect?.get?.('synapse')
+    if (reflected && typeof (reflected as SynapsePaymentSeam).paymentStatus === 'function') {
+      return reflected as SynapsePaymentSeam
+    }
+  } catch {}
+  const direct = (ctx as unknown as { synapse?: SynapsePaymentSeam }).synapse
+  if (direct && typeof direct.paymentStatus === 'function') return direct
+  return undefined
+}
+
+/**
+ * Best-effort Filecoin Pay contract balance probe when `dsh-storage-synapse` is mounted.
+ * Isolated from EOA RPC fetches: errors or timeouts degrade cleanly without blanking wallet balances.
+ */
+async function probeFilecoinPay(
+  ctx: Context,
+  targetChains: readonly RpcChainConfig[],
+  timeoutMs: number,
+): Promise<{ filecoinPay?: FilecoinPaySnapshot; filecoinPayError?: string }> {
+  const synapse = optionalSynapse(ctx)
+  if (!synapse?.paymentStatus) return {}
+  const targetNames = new Set(targetChains.map(c => c.chain))
+  const targetsFilecoin = targetNames.has('filecoin') || targetNames.has('filecoin-calibration')
+  if (!targetsFilecoin) return {}
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const snap = await Promise.race([
+      synapse.paymentStatus(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`Filecoin Pay probe timed out after ${timeoutMs}ms`)), timeoutMs)
+      }),
+    ])
+    if (!targetNames.has(snap.chain)) return {}
+    return { filecoinPay: snap }
+  } catch (err) {
+    return { filecoinPayError: err instanceof Error ? err.message : String(err) }
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+/** Merge an optional Filecoin Pay contract snapshot into a live wallet result without mutating wallet rows. */
+function attachFilecoinPay(
+  result: LiveFetchResult,
+  probe: { filecoinPay?: FilecoinPaySnapshot; filecoinPayError?: string },
+): LiveFetchResult {
+  if (probe.filecoinPay === undefined && probe.filecoinPayError === undefined) return result
+  const contractUsd = probe.filecoinPay !== undefined ? filecoinPayToTreasuryRow(probe.filecoinPay).usdEstimate : 0
+  return {
+    ...result,
+    totalValueUsd: result.totalValueUsd + contractUsd,
+    ...(probe.filecoinPay !== undefined ? { filecoinPay: probe.filecoinPay } : {}),
+    ...(probe.filecoinPayError !== undefined ? { filecoinPayError: probe.filecoinPayError } : {}),
+  }
 }
 
 /** Treasury display helper — read path only. */
@@ -138,12 +201,15 @@ function formatTreasuryTable(
       // Infer decimals from token via live registry
       const decimals = b.token === 'USDC' ? 6 : 18
       const human = formatLiveAmount(b.token, raw, decimals)
+      if (b.token === 'USDFC_PAY') {
+        return `${b.chain}:USDFC_PAY (Filecoin Pay contract) ${human} USDFC`
+      }
       return `${b.chain}:${b.token} ${human} ${b.token}`
     })
     .join(', ')
 }
 
-/** Format live result for model consumption — explicit, auditable, one line per chain. */
+/** Format live result for model consumption — explicit, auditable, wallet EOA and contract balances separated. */
 function formatLiveResult(result: LiveFetchResult, chainFilter?: string): string {
   const chains = chainFilter ? result.chains.filter(c => c.chain === chainFilter) : result.chains
   if (chains.length === 0) {
@@ -155,7 +221,7 @@ function formatLiveResult(result: LiveFetchResult, chainFilter?: string): string
 
   for (const chain of chains) {
     if (chain.balances.length === 0) {
-      lines.push(`· ${chain.chain}: no balances — ${chain.error ?? 'unknown error'} (${chain.durationMs}ms)`)
+      lines.push(`· ${chain.chain} [wallet]: no balances — ${chain.error ?? 'unknown error'} (${chain.durationMs}ms)`)
       continue
     }
     hasAnyBalance = true
@@ -168,7 +234,22 @@ function formatLiveResult(result: LiveFetchResult, chainFilter?: string): string
       })
       .join(', ')
     const status = chain.success ? 'ok' : `partial (${chain.error})`
-    lines.push(`· ${chain.chain} [${status}, ${chain.durationMs}ms]: ${balStr}`)
+    lines.push(`· ${chain.chain} [wallet, ${status}, ${chain.durationMs}ms]: ${balStr}`)
+  }
+
+  if (result.filecoinPay !== undefined && (!chainFilter || result.filecoinPay.chain === chainFilter)) {
+    const fp = result.filecoinPay
+    hasAnyBalance = true
+    const runwayStr = fp.runwayState === 'active'
+      ? `${fp.runwayDays}d ${fp.runwayHours}h`
+      : 'no active spend'
+    const approvalStr = fp.warmStorageApproved ? 'Warm Storage approved' : 'Warm Storage NOT approved'
+    lines.push(
+      `· ${fp.chain} [Filecoin Pay contract]: USDFC ${fp.depositedUsdfc} deposited `
+      + `(available ${fp.availableUsdfc}, locked ${fp.lockedUsdfc}; ${approvalStr}; runway: ${runwayStr})`,
+    )
+  } else if (result.filecoinPayError !== undefined) {
+    lines.push(`· filecoin-pay [contract, unavailable]: ${result.filecoinPayError}`)
   }
 
   const header = hasAnyBalance
@@ -236,10 +317,14 @@ export function apply(ctx: Context, config: Config): void {
                 ?? chains.find(c => c.chain === 'filecoin')
                 ?? chains[0]
               if (calibration) {
-                const probed = await fetchAllLiveBalances(address, [calibration], tokens.filter(t => t.chain === calibration.chain), {
-                  timeoutMs: Math.min(timeoutMs, 4_000),
-                })
-                const liveLine = formatLiveResult(probed)
+                const probeTimeout = Math.min(timeoutMs, 4_000)
+                const [probed, fpProbe] = await Promise.all([
+                  fetchAllLiveBalances(address, [calibration], tokens.filter(t => t.chain === calibration.chain), {
+                    timeoutMs: probeTimeout,
+                  }),
+                  probeFilecoinPay(ctx, [calibration], probeTimeout),
+                ])
+                const liveLine = formatLiveResult(attachFilecoinPay(probed, fpProbe))
                 liveHint = `\nLive probe (${calibration.chain}): ${liveLine.replaceAll('\n', ' | ')}`
               }
             } catch (e) {
@@ -322,7 +407,11 @@ export function apply(ctx: Context, config: Config): void {
 
             let liveResult: LiveFetchResult
             try {
-              liveResult = await fetchAllLiveBalances(address, targetChains, tokens, { timeoutMs })
+              const [walletResult, fpProbe] = await Promise.all([
+                fetchAllLiveBalances(address, targetChains, tokens, { timeoutMs }),
+                probeFilecoinPay(ctx, targetChains, timeoutMs),
+              ])
+              liveResult = attachFilecoinPay(walletResult, fpProbe)
             } catch (e) {
               const msg = e instanceof Error ? e.message : String(e)
               // Distinguish address / config errors from RPC errors

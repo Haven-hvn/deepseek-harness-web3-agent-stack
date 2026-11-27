@@ -2,7 +2,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { buildSnapshot, EMPTY_LIVE, filterLedger, redact, roiFor } from '../src/snapshot.ts'
+import { buildSnapshot, EMPTY_LIVE, explorerUrl, filterLedger, redact, roiFor } from '../src/snapshot.ts'
 import type { LedgerRow } from '../src/snapshot.ts'
 import { ObservatoryStore } from '../src/store.ts'
 
@@ -40,5 +40,11 @@ describe('snapshot', () => {
     expect(store.readLedger()[0]).toEqual({ ts: 1, kind: 'burn', amount: 3, category: 'inference' })
     store.writeLive({ ...EMPTY_LIVE, ts: 2, downloads: [{ client: 'qbittorrent', state: 'downloading', progress: 0.5, name: 'nope' } as never] })
     expect(store.readLive().downloads[0]).toEqual({ client: 'qbittorrent', state: 'downloading', progress: 0.5 })
+  })
+
+  it('resolves Filfox explorer URLs for both Filecoin calibration and mainnet', () => {
+    expect(explorerUrl('filecoin-calibration', 'tx', '0xabc')).toBe('https://calibration.filfox.info/en/message/0xabc')
+    expect(explorerUrl('filecoin', 'tx', '0xdef')).toBe('https://filfox.info/en/message/0xdef')
+    expect(explorerUrl(314, 'address', '0x123')).toBe('https://filfox.info/en/address/0x123')
   })
 })

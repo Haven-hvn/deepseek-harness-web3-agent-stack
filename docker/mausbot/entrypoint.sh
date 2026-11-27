@@ -172,7 +172,7 @@ sync_dsh_credentials_deepseek() {
 
 mkdir -p /data/logs /data/keys /data/downloads/acquire /data/downloads/torrents \
   /data/home /data/observatory /data/prowlarr /data/home/.config/qBittorrent \
-  /data/haven-aol \
+  /data/haven-aol /data/synapse \
   "$OMB_DATA_DIR" /data/openmausbot-home
 
 if [ -n "${MODEL_BASE_URL:-}" ] && [ -z "${MODEL_ID:-}" ]; then
@@ -284,7 +284,7 @@ Haven Web3 + OpenMausBot instantiated. HOT wallets live in /data/keys.
   ICP principal:  $ICP_PRINCIPAL
 
 Fund with TESTNET assets only (faucets, never mainnet):
-  Sepolia / Base Sepolia ETH, calibration tFIL.
+  Sepolia / Base Sepolia ETH, calibration tFIL + calibration USDFC.
 
 Surfaces:
   OpenMausBot GUI:  $OMB_PUBLIC_URL  (pairing link prints below once up)
@@ -317,7 +317,7 @@ node /opt/agent/seed-openmausbot.mjs "$OMB_DATA_DIR" > /dev/null
 # completed downloads on every restart.
 chown maus:maus /data /data/downloads /data/downloads/acquire /data/downloads/torrents
 chown -R maus:maus /data/logs /data/keys /data/dsh /data/home \
-  /data/observatory /data/prowlarr /data/haven-aol \
+  /data/observatory /data/prowlarr /data/haven-aol /data/synapse \
   "$OMB_DATA_DIR" /data/openmausbot-home
 
 log "starting supervisor tree..."

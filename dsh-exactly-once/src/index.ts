@@ -46,6 +46,7 @@ export const inject = ['tools', 'sessionProjections']
  */
 export const DEFAULT_WRITES: readonly string[] = [
   'synapse_pin',
+  'synapse_fund',
   '*_submit',
   'arkiv_create_entity',
   'arkiv_create_entities',

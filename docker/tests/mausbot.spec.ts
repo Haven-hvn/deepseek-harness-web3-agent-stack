@@ -138,6 +138,36 @@ describe('phone pairing & selectable local model', () => {
   })
 })
 
+describe('web3 harness profile & entrypoint contracts', () => {
+  it('wires storage-synapse (with autoFund + pieceLedgerPath), haven-aol, and calibration USDFC in the ACP patch', () => {
+    const patch = readFileSync(new URL('../mausbot/profile.acp.patch.yml', import.meta.url), 'utf8')
+    expect(patch).toContain('- id: storage-synapse')
+    expect(patch).toContain('pieceLedgerPath: /data/synapse/pieces.json')
+    expect(patch).toContain('autoFund: true')
+    expect(patch).toContain('- id: haven-aol')
+    expect(patch).toContain('keyStorePath: /data/haven-aol/keys.json')
+    // wallet-tools must expose calibration USDFC instead of blanking tokens with `tokens: []`.
+    expect(patch).not.toContain('tokens: []')
+    expect(patch).toContain('0xb3042734b608a1B16e9e86B374A3f3e389B4cDf0')
+    expect(patch).toContain('token: USDFC')
+  })
+
+  it('creates and chowns persistent haven-aol and synapse state directories in entrypoint.sh', () => {
+    const entry = readFileSync(new URL('../mausbot/entrypoint.sh', import.meta.url), 'utf8')
+    expect(entry).toContain('/data/haven-aol')
+    expect(entry).toContain('/data/synapse')
+    expect(entry).toContain('calibration USDFC')
+  })
+
+  it('keeps the headless profile.patch.yml in sync for calibration USDFC and persistent storage state', () => {
+    const patch = readFileSync(new URL('../profile.patch.yml', import.meta.url), 'utf8')
+    expect(patch).not.toContain('tokens: []')
+    expect(patch).toContain('0xb3042734b608a1B16e9e86B374A3f3e389B4cDf0')
+    expect(patch).toContain('pieceLedgerPath: /data/synapse/pieces.json')
+    expect(patch).toContain('keyStorePath: /data/haven-aol/keys.json')
+  })
+})
+
 describe('no-body-timeout preload', () => {
   it('uses one-hour undici timers and the wrapper marker', async () => {
     const preload = await import('../mausbot/no-body-timeout.cjs')

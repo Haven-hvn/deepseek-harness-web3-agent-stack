@@ -422,11 +422,12 @@ describe('config', () => {
     const resolved = GuardPlugin.resolveConfig({})
     const guarded = (name: string): boolean =>
       resolved.writes.some(pattern => pattern.test(name))
-    for (const name of ['synapse_pin', 'acquire_submit', 'dl_submit', 'arkiv_create_entity', 'arkiv_create_entities', 'arkiv_update_entity', 'erc8004_register', 'rr_launch', 'rr_sweep', 'rr_heartbeat', 'aol_decrypt']) {
+    for (const name of ['synapse_pin', 'synapse_fund', 'acquire_submit', 'dl_submit', 'arkiv_create_entity', 'arkiv_create_entities', 'arkiv_update_entity', 'erc8004_register', 'rr_launch', 'rr_sweep', 'rr_heartbeat', 'aol_decrypt']) {
       expect(guarded(name)).toBe(true)
     }
     expect(guarded('wallet_info')).toBe(false)
     expect(guarded('acquire_status')).toBe(false)
+    expect(guarded('synapse_payment_status')).toBe(false)
   })
 
   it('lets explicit writes replace the default', () => {

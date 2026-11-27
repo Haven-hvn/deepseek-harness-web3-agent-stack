@@ -1,5 +1,5 @@
-# The dsh-storage-synapse bundle patch: Synapse pinning behind wallet-signed
-# authentication.
+# The dsh-storage-synapse bundle patch: Filecoin Onchain Cloud pinning and
+# Filecoin Pay (Warm Storage) management behind wallet-signed authentication.
 #
 # This layer inserts ONLY its own row. The wallet seam row (`id: wallet`)
 # belongs to the dsh-wallet bundle, and the signing provider row to
@@ -12,7 +12,7 @@
 # rows.) Until the wallet seam is present this plugin stays dormant — its
 # `inject: [wallet, tools]` waits for the services instead of failing.
 #
-# `wallet` names the dsh-wallet entry that signs every node request; there is
+# `wallet` names the dsh-wallet entry that signs every request; there is
 # deliberately no key or credential field in this configuration.
 
 - insert:
@@ -21,9 +21,8 @@
       config:
         wallet: agent
         # Filecoin Onchain Cloud only — no Kubo, no localhost:5001.
-        # OWS wallet-gated (filecoin-pin 1.3.0 AccountConfig): viem Account
-        # delegates signTransaction/signMessage to ctx.wallet (OWS vault xmtp-agent)
-        # + treasury authorize/recordExpense — no privateKeyRef, no raw key.
+        # Wallet-gated (AccountConfig): viem Account delegates signing to
+        # ctx.wallet (raw EIP-712 / EIP-2612 via signDigest) — no privateKeyRef.
         rpcUrl: https://api.calibration.node.glif.io/rpc/v1
         networkMode: calibration
         withCDN: false
@@ -34,3 +33,8 @@
         # the store path retries once without exclusions on selection failure.
         copies: 1
         excludeProviderIds: []
+        # Preflight & auto-fund Warm Storage from wallet USDFC before uploads
+        # (bounded per operation by maxAutoFundUsdfc; deposit-only, never withdraws).
+        autoFund: true
+        maxAutoFundUsdfc: '10'
+        autoFundRunwayDays: 30

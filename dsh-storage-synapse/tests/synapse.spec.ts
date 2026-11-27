@@ -23,8 +23,17 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import * as storageSynapse from '../src/index.ts'
-import { FilecoinBackend, isProviderSelectionError, normalizeRpcUrl, preview } from '../src/synapse.ts'
-import type { SynapsePinnedEvent } from '../src/types.ts'
+import {
+  decorateLockupError,
+  FilecoinBackend,
+  formatFixed18,
+  isProviderSelectionError,
+  normalizeRpcUrl,
+  parseFixed18,
+  parseInsufficientLockup,
+  preview,
+} from '../src/synapse.ts'
+import type { SynapseFundedEvent, SynapsePinnedEvent } from '../src/types.ts'
 import { MemoryCredentials } from '../../dsh-wallet/tests/helpers/memory-credentials.ts'
 
 const testSignal = new AbortController().signal
@@ -42,17 +51,42 @@ const PIECE_TRUNCATED = 'bafkzcibfqxpnqbyvelkgtgrat5onehutj77ggt5kcyydvphgd5gzw4
 // CAR packing is local (./singleBlockCar.ts) and runs for real; only the
 // chain-facing seams are mocked.
 const pinMocks = vi.hoisted(() => ({
+  initializeSynapse: vi.fn(),
   executeUpload: vi.fn(),
   findPiece: vi.fn(),
   getApprovedPDPProviders: vi.fn(),
   createPublicClient: vi.fn(),
   httpTransport: vi.fn(),
+  getPaymentStatus: vi.fn(),
+  checkAllowances: vi.fn(),
+  checkAndSetAllowances: vi.fn(),
+  depositUSDFC: vi.fn(),
+  computeAutoSetupTargetBalance: vi.fn(),
+  calculateFilecoinPayFundingPlan: vi.fn(),
+  toStorageRunwaySummary: vi.fn(),
+  validateGasRequirement: vi.fn(),
+  getUsdfcAcquisitionHelpMessage: vi.fn(),
 }))
 vi.mock('filecoin-pin/core/synapse', () => ({
-  initializeSynapse: vi.fn(async () => ({})),
+  initializeSynapse: pinMocks.initializeSynapse.mockImplementation(async () => ({})),
 }))
 vi.mock('filecoin-pin/core/upload', () => ({
   executeUpload: pinMocks.executeUpload,
+}))
+vi.mock('filecoin-pin/core/payments', () => ({
+  MIN_FIL_FOR_GAS: 100_000_000_000_000_000n, // 0.1 FIL
+  getPaymentStatus: pinMocks.getPaymentStatus,
+  checkAllowances: pinMocks.checkAllowances,
+  checkAndSetAllowances: pinMocks.checkAndSetAllowances,
+  depositUSDFC: pinMocks.depositUSDFC,
+  computeAutoSetupTargetBalance: pinMocks.computeAutoSetupTargetBalance,
+  calculateFilecoinPayFundingPlan: pinMocks.calculateFilecoinPayFundingPlan,
+  toStorageRunwaySummary: pinMocks.toStorageRunwaySummary,
+  validateGasRequirement: pinMocks.validateGasRequirement,
+  getUsdfcAcquisitionHelpMessage: pinMocks.getUsdfcAcquisitionHelpMessage,
+}))
+vi.mock('@filoz/synapse-sdk', () => ({
+  TIME_CONSTANTS: { EPOCHS_PER_DAY: 2880n },
 }))
 // multiformats/cid runs unmocked: packing and root parsing prove real CID wiring.
 vi.mock('@filoz/synapse-core/sp', () => ({
@@ -122,16 +156,32 @@ async function harness() {
 
 afterEach(() => {
   vi.clearAllMocks()
+  pinMocks.initializeSynapse.mockReset()
+  pinMocks.initializeSynapse.mockImplementation(async () => ({}))
 })
 
 describe('gated filecoin requests (OWS wallet seam)', () => {
   it('resolves the credential per operation via the harness gate — no raw key in config', async () => {
     const { ctx } = await harness()
     const validated: any = storageSynapse.Config({ wallet: 'agent', rpcUrl: 'wss://api.calibration.node.glif.io/rpc/v1' } as any)
-    expect(Object.keys(validated).sort()).toEqual(['copies', 'excludeProviderIds', 'networkMode', 'providerIds', 'rpcUrl', 'wallet', 'withCDN'])
+    expect(Object.keys(validated).sort()).toEqual([
+      'autoFund',
+      'autoFundRunwayDays',
+      'copies',
+      'excludeProviderIds',
+      'maxAutoFundUsdfc',
+      'networkMode',
+      'providerIds',
+      'rpcUrl',
+      'wallet',
+      'withCDN',
+    ])
     expect(validated.wallet).toBe('agent')
     expect(validated.rpcUrl).toBe('wss://api.calibration.node.glif.io/rpc/v1')
     expect(validated.withCDN).toBe(true)
+    expect(validated.autoFund).toBe(true)
+    expect(validated.maxAutoFundUsdfc).toBe('10')
+    expect(validated.autoFundRunwayDays).toBe(30)
     expect((validated as any).privateKey).toBeUndefined()
     await ctx.synapse.pin('bafytest')
     // Gate was used — pin went through stub which called resolvePrivateKey (per-operation, like xmtp)
@@ -155,7 +205,18 @@ describe('gated filecoin requests (OWS wallet seam)', () => {
 
   it('configuration carries a wallet NAME only — no key or credential field exists', () => {
     const validated: any = storageSynapse.Config({ wallet: 'agent', rpcUrl: 'wss://api.calibration.node.glif.io/rpc/v1' } as any)
-    expect(Object.keys(validated).sort()).toEqual(['copies', 'excludeProviderIds', 'networkMode', 'providerIds', 'rpcUrl', 'wallet', 'withCDN'])
+    expect(Object.keys(validated).sort()).toEqual([
+      'autoFund',
+      'autoFundRunwayDays',
+      'copies',
+      'excludeProviderIds',
+      'maxAutoFundUsdfc',
+      'networkMode',
+      'providerIds',
+      'rpcUrl',
+      'wallet',
+      'withCDN',
+    ])
     expect((validated as any).privateKey).toBeUndefined()
     expect((validated as any).secret).toBeUndefined()
   })
@@ -339,14 +400,16 @@ describe('exactly-once: content ledger + pin read-back (real runtime path)', () 
 
   it('registers the read-back hook lazily even when the guard mounts last', async () => {
     const { ctx, rt } = await ledgerHarness()
-    expect((rt as any).hookDisposer).toBeUndefined()
+    expect((rt as any).hookDisposers).toEqual([])
     const ExactlyOnce = await import('dsh-exactly-once')
     await ctx.plugin(ExactlyOnce as any, {})
     await rt.store(new TextEncoder().encode('hook-me'))
     const guard = ctx.reflect.get('exactlyOnce') as any
     expect(guard.checks.has('synapse_pin')).toBe(true)
+    expect(guard.checks.has('synapse_fund')).toBe(true)
     rt.unhook()
     expect(guard.checks.has('synapse_pin')).toBe(false)
+    expect(guard.checks.has('synapse_fund')).toBe(false)
   })
 })
 
@@ -655,5 +718,353 @@ describe('filecoin failures are loud everywhere except checkPin', () => {
   it('retrieve round-trips bytes', async () => {
     const { ctx } = await harness()
     expect([...await ctx.synapse.retrieve('bafybytes')]).toEqual([...new TextEncoder().encode('bytes-for-bafybytes')])
+  })
+})
+
+describe('Filecoin Pay status, declarative funding, and upload auto-fund', () => {
+  const ADDR = '0xC49EbdaE93d4aA62F3d0205C64E2105A87FE77d0'
+  const WEI = 10n ** 18n
+
+  /** Stateful mock Synapse instance simulating EOA wallet USDFC ↔ Filecoin Pay contract. */
+  function createMockSynapseEnv(initial?: {
+    chainId?: number
+    filBalance?: bigint
+    walletUsdfc?: bigint
+    depositedUsdfc?: bigint
+    lockedUsdfc?: bigint
+    isApproved?: boolean
+    depositNeededForUpload?: bigint
+    autoSetupTarget?: bigint
+  }) {
+    const state = {
+      chainId: initial?.chainId ?? 314159,
+      network: (initial?.chainId ?? 314159) === 314 ? 'Filecoin Mainnet' : 'Filecoin - Calibration testnet',
+      filBalance: initial?.filBalance ?? 200n * WEI,
+      walletUsdfc: initial?.walletUsdfc ?? 30n * WEI,
+      depositedUsdfc: initial?.depositedUsdfc ?? 0n,
+      lockedUsdfc: initial?.lockedUsdfc ?? 0n,
+      isApproved: initial?.isApproved ?? false,
+      depositNeededForUpload: initial?.depositNeededForUpload ?? 1_740_000_000_000_000_000n,
+      autoSetupTarget: initial?.autoSetupTarget ?? 2_620_000_000_000_000_000n,
+    }
+
+    const synapseObj = {
+      payments: {
+        accountSummary: vi.fn(async () => ({
+          funds: state.depositedUsdfc,
+          availableFunds: state.depositedUsdfc > state.lockedUsdfc ? state.depositedUsdfc - state.lockedUsdfc : 0n,
+          debt: 0n,
+          totalLockup: state.lockedUsdfc,
+          totalRateBasedLockup: 0n,
+          totalFixedLockup: state.lockedUsdfc,
+          lockupRatePerEpoch: 0n,
+          runwayInEpochs: 0n,
+          grossCoverageInEpochs: 0n,
+        })),
+      },
+      storage: {
+        createContexts: vi.fn(async () => [{ provider: { id: 9n }, dataSetId: state.depositedUsdfc > 0n ? 1n : null }]),
+        calculateMultiContextCosts: vi.fn(async () => {
+          const available = state.depositedUsdfc > state.lockedUsdfc ? state.depositedUsdfc - state.lockedUsdfc : 0n
+          const needed = state.depositNeededForUpload > available ? state.depositNeededForUpload - available : 0n
+          return {
+            depositNeeded: needed,
+            needsFwssMaxApproval: !state.isApproved,
+            ready: needed === 0n && state.isApproved,
+            lockups: { total: state.depositNeededForUpload, rateDeltaPerEpoch: 1000n },
+            fees: { total: 36_000_000_000_000_000n },
+            rates: { perEpoch: 1000n, perMonth: 120_000_000_000_000_000n },
+          }
+        }),
+        getStorageInfo: vi.fn(async () => ({
+          pricing: { priceList: { rates: { datasetFeePerMonth: 120_000_000_000_000_000n }, lockups: {} } },
+        })),
+      },
+    }
+
+    pinMocks.initializeSynapse.mockResolvedValue(synapseObj)
+    pinMocks.getPaymentStatus.mockImplementation(async () => ({
+      network: state.network,
+      chainId: state.chainId,
+      address: ADDR,
+      filBalance: state.filBalance,
+      walletUsdfcBalance: state.walletUsdfc,
+      filecoinPayBalance: state.depositedUsdfc,
+      currentAllowances: {
+        isApproved: state.isApproved,
+        rateAllowance: state.isApproved ? (2n ** 256n - 1n) : 0n,
+        lockupAllowance: state.isApproved ? (2n ** 256n - 1n) : 0n,
+        rateUsage: 0n,
+        lockupUsage: state.lockedUsdfc,
+        maxLockupPeriod: 86400n,
+      },
+    }))
+    pinMocks.checkAllowances.mockImplementation(async () => ({
+      needsUpdate: !state.isApproved,
+      currentAllowances: { isApproved: state.isApproved },
+    }))
+    pinMocks.toStorageRunwaySummary.mockImplementation((summary: any) => ({
+      state: summary.lockupRatePerEpoch > 0n ? 'active' : 'no-spend',
+      rateUsed: summary.lockupRatePerEpoch,
+      perDay: summary.lockupRatePerEpoch * 2880n,
+      lockupUsed: summary.totalLockup,
+      availableFunds: summary.availableFunds,
+      runwayDays: summary.lockupRatePerEpoch > 0n ? 30 : 0,
+      runwayHours: 0,
+      coverageDays: summary.lockupRatePerEpoch > 0n ? 60 : 0,
+      coverageHours: 0,
+    }))
+    pinMocks.validateGasRequirement.mockImplementation((filBalance: bigint, isCalibnet: boolean) => {
+      if (filBalance < 100_000_000_000_000_000n) {
+        return {
+          isValid: false,
+          errorMessage: 'Insufficient FIL for gas fees',
+          helpMessage: isCalibnet ? 'Get test FIL from calibration faucet' : 'Acquire FIL for gas',
+        }
+      }
+      return { isValid: true }
+    })
+    pinMocks.getUsdfcAcquisitionHelpMessage.mockImplementation((isCalibnet: boolean) => (
+      isCalibnet ? 'Get test USDFC from calibration faucet' : 'Bridge or swap USDFC on mainnet'
+    ))
+    pinMocks.computeAutoSetupTargetBalance.mockImplementation(({ filecoinPayBalance }: { filecoinPayBalance: bigint }) => ({
+      requiredAvailableFunds: state.autoSetupTarget,
+      targetBalance: state.autoSetupTarget > filecoinPayBalance ? state.autoSetupTarget : filecoinPayBalance,
+    }))
+    pinMocks.calculateFilecoinPayFundingPlan.mockImplementation((opts: any) => {
+      const delta = opts.uploadCosts?.depositNeeded ?? 0n
+      return {
+        delta,
+        action: delta > 0n ? 'deposit' : 'none',
+        reasonCode: delta > 0n ? 'runway-with-piece' : 'none',
+      }
+    })
+    pinMocks.depositUSDFC.mockImplementation(async (_synapse: unknown, amount: bigint) => {
+      state.walletUsdfc -= amount
+      state.depositedUsdfc += amount
+      state.isApproved = true
+      return { depositTx: '0xdeposit_tx_hash' }
+    })
+    pinMocks.checkAndSetAllowances.mockImplementation(async () => {
+      if (!state.isApproved) {
+        state.isApproved = true
+        return { updated: true, transactionHash: '0xapprove_tx_hash', currentAllowances: { isApproved: true } }
+      }
+      return { updated: false, currentAllowances: { isApproved: true } }
+    })
+    return { state, synapseObj }
+  }
+
+  it('formats and parses 18-decimal USDFC amounts cleanly and rejects malformed strings', () => {
+    expect(formatFixed18(0n)).toBe('0')
+    expect(formatFixed18(30n * WEI)).toBe('30')
+    expect(formatFixed18(2_620_000_000_000_000_000n)).toBe('2.62')
+    expect(formatFixed18(1_740_249_323_511_302_400n)).toBe('1.740249')
+    expect(parseFixed18('2.62')).toBe(2_620_000_000_000_000_000n)
+    expect(parseFixed18('10')).toBe(10n * WEI)
+    expect(() => parseFixed18('-1')).toThrow(/invalid/)
+    expect(() => parseFixed18('abc')).toThrow(/invalid/)
+  })
+
+  it('translates raw InsufficientLockupFunds reverts into actionable USDFC errors', () => {
+    const raw = new Error(
+      `ContractFunctionExecutionError: revert InsufficientLockupFunds(address payer, uint256 minimumRequired, uint256 available)\n`
+      + `(${ADDR}, 620000000000000000, 0)`,
+    )
+    expect(parseInsufficientLockup(raw)).toEqual({ minimumRequired: 620_000_000_000_000_000n, available: 0n })
+    const friendly = decorateLockupError(raw, ADDR)
+    expect(friendly?.message).toContain('0.62 USDFC')
+    expect(friendly?.message).toContain('0 USDFC')
+    expect(friendly?.message).toContain('synapse_fund')
+    expect(decorateLockupError(new Error('unrelated'))).toBeNull()
+  })
+
+  it('paymentStatus reports wallet USDFC and Filecoin Pay contract balances separately with upload estimate', async () => {
+    createMockSynapseEnv({ walletUsdfc: 30n * WEI, depositedUsdfc: 0n, isApproved: false })
+    const backend = new FilecoinBackend({
+      getAccount: async () => ({ address: ADDR }) as any,
+      rpcUrl: 'https://api.calibration.node.glif.io/rpc/v1',
+      withCDN: true,
+      copies: 1,
+    })
+    const snap = await backend.paymentStatus({ fileSizeBytes: 54_826_809 })
+    expect(snap.chain).toBe('filecoin-calibration')
+    expect(snap.filBalance).toBe('200')
+    expect(snap.walletUsdfc).toBe('30')
+    expect(snap.depositedUsdfc).toBe('0')
+    expect(snap.availableUsdfc).toBe('0')
+    expect(snap.warmStorageApproved).toBe(false)
+    expect(snap.estimate?.ready).toBe(false)
+    expect(snap.estimate?.depositNeededUsdfc).toBe('1.74')
+    expect(snap.estimate?.canSelfFundFromWallet).toBe(true)
+    expect(snap.estimate?.walletShortfallUsdfc).toBe('0')
+  })
+
+  it('store auto-funds Filecoin Pay from wallet USDFC by default before uploading (even on mainnet)', async () => {
+    const { state } = createMockSynapseEnv({ chainId: 314, walletUsdfc: 30n * WEI, depositedUsdfc: 0n, isApproved: false })
+    const fundedEvents: unknown[] = []
+    const lockCalls: string[] = []
+    const backend = new FilecoinBackend({
+      getAccount: async () => ({ address: ADDR }) as any,
+      rpcUrl: 'https://api.node.glif.io/rpc/v1',
+      networkMode: 'mainnet',
+      withCDN: true,
+      copies: 1,
+      withWalletLock: async task => {
+        lockCalls.push('locked')
+        return await task()
+      },
+      onFunded: res => fundedEvents.push(res),
+    })
+    pinMocks.executeUpload.mockResolvedValueOnce({ pieceCid: PIECE, copies: [{ providerId: 9n }] })
+
+    const stored = await backend.store(new TextEncoder().encode('payload'))
+    expect(stored.pieceCid).toBe(PIECE)
+    expect(pinMocks.depositUSDFC).toHaveBeenCalledTimes(1)
+    expect(pinMocks.depositUSDFC).toHaveBeenCalledWith(expect.anything(), 1_740_000_000_000_000_000n)
+    expect(pinMocks.executeUpload).toHaveBeenCalledTimes(1)
+    expect(lockCalls).toEqual(['locked'])
+    expect(fundedEvents).toHaveLength(1)
+    expect(state.depositedUsdfc).toBe(1_740_000_000_000_000_000n)
+    expect(state.isApproved).toBe(true)
+
+    // Second store sees sufficient deposit + approval: zero additional funding transactions.
+    pinMocks.executeUpload.mockResolvedValueOnce({ pieceCid: PIECE, copies: [{ providerId: 9n }] })
+    await backend.store(new TextEncoder().encode('second-payload'))
+    expect(pinMocks.depositUSDFC).toHaveBeenCalledTimes(1)
+  })
+
+  it('store fails BEFORE uploading when wallet lacks USDFC, with actionable balances and acquisition help', async () => {
+    createMockSynapseEnv({ walletUsdfc: 0n, depositedUsdfc: 0n, isApproved: false })
+    const backend = new FilecoinBackend({
+      getAccount: async () => ({ address: ADDR }) as any,
+      rpcUrl: 'https://api.calibration.node.glif.io/rpc/v1',
+      withCDN: true,
+    })
+    await expect(backend.store(new TextEncoder().encode('payload'))).rejects.toThrow(
+      /insufficient USDFC to pin.*shortfall: 1\.74 USDFC.*calibration faucet/s,
+    )
+    expect(pinMocks.executeUpload).not.toHaveBeenCalled()
+    expect(pinMocks.depositUSDFC).not.toHaveBeenCalled()
+  })
+
+  it('store fails BEFORE uploading when autoFund is disabled or required deposit exceeds maxAutoFundUsdfc', async () => {
+    createMockSynapseEnv({ walletUsdfc: 30n * WEI, depositedUsdfc: 0n, isApproved: false })
+    const manualBackend = new FilecoinBackend({
+      getAccount: async () => ({ address: ADDR }) as any,
+      rpcUrl: 'https://api.calibration.node.glif.io/rpc/v1',
+      autoFund: false,
+    })
+    await expect(manualBackend.store(new TextEncoder().encode('payload'))).rejects.toThrow(/autoFund is disabled.*synapse_fund/)
+    expect(pinMocks.executeUpload).not.toHaveBeenCalled()
+
+    const cappedBackend = new FilecoinBackend({
+      getAccount: async () => ({ address: ADDR }) as any,
+      rpcUrl: 'https://api.calibration.node.glif.io/rpc/v1',
+      autoFund: true,
+      maxAutoFundUsdfc: '1',
+    })
+    await expect(cappedBackend.store(new TextEncoder().encode('payload'))).rejects.toThrow(/exceeds configured cap \(1 USDFC\)/)
+    expect(pinMocks.executeUpload).not.toHaveBeenCalled()
+  })
+
+  it('fund is idempotent (deposit-only), handles approval-only, and never double-deposits on retry', async () => {
+    const { state } = createMockSynapseEnv({ walletUsdfc: 30n * WEI, depositedUsdfc: 0n, isApproved: false })
+    const backend = new FilecoinBackend({
+      getAccount: async () => ({ address: ADDR }) as any,
+      rpcUrl: 'https://api.calibration.node.glif.io/rpc/v1',
+    })
+
+    // Declarative target deposit of 5 USDFC deposits 5 USDFC + approves Warm Storage.
+    const first = await backend.fund({ targetDepositUsdfc: '5' })
+    expect(first.adjusted).toBe(true)
+    expect(first.depositedUsdfc).toBe('5')
+    expect(first.allowancesUpdated).toBe(true)
+    expect(first.transactionHash).toBe('0xdeposit_tx_hash')
+    expect(state.walletUsdfc).toBe(25n * WEI)
+    expect(state.depositedUsdfc).toBe(5n * WEI)
+
+    // Retry with the same declarative target is a zero-tx no-op.
+    const retry = await backend.fund({ targetDepositUsdfc: '5' })
+    expect(retry.adjusted).toBe(false)
+    expect(retry.depositedUsdfc).toBe('0')
+    expect(pinMocks.depositUSDFC).toHaveBeenCalledTimes(1)
+
+    // Lower target never withdraws (deposit-only).
+    const lower = await backend.fund({ targetDepositUsdfc: '2' })
+    expect(lower.adjusted).toBe(false)
+    expect(state.depositedUsdfc).toBe(5n * WEI)
+
+    // Approval-only path when deposit already meets target but Warm Storage is unapproved.
+    state.isApproved = false
+    const approveOnly = await backend.fund({ targetDepositUsdfc: '5' })
+    expect(approveOnly.adjusted).toBe(true)
+    expect(approveOnly.allowancesUpdated).toBe(true)
+    expect(approveOnly.depositedUsdfc).toBe('0')
+    expect(approveOnly.allowanceTransactionHash).toBe('0xapprove_tx_hash')
+    expect(pinMocks.checkAndSetAllowances).toHaveBeenCalledTimes(1)
+  })
+
+  it('exposes synapse_payment_status and synapse_fund through the executor and emits synapse/funded + exactly-once replay', async () => {
+    createMockSynapseEnv({ walletUsdfc: 30n * WEI, depositedUsdfc: 0n, isApproved: false })
+    const ctx = new Context()
+    await ctx.plugin(MemoryCredentials, { AGENT_EVM_KEY: '0x' + '11'.repeat(32) })
+    ctx.provide('wallet', {
+      address: async () => ADDR,
+      signMessage: async () => ({ address: ADDR, signature: '0x' }),
+      signTransaction: async () => ({ address: ADDR, signature: '0x' }),
+      signDigest: async () => ({ address: ADDR, signature: '0x' }),
+      withLock: async (_name: string, task: () => Promise<unknown>) => await task(),
+    })
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(NativeToolExecutor)
+    await ctx.plugin(storageSynapse, {
+      wallet: 'agent',
+      rpcUrl: 'https://api.calibration.node.glif.io/rpc/v1',
+      networkMode: 'calibration',
+      withCDN: true,
+    } as any)
+
+    const funded: SynapseFundedEvent[] = []
+    ctx.on('synapse/funded', event => void funded.push(event))
+
+    let calls = 0
+    const execute = async (name: string, args: Record<string, unknown>) => {
+      const batch = await ctx.tools.execute({
+        calls: [{ type: 'tool-call', id: ToolCallId(`pf-${calls += 1}`), name, arguments: JSON.stringify(args) }],
+        signal: testSignal,
+      })
+      return batch.results[0]!.result
+    }
+
+    const before = await execute('synapse_payment_status', { fileSizeBytes: 54_826_809 })
+    expect(before.isError).toBe(false)
+    const beforeText = (before.content[0] as { text: string }).text
+    expect(beforeText).toContain('Wallet: 200 tFIL (gas ok), 30 USDFC')
+    expect(beforeText).toContain('Filecoin Pay contract: 0 USDFC deposited')
+    expect(beforeText).toContain('Warm Storage operator: NOT approved')
+    expect(beforeText).toContain('wallet can self-fund')
+
+    const fundRes = await execute('synapse_fund', { targetDepositUsdfc: '2.62' })
+    expect(fundRes.isError).toBe(false)
+    const fundText = (fundRes.content[0] as { text: string }).text
+    expect(fundText).toContain('deposited 2.62 USDFC')
+    expect(fundText).toContain('Warm Storage operator approved')
+    expect(funded).toHaveLength(1)
+    expect(funded[0]).toMatchObject({
+      address: ADDR,
+      chain: 'filecoin-calibration',
+      depositedUsdfc: '2.62',
+      totalDepositedUsdfc: '2.62',
+      allowancesUpdated: true,
+      txHash: '0xdeposit_tx_hash',
+    })
+
+    // Exactly-once read-back hook sees the target is already met on-chain and replays without re-sending.
+    const decision = await ctx.synapse.checkFundTool({ targetDepositUsdfc: '2.62' })
+    expect(decision.kind).toBe('replay')
+    const unmet = await ctx.synapse.checkFundTool({ targetDepositUsdfc: '10' })
+    expect(unmet.kind).toBe('proceed')
   })
 })

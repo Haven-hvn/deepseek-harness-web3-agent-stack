@@ -139,6 +139,26 @@ export function apply(ctx: Context, config: Config): void {
     catalog.set(cid, { cid, gate: prev?.gate ?? 'none', provider: prev?.provider, expiresAt: prev?.expiresAt, redundancy: prev?.redundancy, token: prev?.token, chain: prev?.chain, threshold: prev?.threshold })
   })
 
+  on('synapse/funded', payload => {
+    const totalRaw = Number(payload['totalDepositedRaw'] ?? 0)
+    const totalUsdfc = Number(payload['totalDepositedUsdfc'] ?? 0)
+    const tx = typeof payload['txHash'] === 'string'
+      ? payload['txHash']
+      : typeof payload['allowanceTxHash'] === 'string'
+        ? payload['allowanceTxHash']
+        : undefined
+    store.append({
+      ts: Date.now(),
+      kind: 'balance',
+      chain: String(payload['chain'] ?? 'filecoin-calibration'),
+      token: 'USDFC_PAY',
+      amount: Number.isFinite(totalRaw) ? totalRaw : 0,
+      usd: Number.isFinite(totalUsdfc) ? Math.round(totalUsdfc * 1_000_000) : 0,
+      address: typeof payload['address'] === 'string' ? payload['address'] : undefined,
+      tx,
+    })
+  })
+
   on('erc8004/registered', payload => {
     identity = {
       agentId: payload['agentId'] !== undefined ? String(payload['agentId']) : undefined,

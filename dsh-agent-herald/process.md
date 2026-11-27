@@ -64,8 +64,12 @@ applies to that release only.
    skip this step: the plaintext IS the payload.
 5. **Pin.** `synapse_pin` the release bytes — sealed bytes when
    gated, plaintext when free — (by path; by CID only for
-   re-pins), then confirm with `synapse_pin_status`. The CID is the
-   release's permanent address — record it.
+   re-pins), then confirm with `synapse_pin_status`. Storage deals
+   pay USDFC from Filecoin Pay (not native FIL gas): `synapse_pin`
+   auto-approves Warm Storage and tops up Filecoin Pay from wallet
+   USDFC when needed; use `synapse_payment_status` to inspect
+   wallet vs. contract balances or `synapse_fund` for explicit
+   top-ups. The CID is the release's permanent address — record it.
 6. **Catalog.** `arkiv_create_entity` with the Haven entity format
    (enforced by the tool — malformed records are rejected before
    signing, never silently stored): payload carries `fcid`/`piece`

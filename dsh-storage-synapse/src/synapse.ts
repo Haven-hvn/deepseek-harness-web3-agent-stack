@@ -8,11 +8,16 @@
  * normalized to `https://` by normalizeRpcUrl).
  * No localhost:5001, no Kubo HTTP fallback.
  *
- * OWS upgrade (filecoin-pin 1.3.0 AccountConfig): Synapse is initialized
- * with a pre-created viem Account whose signing callbacks delegate to
- * ctx.wallet (OWS vault) — no raw private key in this package, its
- * configuration, or the process between requests. The account is created
- * per-operation-style inside the wallet seam (resolve → load → sign → drop).
+ * OWS / raw-key wallet seam (filecoin-pin AccountConfig): Synapse is
+ * initialized with a pre-created viem Account whose signing callbacks
+ * delegate to `ctx.wallet` — no raw private key in this package, its
+ * configuration, or the process between requests.
+ *
+ * Payment model: Filecoin Onchain Cloud separates liquid EOA `USDFC` from
+ * `Filecoin Pay` contract deposits (locked + available) and Warm Storage
+ * operator allowances. This backend owns that EOA ↔ Filecoin Pay rail:
+ * read-only status/cost inspection, idempotent deposit+approval (deposit-only,
+ * never withdraws), and preflight + policy-bounded auto-funding before uploads.
  */
 
 export type Cid = string
@@ -24,6 +29,81 @@ export interface PinStatus {
   readonly redundancy: number
   /** CommP piece CID carrying the root (present when the ledger maps it) — gated-record writers address this, never the root. */
   readonly pieceCid?: string | undefined
+}
+
+/** Dry-run cost & readiness estimate for uploading a specific byte size. */
+export interface PaymentEstimate {
+  readonly fileSizeBytes: number
+  readonly copies: number
+  readonly withCDN: boolean
+  readonly newDataSetCount: number
+  readonly ready: boolean
+  readonly depositNeededRaw: string
+  readonly depositNeededUsdfc: string
+  readonly canSelfFundFromWallet: boolean
+  readonly walletShortfallRaw: string
+  readonly walletShortfallUsdfc: string
+  readonly reasonCode: string
+}
+
+/** Complete read-only snapshot of EOA + Filecoin Pay (Warm Storage) state. */
+export interface PaymentStatusSnapshot {
+  readonly network: string
+  /** Normalized chain slug (`filecoin-calibration` | `filecoin`). */
+  readonly chain: string
+  readonly chainId: number
+  readonly address: string
+  readonly filBalanceRaw: string
+  readonly filBalance: string
+  readonly hasSufficientGas: boolean
+  /** Liquid USDFC in the agent's EOA wallet (not yet deposited into Filecoin Pay). */
+  readonly walletUsdfcRaw: string
+  readonly walletUsdfc: string
+  /** Gross USDFC held in the Filecoin Pay contract (locked + available). */
+  readonly depositedUsdfcRaw: string
+  readonly depositedUsdfc: string
+  /** USDFC currently reserved as lockup by active Warm Storage rails. */
+  readonly lockedUsdfcRaw: string
+  readonly lockedUsdfc: string
+  /** Net USDFC in Filecoin Pay free above lockup & debt. */
+  readonly availableUsdfcRaw: string
+  readonly availableUsdfc: string
+  readonly warmStorageApproved: boolean
+  readonly needsAllowanceUpdate: boolean
+  readonly spendRatePerDayRaw: string
+  readonly spendRatePerDayUsdfc: string
+  readonly runwayState: 'no-spend' | 'active'
+  readonly runwayDays: number
+  readonly runwayHours: number
+  readonly coverageDays: number
+  readonly coverageHours: number
+  readonly estimate?: PaymentEstimate | undefined
+}
+
+/** Declarative, deposit-only funding target (never withdraws). */
+export interface FundRequest {
+  /** First-time / auto setup: covers dataset reserve + CDN lockups + 1 USDFC runway for configured copies. */
+  readonly setup?: boolean | undefined
+  /** Minimum gross deposited USDFC balance in Filecoin Pay (decimal string, e.g. `"5"` or `"2.62"`). */
+  readonly targetDepositUsdfc?: string | undefined
+  /** Minimum net storage runway in days (e.g. `30`). May be combined with `fileSizeBytes`. */
+  readonly targetRunwayDays?: number | undefined
+  /** Upcoming file/CAR size in bytes to include in the deposit calculation. */
+  readonly fileSizeBytes?: number | undefined
+  /** Optional ceiling on how much USDFC this single call may deposit (decimal string). */
+  readonly maxDepositUsdfc?: string | undefined
+}
+
+/** Verified post-commit outcome of a Filecoin Pay funding/approval operation. */
+export interface FundResult {
+  readonly adjusted: boolean
+  readonly allowancesUpdated: boolean
+  readonly depositedRaw: string
+  readonly depositedUsdfc: string
+  readonly transactionHash?: string | undefined
+  readonly allowanceTransactionHash?: string | undefined
+  readonly reason: string
+  readonly status: PaymentStatusSnapshot
 }
 
 export const internals: { fetch: typeof globalThis.fetch | undefined } = { fetch: undefined }
@@ -42,6 +122,88 @@ export interface PieceLedgerEntry {
 }
 
 export const PIECE_LEDGER_VERSION = 1
+
+/** Default per-operation auto-fund ceiling in whole USDFC. */
+export const DEFAULT_MAX_AUTO_FUND_USDFC = '10'
+/** Default net storage runway target (days) when auto-funding uploads. */
+export const DEFAULT_AUTO_FUND_RUNWAY_DAYS = 30
+
+const WEI_18 = 10n ** 18n
+const INSUFFICIENT_LOCKUP_RE = /InsufficientLockupFunds[\s\S]*?\(\s*0x[0-9a-fA-F]+\s*,\s*(\d+)\s*,\s*(\d+)\s*\)/
+
+/** Format an 18-decimal token bigint cleanly without trailing fractional zeros. */
+export function formatFixed18(raw: bigint, maxDecimals = 6): string {
+  const negative = raw < 0n
+  const abs = negative ? -raw : raw
+  const whole = abs / WEI_18
+  const frac = abs % WEI_18
+  if (frac === 0n) return `${negative ? '-' : ''}${whole}`
+  const padded = frac.toString().padStart(18, '0')
+  const trimmedFull = padded.replace(/0+$/, '')
+  // Preserve enough precision so tiny non-zero values (e.g. 0.0000001) don't collapse to "0".
+  const sliceLen = Math.max(maxDecimals, padded.search(/[1-9]/) + 2)
+  const capped = trimmedFull.slice(0, sliceLen).replace(/0+$/, '')
+  return `${negative ? '-' : ''}${whole}.${capped || trimmedFull}`
+}
+
+/** Parse a non-negative whole-token decimal string (18 decimals) into wei. Throws loudly on invalid input. */
+export function parseFixed18(value: string, fieldName = 'amount'): bigint {
+  const trimmed = value.trim()
+  if (!/^\d+(?:\.\d{1,18})?$/.test(trimmed)) {
+    throw new Error(`dsh-storage-synapse: invalid ${fieldName} ${JSON.stringify(value)} — expected a non-negative decimal USDFC string (up to 18 decimals, e.g. "2.62")`)
+  }
+  const [wholePart, fracPart = ''] = trimmed.split('.')
+  const whole = BigInt(wholePart || '0')
+  const frac = BigInt(fracPart.padEnd(18, '0'))
+  return whole * WEI_18 + frac
+}
+
+/** Normalize chainId / networkMode into the workspace's canonical Filecoin chain slug. */
+export function chainSlugForNetwork(chainId?: number, networkMode?: 'calibration' | 'mainnet'): string {
+  if (chainId === 314) return 'filecoin'
+  if (chainId === 314159) return 'filecoin-calibration'
+  return networkMode === 'mainnet' ? 'filecoin' : 'filecoin-calibration'
+}
+
+/** Walk an error + nested cause chain into a single searchable string. */
+function collectErrorText(error: unknown, depth = 0): string {
+  if (error === null || error === undefined || depth > 10) return ''
+  if (typeof error === 'string') return error
+  if (typeof error === 'object') {
+    const rec = error as { message?: unknown; cause?: unknown }
+    const msg = typeof rec.message === 'string' ? rec.message : ''
+    return `${msg}\n${collectErrorText(rec.cause, depth + 1)}`
+  }
+  return String(error)
+}
+
+/** Parse WarmStorage `InsufficientLockupFunds(payer, minimumRequired, available)` from an error chain. */
+export function parseInsufficientLockup(error: unknown): { minimumRequired: bigint; available: bigint } | null {
+  const match = collectErrorText(error).match(INSUFFICIENT_LOCKUP_RE)
+  if (!match?.[1] || !match[2]) return null
+  return { minimumRequired: BigInt(match[1]), available: BigInt(match[2]) }
+}
+
+/**
+ * Translate a WarmStorage `InsufficientLockupFunds` revert into a clear,
+ * agent-actionable error naming USDFC amounts (not raw 18-decimal wei).
+ */
+export function decorateLockupError(error: unknown, address?: string): Error | null {
+  const shortfall = parseInsufficientLockup(error)
+  if (shortfall === null) return null
+  const missing = shortfall.minimumRequired > shortfall.available
+    ? shortfall.minimumRequired - shortfall.available
+    : 0n
+  const who = address ? ` for ${address}` : ''
+  return new Error(
+    `dsh-storage-synapse: insufficient USDFC locked in Filecoin Pay${who} — `
+    + `Warm Storage requires ${formatFixed18(shortfall.minimumRequired)} USDFC available, `
+    + `only ${formatFixed18(shortfall.available)} USDFC is available `
+    + `(shortfall ${formatFixed18(missing)} USDFC; native FIL gas cannot pay for storage). `
+    + `Call synapse_payment_status to inspect wallet vs. Filecoin Pay balances, or synapse_fund to deposit USDFC.`,
+    { cause: error instanceof Error ? error : undefined },
+  )
+}
 
 /**
  * Provider-selection failures happen before anything is committed: no dataset,
@@ -70,8 +232,8 @@ export function preview(value: unknown, max = 500): string {
 type SynapseInstance = import('@filoz/synapse-sdk').Synapse
 type Account = import('viem').Account
 
-interface FilecoinBackendOpts {
-  /** Resolver that returns a viem Account delegating to ctx.wallet (OWS) — per operation, never cached */
+export interface FilecoinBackendOpts {
+  /** Resolver that returns a viem Account delegating to ctx.wallet — per operation, never cached. */
   getAccount: () => Promise<Account>
   rpcUrl: string
   networkMode?: 'calibration' | 'mainnet' | undefined
@@ -81,6 +243,20 @@ interface FilecoinBackendOpts {
   providerIds?: bigint[] | undefined
   /** Optional JSON path persisting the root→piece ledger across restarts (best-effort, 0600). */
   pieceLedgerPath?: string | undefined
+  /**
+   * Automatically approve Warm Storage and top up Filecoin Pay from wallet USDFC
+   * before uploading when deposited funds or allowances are insufficient.
+   * Default `true` everywhere (bounded by `maxAutoFundUsdfc`).
+   */
+  autoFund?: boolean | undefined
+  /** Maximum USDFC a single auto-fund operation may deposit (decimal string, default `"10"`). */
+  maxAutoFundUsdfc?: string | undefined
+  /** Target net storage runway in days when auto-funding uploads (default `30`). */
+  autoFundRunwayDays?: number | undefined
+  /** Wallet-lane serializer (`ctx.wallet.withLock`) for nonce-bearing on-chain transactions. */
+  withWalletLock?: (<T>(task: () => Promise<T>) => Promise<T>) | undefined
+  /** Audit callback invoked strictly after an on-chain Filecoin Pay funding/approval commits. */
+  onFunded?: ((result: FundResult) => void) | undefined
 }
 
 /**
@@ -104,6 +280,11 @@ export class FilecoinBackend {
 
   constructor(opts: FilecoinBackendOpts) {
     this.opts = { ...opts, rpcUrl: normalizeRpcUrl(opts.rpcUrl) }
+  }
+
+  /** Run a nonce-bearing on-chain step inside the wallet lane when provided. */
+  private async runLocked<T>(task: () => Promise<T>): Promise<T> {
+    return this.opts.withWalletLock ? await this.opts.withWalletLock(task) : await task()
   }
 
   /** Load the persisted ledger once; missing/corrupt/legacy files start empty, never throw. */
@@ -157,7 +338,7 @@ export class FilecoinBackend {
     if (this.synapse) return this.synapse
     const { initializeSynapse } = await import('filecoin-pin/core/synapse')
     const account = await this.opts.getAccount()
-    // filecoin-pin 1.3.0 AccountConfig: { account, rpcUrl, withCDN } — OWS wallet-gated, no privateKey
+    // filecoin-pin AccountConfig: { account, rpcUrl, withCDN } — wallet-gated, no privateKey
     const synapse: SynapseInstance = await (initializeSynapse as any)({
       account,
       rpcUrl: this.opts.rpcUrl,
@@ -165,6 +346,383 @@ export class FilecoinBackend {
     })
     this.synapse = synapse
     return synapse
+  }
+
+  /** Resolve candidate storage contexts for cost estimation (mirrors upload's exclusion fallback). */
+  private async resolveEstimateContexts(synapse: any): Promise<any[] | undefined> {
+    if (typeof synapse?.storage?.createContexts !== 'function') return undefined
+    const copies = this.opts.providerIds?.length ?? this.opts.copies ?? 1
+    const buildArgs = (excludeProviderIds?: bigint[]) => ({
+      copies,
+      ...(this.opts.providerIds ? { providerIds: this.opts.providerIds } : {}),
+      ...(excludeProviderIds?.length ? { excludeProviderIds } : {}),
+      withCDN: this.opts.withCDN === true,
+    })
+    try {
+      return await synapse.storage.createContexts(buildArgs(this.opts.excludeProviderIds))
+    } catch (err: unknown) {
+      if (this.opts.excludeProviderIds?.length && !this.opts.providerIds && isProviderSelectionError(err)) {
+        try {
+          return await synapse.storage.createContexts(buildArgs(undefined))
+        } catch {
+          return undefined
+        }
+      }
+      return undefined
+    }
+  }
+
+  /**
+   * Read live on-chain payment state (EOA gas + EOA USDFC + Filecoin Pay deposit/lockup/runway +
+   * Warm Storage operator approval). Pure read — zero signing, zero spend.
+   */
+  async paymentStatus(opts?: { fileSizeBytes?: number; targetRunwayDays?: number }): Promise<PaymentStatusSnapshot> {
+    const synapse: any = await this.ensureSynapse()
+    const payments = await import('filecoin-pin/core/payments')
+    const [status, accountSummary, allowanceCheck] = await Promise.all([
+      payments.getPaymentStatus(synapse),
+      synapse.payments.accountSummary({}),
+      payments.checkAllowances(synapse),
+    ])
+    const runway = payments.toStorageRunwaySummary(accountSummary)
+    const chain = chainSlugForNetwork(status.chainId, this.opts.networkMode)
+    const hasSufficientGas = status.filBalance >= payments.MIN_FIL_FOR_GAS
+    let estimate: PaymentEstimate | undefined
+
+    if (opts?.fileSizeBytes !== undefined) {
+      const plan = await this.planForPiece(synapse, payments, status, accountSummary, opts.fileSizeBytes, opts.targetRunwayDays)
+      const depositNeeded = plan.delta > 0n ? plan.delta : 0n
+      const walletShortfall = depositNeeded > status.walletUsdfcBalance ? depositNeeded - status.walletUsdfcBalance : 0n
+      estimate = {
+        fileSizeBytes: opts.fileSizeBytes,
+        copies: this.opts.providerIds?.length ?? this.opts.copies ?? 1,
+        withCDN: this.opts.withCDN === true,
+        newDataSetCount: plan.newDataSetCount,
+        ready: hasSufficientGas && !allowanceCheck.needsUpdate && depositNeeded === 0n,
+        depositNeededRaw: depositNeeded.toString(),
+        depositNeededUsdfc: formatFixed18(depositNeeded),
+        canSelfFundFromWallet: hasSufficientGas && walletShortfall === 0n,
+        walletShortfallRaw: walletShortfall.toString(),
+        walletShortfallUsdfc: formatFixed18(walletShortfall),
+        reasonCode: plan.reasonCode,
+      }
+    }
+
+    return {
+      network: status.network,
+      chain,
+      chainId: status.chainId,
+      address: status.address,
+      filBalanceRaw: status.filBalance.toString(),
+      filBalance: formatFixed18(status.filBalance),
+      hasSufficientGas,
+      walletUsdfcRaw: status.walletUsdfcBalance.toString(),
+      walletUsdfc: formatFixed18(status.walletUsdfcBalance),
+      depositedUsdfcRaw: status.filecoinPayBalance.toString(),
+      depositedUsdfc: formatFixed18(status.filecoinPayBalance),
+      lockedUsdfcRaw: runway.lockupUsed.toString(),
+      lockedUsdfc: formatFixed18(runway.lockupUsed),
+      availableUsdfcRaw: runway.availableFunds.toString(),
+      availableUsdfc: formatFixed18(runway.availableFunds),
+      warmStorageApproved: Boolean(status.currentAllowances?.isApproved) && !allowanceCheck.needsUpdate,
+      needsAllowanceUpdate: allowanceCheck.needsUpdate,
+      spendRatePerDayRaw: runway.perDay.toString(),
+      spendRatePerDayUsdfc: formatFixed18(runway.perDay),
+      runwayState: runway.state,
+      runwayDays: runway.runwayDays,
+      runwayHours: runway.runwayHours,
+      coverageDays: runway.coverageDays,
+      coverageHours: runway.coverageHours,
+      ...(estimate !== undefined ? { estimate } : {}),
+    }
+  }
+
+  /**
+   * Compute exact deposit delta needed for an upload of `fileSizeBytes` + `targetRunwayDays`.
+   * Prefers reserve-aware `calculateMultiContextCosts` when storage contexts resolve, and
+   * falls back cleanly to priceList-based calculation otherwise.
+   */
+  private async planForPiece(
+    synapse: any,
+    payments: typeof import('filecoin-pin/core/payments'),
+    status: Awaited<ReturnType<typeof import('filecoin-pin/core/payments').getPaymentStatus>>,
+    accountSummary: any,
+    fileSizeBytes: number,
+    targetRunwayDays?: number,
+  ): Promise<{ delta: bigint; newDataSetCount: number; reasonCode: string }> {
+    const days = Math.max(0, Math.floor(targetRunwayDays ?? this.opts.autoFundRunwayDays ?? DEFAULT_AUTO_FUND_RUNWAY_DAYS))
+    const copies = this.opts.providerIds?.length ?? this.opts.copies ?? 1
+    const withCDN = this.opts.withCDN === true
+    const contexts = await this.resolveEstimateContexts(synapse)
+
+    if (contexts && contexts.length > 0 && typeof synapse?.storage?.calculateMultiContextCosts === 'function') {
+      const { TIME_CONSTANTS } = await import('@filoz/synapse-sdk')
+      const uploadCosts = await synapse.storage.calculateMultiContextCosts(contexts, {
+        pieceSizes: [BigInt(Math.max(1, fileSizeBytes))],
+        ...(days > 0 ? { extraRunwayEpochs: BigInt(days) * TIME_CONSTANTS.EPOCHS_PER_DAY } : {}),
+      })
+      const newDataSetCount = contexts.filter((c: any) => c.dataSetId === null || c.dataSetId === undefined).length
+      const plan = payments.calculateFilecoinPayFundingPlan({
+        status,
+        accountSummary,
+        targetRunwayDays: days,
+        pieceSizeBytes: fileSizeBytes,
+        newDataSetCount,
+        withCDN,
+        uploadCosts,
+        mode: 'minimum',
+        allowWithdraw: false,
+      })
+      return { delta: plan.delta > 0n ? plan.delta : 0n, newDataSetCount, reasonCode: plan.reasonCode }
+    }
+
+    // Fallback when context resolution is unavailable (e.g. offline/mocked storage manager).
+    const storageInfo = await synapse.storage.getStorageInfo()
+    const priceList = storageInfo.pricing.priceList
+    const newDataSetCount = status.filecoinPayBalance === 0n ? copies : 0
+    const plan = payments.calculateFilecoinPayFundingPlan({
+      status,
+      accountSummary,
+      targetRunwayDays: days,
+      pieceSizeBytes: fileSizeBytes,
+      priceList,
+      newDataSetCount,
+      withCDN,
+      mode: 'minimum',
+      allowWithdraw: false,
+    })
+    return { delta: plan.delta > 0n ? plan.delta : 0n, newDataSetCount, reasonCode: plan.reasonCode }
+  }
+
+  /**
+   * Declarative, idempotent Filecoin Pay funding & Warm Storage operator approval.
+   * Deposit-only — never withdraws USDFC back out of Filecoin Pay.
+   * Safe to retry after crashes/timeouts: if the target balance and operator approval
+   * are already met on-chain, performs zero transactions and returns verified status.
+   */
+  async fund(req: FundRequest = {}): Promise<FundResult> {
+    if (req.targetDepositUsdfc !== undefined && req.targetRunwayDays !== undefined) {
+      throw new Error('dsh-storage-synapse: specify either targetDepositUsdfc or targetRunwayDays, not both')
+    }
+    if (req.setup && (req.targetDepositUsdfc !== undefined || req.targetRunwayDays !== undefined)) {
+      throw new Error('dsh-storage-synapse: setup cannot be combined with targetDepositUsdfc or targetRunwayDays')
+    }
+    if (req.targetRunwayDays !== undefined && (!Number.isFinite(req.targetRunwayDays) || req.targetRunwayDays < 0)) {
+      throw new Error(`dsh-storage-synapse: targetRunwayDays must be a non-negative number, got ${req.targetRunwayDays}`)
+    }
+    if (req.fileSizeBytes !== undefined && (!Number.isFinite(req.fileSizeBytes) || req.fileSizeBytes < 0)) {
+      throw new Error(`dsh-storage-synapse: fileSizeBytes must be a non-negative number, got ${req.fileSizeBytes}`)
+    }
+    const maxDepositCap = req.maxDepositUsdfc !== undefined ? parseFixed18(req.maxDepositUsdfc, 'maxDepositUsdfc') : undefined
+
+    const synapse: any = await this.ensureSynapse()
+    const payments = await import('filecoin-pin/core/payments')
+    const [status, accountSummary, allowanceCheck] = await Promise.all([
+      payments.getPaymentStatus(synapse),
+      synapse.payments.accountSummary({}),
+      payments.checkAllowances(synapse),
+    ])
+    const isCalibnet = status.chainId === 314159
+    const chain = chainSlugForNetwork(status.chainId, this.opts.networkMode)
+    const copies = this.opts.providerIds?.length ?? this.opts.copies ?? 1
+
+    let delta = 0n
+    let reason = 'already-funded'
+
+    if (req.targetDepositUsdfc !== undefined) {
+      const target = parseFixed18(req.targetDepositUsdfc, 'targetDepositUsdfc')
+      delta = target > status.filecoinPayBalance ? target - status.filecoinPayBalance : 0n
+      reason = delta > 0n ? 'target-deposit' : 'already-funded'
+    } else if (req.fileSizeBytes !== undefined) {
+      const planned = await this.planForPiece(synapse, payments, status, accountSummary, req.fileSizeBytes, req.targetRunwayDays)
+      delta = planned.delta
+      reason = delta > 0n ? planned.reasonCode : 'already-funded'
+    } else if (req.targetRunwayDays !== undefined) {
+      if (accountSummary.lockupRatePerEpoch > 0n) {
+        const plan = payments.calculateFilecoinPayFundingPlan({
+          status,
+          accountSummary,
+          targetRunwayDays: req.targetRunwayDays,
+          mode: 'minimum',
+          allowWithdraw: false,
+        })
+        delta = plan.delta > 0n ? plan.delta : 0n
+        reason = delta > 0n ? plan.reasonCode : 'already-funded'
+      } else {
+        // No active spend yet: bootstrap with auto-setup target so the agent has initial dataset + runway funds.
+        const storageInfo = await synapse.storage.getStorageInfo()
+        const { targetBalance } = payments.computeAutoSetupTargetBalance({
+          filecoinPayBalance: status.filecoinPayBalance,
+          availableFunds: accountSummary.availableFunds,
+          copies,
+          priceList: storageInfo.pricing.priceList,
+        })
+        delta = targetBalance > status.filecoinPayBalance ? targetBalance - status.filecoinPayBalance : 0n
+        reason = delta > 0n ? 'auto-setup' : 'already-funded'
+      }
+    } else {
+      // Default (`setup: true` or empty `{}`): auto-setup from live on-chain pricing.
+      const storageInfo = await synapse.storage.getStorageInfo()
+      const { targetBalance } = payments.computeAutoSetupTargetBalance({
+        filecoinPayBalance: status.filecoinPayBalance,
+        availableFunds: accountSummary.availableFunds,
+        copies,
+        priceList: storageInfo.pricing.priceList,
+      })
+      delta = targetBalance > status.filecoinPayBalance ? targetBalance - status.filecoinPayBalance : 0n
+      reason = delta > 0n ? 'auto-setup' : 'already-funded'
+    }
+
+    const needsDeposit = delta > 0n
+    const needsApproval = allowanceCheck.needsUpdate
+
+    if (!needsDeposit && !needsApproval) {
+      const currentSnap = await this.paymentStatus(
+        req.fileSizeBytes !== undefined ? { fileSizeBytes: req.fileSizeBytes, targetRunwayDays: req.targetRunwayDays } : undefined,
+      )
+      return {
+        adjusted: false,
+        allowancesUpdated: false,
+        depositedRaw: '0',
+        depositedUsdfc: '0',
+        reason: 'already-funded',
+        status: currentSnap,
+      }
+    }
+
+    // Validate native gas before attempting any on-chain transaction.
+    const gasCheck = payments.validateGasRequirement(status.filBalance, isCalibnet)
+    if (!gasCheck.isValid) {
+      const help = gasCheck.helpMessage ? ` ${gasCheck.helpMessage}` : ''
+      throw new Error(
+        `dsh-storage-synapse: cannot fund Filecoin Pay on ${chain} for ${status.address} — ${gasCheck.errorMessage}.${help}`,
+      )
+    }
+
+    if (needsDeposit) {
+      if (maxDepositCap !== undefined && delta > maxDepositCap) {
+        throw new Error(
+          `dsh-storage-synapse: required Filecoin Pay deposit (${formatFixed18(delta)} USDFC) exceeds `
+          + `configured cap (${formatFixed18(maxDepositCap)} USDFC) for ${status.address} on ${chain}. `
+          + `Wallet holds ${formatFixed18(status.walletUsdfcBalance)} USDFC; call synapse_fund with an explicit `
+          + `maxDepositUsdfc or targetDepositUsdfc to authorize a larger deposit.`,
+        )
+      }
+      if (status.walletUsdfcBalance < delta) {
+        const shortfall = delta - status.walletUsdfcBalance
+        const help = payments.getUsdfcAcquisitionHelpMessage(isCalibnet)
+        throw new Error(
+          `dsh-storage-synapse: insufficient USDFC in wallet ${status.address} on ${chain} to fund Filecoin Pay — `
+          + `need ${formatFixed18(delta)} USDFC deposit, wallet holds ${formatFixed18(status.walletUsdfcBalance)} USDFC `
+          + `(Filecoin Pay deposited: ${formatFixed18(status.filecoinPayBalance)} USDFC; shortfall: ${formatFixed18(shortfall)} USDFC; `
+          + `native FIL gas cannot substitute for USDFC). Fund the wallet with USDFC first. ${help}`,
+        )
+      }
+    }
+
+    let transactionHash: string | undefined
+    let allowanceTransactionHash: string | undefined
+    let allowancesUpdated = false
+
+    await this.runLocked(async () => {
+      if (needsDeposit) {
+        console.log(`[synapse] depositing ${formatFixed18(delta)} USDFC into Filecoin Pay (needsApproval=${needsApproval}, reason=${reason})`)
+        const { depositTx } = await payments.depositUSDFC(synapse, delta)
+        transactionHash = depositTx
+        allowancesUpdated = needsApproval
+        console.log(`[synapse] deposit committed tx=${depositTx}`)
+      } else if (needsApproval) {
+        console.log('[synapse] setting Warm Storage operator allowances (deposit already sufficient)')
+        const res = await payments.checkAndSetAllowances(synapse)
+        allowancesUpdated = res.updated
+        allowanceTransactionHash = res.transactionHash
+        reason = res.updated ? 'approve-only' : 'already-funded'
+        console.log(`[synapse] allowances updated=${res.updated} tx=${res.transactionHash ?? '(none)'}`)
+      }
+    })
+
+    // Read back fresh on-chain state after commit as authoritative evidence.
+    const postStatus = await this.paymentStatus(
+      req.fileSizeBytes !== undefined ? { fileSizeBytes: req.fileSizeBytes, targetRunwayDays: req.targetRunwayDays } : undefined,
+    )
+    const result: FundResult = {
+      adjusted: needsDeposit || allowancesUpdated,
+      allowancesUpdated,
+      depositedRaw: delta.toString(),
+      depositedUsdfc: formatFixed18(delta),
+      ...(transactionHash !== undefined ? { transactionHash } : {}),
+      ...(allowanceTransactionHash !== undefined ? { allowanceTransactionHash } : {}),
+      reason: needsDeposit ? reason : (allowancesUpdated ? 'approve-only' : 'already-funded'),
+      status: postStatus,
+    }
+    if (result.adjusted) {
+      try {
+        this.opts.onFunded?.(result)
+      } catch {}
+    }
+    return result
+  }
+
+  /**
+   * Preflight payment readiness before transferring bytes to any storage provider.
+   * When `autoFund` is enabled (default `true` everywhere), tops up Filecoin Pay from
+   * wallet USDFC and approves Warm Storage automatically up to `maxAutoFundUsdfc`.
+   * Fails loud and early on gas shortage, wallet USDFC shortage, cap exceeded, or
+   * `autoFund: false` — never wasting upload bandwidth only to revert on-chain.
+   */
+  private async preflightUploadFunding(synapse: any, carSizeBytes: number): Promise<void> {
+    // Skip only when running against a bare test stub that lacks the SDK payment surface.
+    if (typeof synapse?.payments?.accountSummary !== 'function') return
+
+    const snap = await this.paymentStatus({
+      fileSizeBytes: carSizeBytes,
+      targetRunwayDays: this.opts.autoFundRunwayDays ?? DEFAULT_AUTO_FUND_RUNWAY_DAYS,
+    })
+    const estimate = snap.estimate
+    if (!estimate || estimate.ready) return
+
+    const isCalibnet = snap.chainId === 314159
+    if (!snap.hasSufficientGas) {
+      const payments = await import('filecoin-pin/core/payments')
+      const gasCheck = payments.validateGasRequirement(BigInt(snap.filBalanceRaw), isCalibnet)
+      const help = gasCheck.helpMessage ? ` ${gasCheck.helpMessage}` : ''
+      throw new Error(
+        `dsh-storage-synapse: cannot upload on ${snap.chain} for ${snap.address} — ${gasCheck.errorMessage}.${help}`,
+      )
+    }
+
+    const needed = BigInt(estimate.depositNeededRaw)
+    const walletUsdfc = BigInt(snap.walletUsdfcRaw)
+    if (needed > walletUsdfc) {
+      const payments = await import('filecoin-pin/core/payments')
+      const help = payments.getUsdfcAcquisitionHelpMessage(isCalibnet)
+      throw new Error(
+        `dsh-storage-synapse: insufficient USDFC to pin on ${snap.chain} for ${snap.address} — `
+        + `upload needs ${estimate.depositNeededUsdfc} USDFC deposited into Filecoin Pay, `
+        + `but wallet holds ${snap.walletUsdfc} USDFC and Filecoin Pay has ${snap.availableUsdfc} USDFC available `
+        + `(${snap.depositedUsdfc} deposited, ${snap.lockedUsdfc} locked; shortfall: ${estimate.walletShortfallUsdfc} USDFC; `
+        + `native FIL gas cannot pay for storage). Fund ${snap.address} with USDFC first. ${help}`,
+      )
+    }
+
+    const autoFundEnabled = this.opts.autoFund ?? true
+    if (!autoFundEnabled) {
+      const parts: string[] = []
+      if (needed > 0n) parts.push(`deposit ${estimate.depositNeededUsdfc} USDFC into Filecoin Pay`)
+      if (snap.needsAllowanceUpdate) parts.push('approve Warm Storage operator allowances')
+      throw new Error(
+        `dsh-storage-synapse: Filecoin Pay not ready on ${snap.chain} for ${snap.address} (autoFund is disabled) — `
+        + `need to ${parts.join(' and ')}. Wallet holds ${snap.walletUsdfc} USDFC (deposited: ${snap.depositedUsdfc}, `
+        + `available: ${snap.availableUsdfc}). Call synapse_fund first, then retry synapse_pin.`,
+      )
+    }
+
+    const capStr = this.opts.maxAutoFundUsdfc ?? DEFAULT_MAX_AUTO_FUND_USDFC
+    await this.fund({
+      fileSizeBytes: carSizeBytes,
+      targetRunwayDays: this.opts.autoFundRunwayDays ?? DEFAULT_AUTO_FUND_RUNWAY_DAYS,
+      maxDepositUsdfc: capStr,
+    })
   }
 
   async store(data: Uint8Array, opts?: { onProgress?: (event: unknown) => void; signal?: AbortSignal }): Promise<{ cid: Cid; pieceCid?: string | undefined }> {
@@ -180,6 +738,10 @@ export class FilecoinBackend {
     const car = packSingleBlockCar(data)
     const carBytes = car.carBytes
     console.log(`[synapse] CAR built rootCid=${car.rootCid} carBytes=${carBytes.length}`)
+    // Preflight gas, Warm Storage allowances, and Filecoin Pay capacity BEFORE
+    // streaming bytes to any storage provider (auto-funding from wallet USDFC
+    // by default within maxAutoFundUsdfc).
+    await this.preflightUploadFunding(synapse, carBytes.length)
     const rootCid: any = CID.parse(car.rootCid)
     const log = (lvl: string, ...a: any[]) => { try { console.log(`[synapse:${lvl}]`, ...a) } catch {} }
     const logger: any = { debug: (...a: any[]) => log('debug', ...a), info: (...a: any[]) => log('info', ...a), warn: (...a: any[]) => log('warn', ...a), error: (...a: any[]) => log('error', ...a) }
@@ -202,9 +764,13 @@ export class FilecoinBackend {
       // are never second-guessed.
       if (this.opts.excludeProviderIds?.length && !this.opts.providerIds && isProviderSelectionError(primaryError)) {
         console.log(`[synapse] primary selection failed with exclusions [${this.opts.excludeProviderIds.join(',')}]; retrying once without exclusions`)
-        result = await this.runUpload(executeUpload, synapse, carBytes, rootCid, baseOpts, undefined, 'fallback-no-exclusions')
+        try {
+          result = await this.runUpload(executeUpload, synapse, carBytes, rootCid, baseOpts, undefined, 'fallback-no-exclusions')
+        } catch (fallbackError: unknown) {
+          throw decorateLockupError(fallbackError) ?? fallbackError
+        }
       } else {
-        throw primaryError
+        throw decorateLockupError(primaryError) ?? primaryError
       }
     }
     const cid: string = car?.rootCid ?? result?.cid ?? result?.rootCid ?? ''

@@ -73,7 +73,15 @@
         nativeToken: tFIL
         nativeDecimals: 18
         label: 'Filecoin calibration'
-    tokens: []
+    tokens:
+      - chain: sepolia
+        token: USDC
+        address: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238'
+        decimals: 6
+      - chain: filecoin-calibration
+        token: USDFC
+        address: '0xb3042734b608a1B16e9e86B374A3f3e389B4cDf0'
+        decimals: 18
 
 # ── Messaging ────────────────────────────────────────────────────────
 # The channel observes each conversation's session: replies to inbound,
@@ -111,6 +119,19 @@
     wallet: agent
     privateKeyRef: AGENT_EVM_KEY
     rpcUrl: https://rpc.rabdi.db-chain.testnet.arkiv.network
+
+- id: storage-synapse
+  config:
+    wallet: agent
+    rpcUrl: https://api.calibration.node.glif.io/rpc/v1
+    networkMode: calibration
+    withCDN: true
+    copies: 1
+    excludeProviderIds: []
+    pieceLedgerPath: /var/lib/herald/synapse/pieces.json
+    autoFund: true
+    maxAutoFundUsdfc: '10'
+    autoFundRunwayDays: 30
 
 - id: royalty-router
   config:

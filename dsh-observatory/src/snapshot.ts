@@ -102,6 +102,7 @@ export function explorerUrl(chain: string | number | undefined, kind: 'address' 
     id === '84532' || id === 'base-sepolia' ? 'https://sepolia.basescan.org' :
     id === '11155111' || id === 'sepolia' ? 'https://sepolia.etherscan.io' :
     id === '314159' || id === 'filecoin-calibration' ? 'https://calibration.filfox.info/en' :
+    id === '314' || id === 'filecoin' ? 'https://filfox.info/en' :
     id === '8453' || id === 'base' ? 'https://basescan.org' :
     id === '1' || id === 'ethereum' ? 'https://etherscan.io' :
     undefined

@@ -55,7 +55,7 @@ refresh_profile_patch() {
   fi
 }
 
-mkdir -p /data/logs /data/keys /data/downloads/acquire /data/xmtp /data/home
+mkdir -p /data/logs /data/keys /data/downloads/acquire /data/xmtp /data/home /data/haven-aol /data/synapse
 
 # Identity of the image's profile skeleton (dsh CLI version + stack lockfile +
 # skeleton manifest), written by the Dockerfile, and the id last installed
@@ -253,7 +253,7 @@ Agent instantiated. HOT wallets live in /data/keys (container-only).
   XMTP inbox:     $INBOX
 
 Fund with TESTNET assets only (faucets, never mainnet):
-  Sepolia / Base Sepolia ETH, calibration tFIL.
+  Sepolia / Base Sepolia ETH, calibration tFIL + calibration USDFC.
 
 A Convos invite QR prints to these logs once the agent is up —
 scan it with the Convos app to chat. Re-print any time with:

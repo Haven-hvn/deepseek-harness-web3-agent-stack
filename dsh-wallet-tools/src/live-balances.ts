@@ -69,6 +69,23 @@ export interface ChainFetchResult {
   readonly durationMs: number
 }
 
+/** Structural snapshot of a Filecoin Pay contract account (from optional `ctx.synapse.paymentStatus`). */
+export interface FilecoinPaySnapshot {
+  readonly chain: string
+  readonly network: string
+  readonly address: string
+  readonly depositedUsdfcRaw: string
+  readonly depositedUsdfc: string
+  readonly lockedUsdfcRaw: string
+  readonly lockedUsdfc: string
+  readonly availableUsdfcRaw: string
+  readonly availableUsdfc: string
+  readonly warmStorageApproved: boolean
+  readonly runwayState: 'no-spend' | 'active'
+  readonly runwayDays: number
+  readonly runwayHours: number
+}
+
 /** Aggregate live fetch result. */
 export interface LiveFetchResult {
   readonly walletAddress: string
@@ -76,6 +93,10 @@ export interface LiveFetchResult {
   readonly totalValueUsd: number // micro-USD
   readonly fetchedAt: string // ISO timestamp
   readonly priceSource: string
+  /** Optional protocol-escrowed Filecoin Pay balance, kept separate from wallet EOA balances. */
+  readonly filecoinPay?: FilecoinPaySnapshot
+  /** Optional isolated diagnostic when the Filecoin Pay probe failed (EOA balances still succeed). */
+  readonly filecoinPayError?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -289,6 +310,7 @@ export async function fetchPrices(): Promise<PriceMap> {
     ['tFIL', 0],
     ['USDC', 1],
     ['USDFC', 1],
+    ['USDFC_PAY', 1],
   ])
   try {
     const controller = new AbortController()
@@ -473,6 +495,21 @@ export async function fetchAllLiveBalances(
 // Treasury conversion & presentation helpers
 // ---------------------------------------------------------------------------
 
+/** Convert a Filecoin Pay contract snapshot into a separate treasury `ChainBalance` row (`token: 'USDFC_PAY'`). */
+export function filecoinPayToTreasuryRow(
+  snap: FilecoinPaySnapshot,
+  priceUsd = 1,
+): { chain: string; token: string; amount: number; usdEstimate: number } {
+  const raw = BigInt(snap.depositedUsdfcRaw)
+  const amount = Number(raw)
+  return {
+    chain: snap.chain,
+    token: 'USDFC_PAY',
+    amount: Number.isFinite(amount) ? amount : 0,
+    usdEstimate: toMicroUsd(raw, 18, priceUsd),
+  }
+}
+
 /** Convert a `LiveFetchResult` into the `ChainBalance[]` shape expected by `ctx.treasury.updateBalances`. */
 export function toTreasuryBalances(result: LiveFetchResult): Array<{ chain: string; token: string; amount: number; usdEstimate: number }> {
   const out: Array<{ chain: string; token: string; amount: number; usdEstimate: number }> = []
@@ -481,11 +518,14 @@ export function toTreasuryBalances(result: LiveFetchResult): Array<{ chain: stri
       out.push({ chain: b.chain, token: b.token, amount: b.amount, usdEstimate: b.usdEstimate })
     }
   }
+  if (result.filecoinPay !== undefined) {
+    out.push(filecoinPayToTreasuryRow(result.filecoinPay))
+  }
   return out
 }
 
 /** Token decimals registry for display — extends with chain defaults as fallback. */
-const DISPLAY_DECIMALS: Record<string, number> = { USDC: 6, USDFC: 18, ETH: 18, FIL: 18, tFIL: 18 }
+const DISPLAY_DECIMALS: Record<string, number> = { USDC: 6, USDFC: 18, USDFC_PAY: 18, ETH: 18, FIL: 18, tFIL: 18 }
 
 /**
  * Format a raw smallest-unit amount as a human-readable string.

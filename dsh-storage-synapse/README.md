@@ -1,34 +1,40 @@
 # dsh-storage-synapse
 
-Synapse pinning for DeepSeek Harness: a `ctx.synapse` seam (store / retrieve /
-pin / pin-status over a Synapse/IPFS node) plus two model-facing tools —
-`synapse_pin` and `synapse_pin_status` — so the harness itself can natively
-choose to pin a file.
+Filecoin Onchain Cloud pinning & Filecoin Pay rail for DeepSeek Harness:
+a `ctx.synapse` seam (store / retrieve / pin / pin-status / paymentStatus /
+fund over Filecoin Warm Storage) plus four model-facing tools — `synapse_pin`,
+`synapse_pin_status`, `synapse_payment_status`, and `synapse_fund` — so any
+agent can inspect storage finances, fund Warm Storage from wallet USDFC, and
+pin files reliably.
 
-Ported from Haven's `SynapseStorageAdapter` + `StorageBackend`
-(haven-adapters). Haven's adapter was explicitly a scaffold over the standard
-Kubo/IPFS HTTP API (`add`, `cat`, `pin/ls`, `pin/add`); this package keeps
-exactly that operation surface.
-
-## Concept transfer
-
-| Haven | Here |
-| --- | --- |
-| `StorageBackend` machine (`eStoreData` / `ePinRenew` events, op queue) | `ctx.synapse` methods; dsh owns dispatch |
-| `StoragePinManager` renewal loop | the agent decides via the `synapse_pin` tool (`pin/add` on a pinned CID renews it) |
-| `storageKey: "env:VAR" \| "0x…"` → bearer header | **wallet-signed requests**: each request signs a per-request challenge through `ctx.wallet` |
-| `store(bytes) → cid`, `retrieve(cid)`, `checkPin`, `renewPin` | same surface, same `PinStatus` shape (`expiresAt` 0 = permanent, −1 = unpinned) |
-
-## Signing (builds on dsh-wallet)
+## Signing & Custody (builds on `dsh-wallet`)
 
 There is deliberately no key or credential field in this package's
-configuration. `config.wallet` names a `dsh-wallet` entry; every node request
-mints a canonical challenge (`synapse:<path>:<timestamp>`) and signs it via
-`ctx.wallet.signMessage`, which runs dsh-wallet's resolve → load → sign → drop
-pipeline. The node verifies signature-over-challenge against the presented
-address (`x-synapse-address` / `x-synapse-challenge` / `x-synapse-signature`
-headers). No storage secret exists in configuration, in this package, or in
-the process between requests.
+configuration. `config.wallet` names a `dsh-wallet` entry; a per-operation
+`viem` Account delegates `signTransaction`, `signMessage`, and raw EIP-712 /
+EIP-2612 `signDigest` through `ctx.wallet` (serialized via `ctx.wallet.withLock`
+so concurrent on-chain senders on the same wallet never collide on nonces). No
+storage secret exists in configuration, in this package, or in the process
+between requests.
+
+## Payment Model (Wallet USDFC vs. Filecoin Pay)
+
+Filecoin Onchain Cloud separates liquid EOA **USDFC** in the agent's wallet
+from **Filecoin Pay** contract deposits (gross = locked + free available) and
+**Warm Storage** operator approvals. Native FIL/tFIL pays gas only and cannot
+substitute for USDFC.
+
+- **Preflight + `autoFund` (default `true` everywhere):** Before uploading
+  bytes to any storage provider, `store()` checks gas, Warm Storage approval,
+  and Filecoin Pay capacity for the CAR size (`copies`, `withCDN`,
+  `autoFundRunwayDays`). When short and wallet USDFC covers the shortfall
+  within `maxAutoFundUsdfc`, it approves Warm Storage and deposits USDFC in one
+  EIP-2612 permit transaction (`depositWithPermitAndApproveOperator`) before
+  uploading. When gas or wallet USDFC is missing, it fails fast *before*
+  uploading with exact address, balances, shortfall, and acquisition guidance.
+- **Deposit-only:** `synapse_fund` is declarative and idempotent (safe to retry
+  after timeouts; never withdraws USDFC out of Filecoin Pay and never swaps
+  tokens).
 
 ## Install
 
@@ -36,45 +42,45 @@ the process between requests.
 dsh plugin --profile <name> add /path/to/dsh-wallet /path/to/dsh-wallet-ethereum /path/to/dsh-storage-synapse
 ```
 
-All three are independent bundles; each inserts only its own row. This plugin
-stays dormant until the wallet seam is present (`inject: [wallet, tools]`).
-
 ## Configuration
 
 ```yaml
 - id: storage-synapse
   name: 'dsh-storage-synapse'
   config:
-    url: 'http://127.0.0.1:5001'   # Synapse/IPFS node HTTP API (Haven's default, standard Kubo address)
-    wallet: agent                  # dsh-wallet entry that signs every request (required)
+    wallet: agent
+    rpcUrl: https://api.calibration.node.glif.io/rpc/v1
+    networkMode: calibration
+    withCDN: true
+    copies: 1
+    excludeProviderIds: []
+    pieceLedgerPath: /data/synapse/pieces.json
+    autoFund: true
+    maxAutoFundUsdfc: '10'
+    autoFundRunwayDays: 30
 ```
 
-## Model experience
+## Model Tools
 
-- `synapse_pin` — give a local file `path` to upload + pin (returns the CID),
-  or an existing `cid` to pin/renew. For anything that must outlive the
-  session.
-- `synapse_pin_status` — check whether a CID is currently pinned.
+- `synapse_pin` — upload + pin a local file `path` (returns root CID + CommP
+  `pieceCid`), or verify/renew an existing `cid`. Preflights and auto-funds
+  Filecoin Pay from wallet USDFC when `autoFund` is enabled.
+- `synapse_pin_status` — check live PDP liveness for a pinned CID.
+- `synapse_payment_status` — read-only inspection of wallet gas, wallet USDFC,
+  Filecoin Pay contract balances (deposited / locked / available), Warm Storage
+  approval, runway, and optional per-file upload cost estimate.
+- `synapse_fund` — declarative, idempotent Filecoin Pay deposit & Warm Storage
+  operator approval (`setup: true`, `targetDepositUsdfc`, `targetRunwayDays`,
+  or `path` / `fileSizeBytes`).
 
 ## Events
 
 - `synapse/pinned` `{ cid }` — emitted at the commit point of every pin.
+- `synapse/funded` `{ address, network, chain, depositedUsdfc, totalDepositedUsdfc, allowancesUpdated, txHash, allowanceTxHash, reason }` — emitted when USDFC is deposited into Filecoin Pay or Warm Storage allowances are updated.
 
 ## Piece shape (readers only play single-block)
 
 Every store packs the bytes as a single-raw-block CARv1 (whole file = one
 `0x55` block under a tag-42 header root) at every size — a port of
-haven-cli's single-block builder without its 32 MiB ceiling. Chunked UnixFS
-is never emitted: readers reject multi-block pieces whose dag-pb root they
-cannot verify ("Nested CAR container"), and no real chunker emits the bare
-header encoding their check expects. Root CIDs are therefore raw-codec
-(`bafkrei…`), never dag-pb; gated records address the CommP piece anyway.
-
-## Limitations
-
-- Sign-only authentication headers follow the scheme documented above; a
-  plain Kubo node ignores unknown headers, so against unauthenticated local
-  nodes the signature is simply extra metadata (matching Haven's scaffold
-  behavior, which sent no auth when no key was configured).
-- No archival/compression pipeline and no background pin reconciliation — by
-  scope, pinning is an agent decision.
+haven-cli's single-block builder without its 32 MiB ceiling. Root CIDs are
+raw-codec (`bafkrei…`), never dag-pb; gated records address the CommP piece.
