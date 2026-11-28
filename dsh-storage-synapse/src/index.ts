@@ -23,7 +23,7 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash } from 'node:crypto'
-import { readFile, stat } from 'node:fs/promises'
+import { stat } from 'node:fs/promises'
 import { basename } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -31,6 +31,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 // Type-only: the read-back hook contract (runtime access to the guard stays
 // optional via `ctx.reflect.get`, so this plugin mounts cleanly unguarded).
 import type { CheckContext, CheckDecision } from 'dsh-exactly-once'
+import { hashFileSha256 } from './singleBlockCar.ts'
 import {
   DEFAULT_AUTO_FUND_RUNWAY_DAYS,
   DEFAULT_MAX_AUTO_FUND_USDFC,
@@ -43,6 +44,7 @@ import type {
   PaymentEstimate,
   PaymentStatusSnapshot,
   PinStatus,
+  StoreInput,
 } from './synapse.ts'
 import type { SynapseFundedEvent, SynapsePinnedEvent } from './types.ts'
 
@@ -53,6 +55,8 @@ export type {
   PaymentEstimate,
   PaymentStatusSnapshot,
   PinStatus,
+  StoreInput,
+  StoreOptions,
 } from './synapse.ts'
 export type { SynapseFundedEvent, SynapsePinnedEvent } from './types.ts'
 
@@ -318,13 +322,13 @@ export class SynapseRuntime {
       return await this.checkPinned(args.cid)
     }
     if (typeof args.path === 'string' && args.path !== '') {
-      let data: Uint8Array
+      let sha: string
       try {
-        data = await readFile(args.path)
+        sha = (await hashFileSha256(args.path)).hex
       } catch {
         return { kind: 'unknown' }
       }
-      const cid = this.uploads.get(createHash('sha256').update(data).digest('hex'))
+      const cid = this.uploads.get(sha)
       if (cid === undefined) return { kind: 'unknown' }
       return await this.checkPinned(cid)
     }
@@ -459,16 +463,35 @@ export class SynapseRuntime {
   }
 
   /**
-   * Store bytes on Filecoin (CIDv1). Repeat stores of identical bytes return
-   * the recorded CID without re-uploading (CIDs are content-deterministic).
+   * Store bytes or a local file on Filecoin (CIDv1). Repeat stores of identical
+   * content return the recorded CID without re-uploading (CIDs are
+   * content-deterministic). File inputs stream from disk without buffering the
+   * payload in the Node heap.
    */
-  async store(data: Uint8Array, _signal?: AbortSignal, onProgress?: (event: unknown) => void): Promise<{ cid: Cid; pieceCid?: string | undefined }> {
+  async store(
+    input: StoreInput,
+    _signal?: AbortSignal,
+    onProgress?: (event: unknown) => void,
+  ): Promise<{ cid: Cid; pieceCid?: string | undefined }> {
     this.hook()
-    const sha = createHash('sha256').update(data).digest('hex')
+    let sha: string
+    let digest: Uint8Array
+    let size: number
+    if (input instanceof Uint8Array) {
+      const buf = createHash('sha256').update(input).digest()
+      digest = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)
+      sha = buf.toString('hex')
+      size = input.byteLength
+    } else {
+      const hashed = await hashFileSha256(input.path)
+      digest = hashed.digest
+      sha = hashed.hex
+      size = hashed.size
+    }
     const known = this.uploads.get(sha)
     if (known !== undefined) return { cid: known }
     const be = await this.ensureBackend()
-    const stored = await be.store(data, { signal: _signal, onProgress })
+    const stored = await be.store(input, { signal: _signal, onProgress, digest, size })
     this.uploads.set(sha, stored.cid)
     return stored
   }
@@ -667,7 +690,7 @@ export function apply(ctx: Context, config: Config): void {
       }
       try {
         const cid = args.path !== undefined
-          ? (await synapse.store(await readFile(args.path), signal, onProgress)).cid
+          ? (await synapse.store({ path: args.path }, signal, onProgress)).cid
           : args.cid as Cid
         console.log(`[synapse_pin] store done cid=${cid}, pinning...`)
         const st = await synapse.pin(cid, signal)

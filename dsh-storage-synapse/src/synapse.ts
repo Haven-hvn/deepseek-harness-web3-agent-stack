@@ -22,6 +22,21 @@
 
 export type Cid = string
 
+/**
+ * Input accepted by `store`: either an in-memory buffer or a local file path
+ * streamed directly from disk without materializing the payload in the Node heap.
+ */
+export type StoreInput = Uint8Array | { path: string }
+
+export interface StoreOptions {
+  onProgress?: ((event: unknown) => void) | undefined
+  signal?: AbortSignal | undefined
+  /** Optional precomputed 32-byte SHA-256 digest to avoid hashing a file twice. */
+  digest?: Uint8Array | undefined
+  /** Optional precomputed byte length paired with `digest`. */
+  size?: number | undefined
+}
+
 export interface PinStatus {
   readonly cid: Cid
   readonly provider: string
@@ -725,29 +740,75 @@ export class FilecoinBackend {
     })
   }
 
-  async store(data: Uint8Array, opts?: { onProgress?: (event: unknown) => void; signal?: AbortSignal }): Promise<{ cid: Cid; pieceCid?: string | undefined }> {
-    console.log(`[synapse] store start bytes=${data.length}`)
+  async store(input: StoreInput, opts?: StoreOptions): Promise<{ cid: Cid; pieceCid?: string | undefined }> {
+    const {
+      buildSingleBlockCarPrefix,
+      createSingleBlockCarBytesStream,
+      createSingleBlockCarFileStream,
+      hashFileSha256,
+      SINGLE_BLOCK_STREAM_THRESHOLD,
+    } = await import('./singleBlockCar.ts')
+    const isFile = !(input instanceof Uint8Array)
+    let dataLength: number
+    let digest: Uint8Array
+    if (isFile) {
+      if (opts?.digest !== undefined && opts?.size !== undefined) {
+        digest = opts.digest
+        dataLength = opts.size
+      } else {
+        const hashed = await hashFileSha256(input.path)
+        digest = hashed.digest
+        dataLength = hashed.size
+      }
+      console.log(`[synapse] store start path=${input.path} bytes=${dataLength} mode=stream`)
+    } else {
+      dataLength = input.length
+      console.log(`[synapse] store start bytes=${dataLength}`)
+      if (opts?.digest !== undefined) {
+        digest = opts.digest
+      } else {
+        const { createHash } = await import('node:crypto')
+        digest = new Uint8Array(createHash('sha256').update(input).digest())
+      }
+    }
+
     const synapse = await this.ensureSynapse()
     console.log(`[synapse] synapse ready`)
     const { executeUpload } = await import('filecoin-pin/core/upload')
     const { CID } = await import('multiformats/cid')
-    const { packSingleBlockCar } = await import('./singleBlockCar.ts')
     // Single-block CAR at every size (see ./singleBlockCar.ts): chunked
     // UnixFS roots fail readers' root check, one raw block always strips.
-    // In-memory — no temp input file, nothing to clean up on any exit.
-    const car = packSingleBlockCar(data)
-    const carBytes = car.carBytes
-    console.log(`[synapse] CAR built rootCid=${car.rootCid} carBytes=${carBytes.length}`)
+    // File inputs and large buffers stream prefix + payload chunks so the full
+    // CAR never materializes in the Node heap.
+    const { prefix, rootCid: rootCidStr, carByteLength } = buildSingleBlockCarPrefix(digest, dataLength)
+    const useStream = isFile || dataLength > SINGLE_BLOCK_STREAM_THRESHOLD
+    let materializedCar: Uint8Array | undefined
+    if (!useStream) {
+      materializedCar = new Uint8Array(carByteLength)
+      materializedCar.set(prefix, 0)
+      materializedCar.set(input as Uint8Array, prefix.length)
+    }
+    const openCarData = (): Uint8Array | ReadableStream<Uint8Array> => {
+      if (isFile) {
+        return createSingleBlockCarFileStream(input.path, prefix, { expectedDataLength: dataLength })
+      }
+      if (useStream) {
+        return createSingleBlockCarBytesStream(input as Uint8Array, prefix)
+      }
+      return materializedCar!
+    }
+    console.log(`[synapse] CAR prepared rootCid=${rootCidStr} carBytes=${carByteLength} streaming=${useStream}`)
     // Preflight gas, Warm Storage allowances, and Filecoin Pay capacity BEFORE
     // streaming bytes to any storage provider (auto-funding from wallet USDFC
     // by default within maxAutoFundUsdfc).
-    await this.preflightUploadFunding(synapse, carBytes.length)
-    const rootCid: any = CID.parse(car.rootCid)
+    await this.preflightUploadFunding(synapse, carByteLength)
+    const rootCid: any = CID.parse(rootCidStr)
     const log = (lvl: string, ...a: any[]) => { try { console.log(`[synapse:${lvl}]`, ...a) } catch {} }
     const logger: any = { debug: (...a: any[]) => log('debug', ...a), info: (...a: any[]) => log('info', ...a), warn: (...a: any[]) => log('warn', ...a), error: (...a: any[]) => log('error', ...a) }
     const baseOpts: any = {
       logger,
       ipniValidation: { enabled: false },
+      size: carByteLength,
       ...(opts?.onProgress ? { onProgress: opts.onProgress } : {}),
       ...(opts?.signal ? { signal: opts.signal } : {}),
       ...(this.opts.copies !== undefined ? { copies: this.opts.copies } : {}),
@@ -755,7 +816,7 @@ export class FilecoinBackend {
     }
     let result: any
     try {
-      result = await this.runUpload(executeUpload, synapse, carBytes, rootCid, baseOpts, this.opts.excludeProviderIds, 'primary')
+      result = await this.runUpload(executeUpload, synapse, openCarData, rootCid, baseOpts, this.opts.excludeProviderIds, 'primary')
     } catch (primaryError: unknown) {
       // Calibration's endorsed set is tiny (it has been exactly the once-excluded
       // [4, 9]) and it shifts without notice — a stale exclusion list fails
@@ -765,7 +826,7 @@ export class FilecoinBackend {
       if (this.opts.excludeProviderIds?.length && !this.opts.providerIds && isProviderSelectionError(primaryError)) {
         console.log(`[synapse] primary selection failed with exclusions [${this.opts.excludeProviderIds.join(',')}]; retrying once without exclusions`)
         try {
-          result = await this.runUpload(executeUpload, synapse, carBytes, rootCid, baseOpts, undefined, 'fallback-no-exclusions')
+          result = await this.runUpload(executeUpload, synapse, openCarData, rootCid, baseOpts, undefined, 'fallback-no-exclusions')
         } catch (fallbackError: unknown) {
           throw decorateLockupError(fallbackError) ?? fallbackError
         }
@@ -773,7 +834,7 @@ export class FilecoinBackend {
         throw decorateLockupError(primaryError) ?? primaryError
       }
     }
-    const cid: string = car?.rootCid ?? result?.cid ?? result?.rootCid ?? ''
+    const cid: string = rootCidStr || result?.cid || result?.rootCid || ''
     if (!cid) throw new Error('dsh-storage-synapse: filecoin store returned empty CID')
     // Canonicalize through the PieceCID parser before anything records it:
     // an unparseable piece (truncated, wrong codec, root CID in its place)
@@ -804,11 +865,11 @@ export class FilecoinBackend {
     return { cid, pieceCid }
   }
 
-  /** One upload attempt against filecoin-pin; selection inputs vary per attempt, the CAR is built once. */
+  /** One upload attempt against filecoin-pin; opens a fresh stream per attempt while prefix/rootCid are computed once. */
   private async runUpload(
     executeUpload: unknown,
     synapse: SynapseInstance,
-    carBytes: any,
+    openCarData: () => Uint8Array | ReadableStream<Uint8Array>,
     rootCid: any,
     baseOpts: any,
     excludeProviderIds: bigint[] | undefined,
@@ -819,11 +880,15 @@ export class FilecoinBackend {
       ...(excludeProviderIds?.length ? { excludeProviderIds } : {}),
     }
     console.log(`[synapse] executeUpload start copies=${this.opts.copies} exclude=${excludeProviderIds?.join(',') ?? '(none)'} attempt=${label}`)
+    const carData = openCarData()
     try {
-      const result = await (executeUpload as any)(synapse, carBytes, rootCid, uploadOpts)
+      const result = await (executeUpload as any)(synapse, carData, rootCid, uploadOpts)
       console.log(`[synapse] executeUpload done result=${preview(result)}`)
       return result
     } catch (e: any) {
+      if (carData instanceof ReadableStream && !carData.locked) {
+        carData.cancel(e).catch(() => {})
+      }
       console.log(`[synapse] executeUpload error attempt=${label} ${e?.message ?? e} ${e?.stack?.slice(0, 500) ?? ''}`)
       throw e
     }

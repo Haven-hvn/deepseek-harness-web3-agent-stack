@@ -15,7 +15,41 @@
  */
 
 import { createHash } from 'node:crypto'
+import { createReadStream, type ReadStream } from 'node:fs'
+import { stat } from 'node:fs/promises'
+import { Readable } from 'node:stream'
 import { CID } from 'multiformats/cid'
+
+/**
+ * Default read chunk size (256 KiB) for streaming SHA-256 hashing and
+ * disk-backed CAR uploads. Keeps peak heap O(chunkSize) regardless of file size.
+ */
+export const DEFAULT_STREAM_CHUNK_BYTES = 256 * 1024
+
+/**
+ * In-memory Uint8Array payloads above this threshold (4 MiB) are streamed
+ * zero-copy via `createSingleBlockCarBytesStream` instead of allocating a
+ * second full CAR buffer. File inputs always stream regardless of size.
+ */
+export const SINGLE_BLOCK_STREAM_THRESHOLD = 4 * 1024 * 1024
+
+export interface FileSha256Result {
+  /** Raw 32-byte SHA-256 digest. */
+  digest: Uint8Array
+  /** Lowercase hex-encoded SHA-256 digest (for dedup ledgers). */
+  hex: string
+  /** Exact byte length of the hashed file. */
+  size: number
+}
+
+export interface SingleBlockCarPrefix {
+  /** CARv1 prefix bytes: headerLen || headerBody || blockLen || cidBytes (~96–101 B). */
+  prefix: Uint8Array
+  /** Base32 CIDv1 (raw codec, sha2-256) of the payload. */
+  rootCid: string
+  /** Exact total CAR byte length (`prefix.length + dataLength`). */
+  carByteLength: number
+}
 
 /** Unsigned LEB128 (varint) encoding used by CARv1 length prefixes. */
 export function encodeVarint(value: number): Uint8Array {
@@ -45,11 +79,54 @@ const HEADER_SUFFIX = new Uint8Array([
 ])
 
 /**
- * Pack bytes as a single-raw-block CARv1.
- * @returns the CAR bytes plus the root CID string (base32 CIDv1, raw codec, sha2-256).
+ * Stream a file through SHA-256 without buffering it in memory.
+ * Verifies the streamed byte count matches `stat(filePath).size`.
  */
-export function packSingleBlockCar(data: Uint8Array): { carBytes: Uint8Array; rootCid: string } {
-  const digest = new Uint8Array(createHash('sha256').update(data).digest())
+export async function hashFileSha256(
+  filePath: string,
+  opts?: { highWaterMark?: number | undefined },
+): Promise<FileSha256Result> {
+  const info = await stat(filePath)
+  const hash = createHash('sha256')
+  let size = 0
+  const stream = createReadStream(filePath, {
+    highWaterMark: opts?.highWaterMark ?? DEFAULT_STREAM_CHUNK_BYTES,
+  })
+  try {
+    for await (const chunk of stream) {
+      const buf = chunk as Uint8Array
+      hash.update(buf)
+      size += buf.byteLength
+    }
+  } catch (err) {
+    if (!stream.destroyed) stream.destroy()
+    throw err
+  }
+  if (size !== info.size) {
+    throw new Error(
+      `dsh-storage-synapse: file ${filePath} changed size while hashing (stat=${info.size}, read=${size})`,
+    )
+  }
+  const buf = hash.digest()
+  return {
+    digest: new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength),
+    hex: buf.toString('hex'),
+    size,
+  }
+}
+
+/**
+ * Build the ~96–101 byte CARv1 prefix (`headerLen || headerBody || blockLen || cidBytes`)
+ * and root CID from a precomputed 32-byte SHA-256 digest and payload byte length,
+ * without touching or copying the payload bytes.
+ */
+export function buildSingleBlockCarPrefix(digest: Uint8Array, dataLength: number): SingleBlockCarPrefix {
+  if (digest.length !== 32) {
+    throw new Error(`dsh-storage-synapse: expected 32-byte sha256 digest, got ${digest.length}`)
+  }
+  if (!Number.isSafeInteger(dataLength) || dataLength < 0) {
+    throw new Error(`dsh-storage-synapse: expected non-negative safe integer dataLength, got ${dataLength}`)
+  }
   // CIDv1 bytes: 0x01 (version) 0x55 (raw) 0x12 0x20 (sha2-256, 32 B) + digest.
   const cidBytes = new Uint8Array(4 + digest.length)
   cidBytes.set([0x01, 0x55, 0x12, 0x20], 0)
@@ -64,19 +141,139 @@ export function packSingleBlockCar(data: Uint8Array): { carBytes: Uint8Array; ro
   headerBody.set(HEADER_SUFFIX, HEADER_PREFIX.length + digest.length)
 
   const headerLen = encodeVarint(headerBody.length)
-  const blockLen = encodeVarint(cidBytes.length + data.length)
-  const carBytes = new Uint8Array(
-    headerLen.length + headerBody.length + blockLen.length + cidBytes.length + data.length,
+  const blockLen = encodeVarint(cidBytes.length + dataLength)
+  const prefix = new Uint8Array(
+    headerLen.length + headerBody.length + blockLen.length + cidBytes.length,
   )
   let o = 0
-  carBytes.set(headerLen, o)
+  prefix.set(headerLen, o)
   o += headerLen.length
-  carBytes.set(headerBody, o)
+  prefix.set(headerBody, o)
   o += headerBody.length
-  carBytes.set(blockLen, o)
+  prefix.set(blockLen, o)
   o += blockLen.length
-  carBytes.set(cidBytes, o)
-  o += cidBytes.length
-  carBytes.set(data, o)
+  prefix.set(cidBytes, o)
+
+  return {
+    prefix,
+    rootCid,
+    carByteLength: prefix.length + dataLength,
+  }
+}
+
+/**
+ * Create a Web `ReadableStream<Uint8Array>` that emits the single-block CARv1
+ * prefix followed by chunks streamed directly from `filePath`.
+ *
+ * Peak heap is O(highWaterMark) regardless of file size; `createReadStream` is
+ * opened lazily after the prefix is pulled and destroyed cleanly on cancel/error.
+ */
+export function createSingleBlockCarFileStream(
+  filePath: string,
+  prefix: Uint8Array,
+  opts?: { highWaterMark?: number | undefined; expectedDataLength?: number | undefined },
+): ReadableStream<Uint8Array> {
+  let prefixSent = false
+  let dataBytesStreamed = 0
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
+  let nodeStream: ReadStream | null = null
+
+  const cleanup = (reason?: unknown): void => {
+    if (reader !== null) {
+      const r = reader
+      reader = null
+      r.cancel(reason).catch(() => {})
+      try { r.releaseLock() } catch {}
+    }
+    if (nodeStream !== null) {
+      const s = nodeStream
+      nodeStream = null
+      if (!s.destroyed) s.destroy()
+    }
+  }
+
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (!prefixSent) {
+        prefixSent = true
+        controller.enqueue(prefix)
+        return
+      }
+      if (reader === null) {
+        nodeStream = createReadStream(filePath, {
+          highWaterMark: opts?.highWaterMark ?? DEFAULT_STREAM_CHUNK_BYTES,
+        })
+        const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream<Uint8Array>
+        reader = webStream.getReader()
+      }
+      try {
+        const { done, value } = await reader.read()
+        if (done) {
+          if (opts?.expectedDataLength !== undefined && dataBytesStreamed !== opts.expectedDataLength) {
+            const err = new Error(
+              `dsh-storage-synapse: file ${filePath} changed size during upload `
+              + `(expected ${opts.expectedDataLength} bytes, streamed ${dataBytesStreamed})`,
+            )
+            cleanup(err)
+            controller.error(err)
+            return
+          }
+          cleanup()
+          controller.close()
+        } else {
+          dataBytesStreamed += value.byteLength
+          controller.enqueue(value)
+        }
+      } catch (err) {
+        cleanup(err)
+        controller.error(err)
+      }
+    },
+    cancel(reason) {
+      cleanup(reason)
+    },
+  })
+}
+
+/**
+ * Create a zero-copy Web `ReadableStream<Uint8Array>` emitting the single-block
+ * CARv1 prefix followed by `subarray` slices of an in-memory `Uint8Array`.
+ * Avoids allocating a second full-file CAR buffer when callers pass large buffers.
+ */
+export function createSingleBlockCarBytesStream(
+  data: Uint8Array,
+  prefix: Uint8Array,
+  chunkSize = DEFAULT_STREAM_CHUNK_BYTES,
+): ReadableStream<Uint8Array> {
+  let prefixSent = false
+  let offset = 0
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (!prefixSent) {
+        prefixSent = true
+        controller.enqueue(prefix)
+        return
+      }
+      if (offset >= data.byteLength) {
+        controller.close()
+        return
+      }
+      const end = Math.min(offset + chunkSize, data.byteLength)
+      controller.enqueue(data.subarray(offset, end))
+      offset = end
+    },
+  })
+}
+
+/**
+ * Pack bytes as a single-raw-block CARv1.
+ * @returns the CAR bytes plus the root CID string (base32 CIDv1, raw codec, sha2-256).
+ */
+export function packSingleBlockCar(data: Uint8Array): { carBytes: Uint8Array; rootCid: string } {
+  const digest = new Uint8Array(createHash('sha256').update(data).digest())
+  const { prefix, rootCid, carByteLength } = buildSingleBlockCarPrefix(digest, data.length)
+  const carBytes = new Uint8Array(carByteLength)
+  carBytes.set(prefix, 0)
+  carBytes.set(data, prefix.length)
   return { carBytes, rootCid }
 }

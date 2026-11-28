@@ -247,8 +247,8 @@ describe('synapse_pin through the executor (the harness natively pins)', () => {
     expect(result.content).toEqual([{ type: 'text', text: `bafyexisting: pinned (provider filecoin, piece ${PIECE})` }])
   })
 
-  it('uploads a local file then pins the returned cid (path route)', async () => {
-    const { execute } = await harness()
+  it('uploads a local file then pins the returned cid (path route, streaming without readFile)', async () => {
+    const { ctx, execute } = await harness()
     const dir = await mkdtemp(join(tmpdir(), 'dsh-synapse-'))
     const file = join(dir, 'artifact.txt')
     await writeFile(file, 'payload')
@@ -256,6 +256,7 @@ describe('synapse_pin through the executor (the harness natively pins)', () => {
       const result = await execute('synapse_pin', { path: file })
       expect(result.isError).toBe(false)
       expect(result.content).toEqual([{ type: 'text', text: `bafyfresh: pinned (provider filecoin, piece ${PIECE})` }])
+      expect((ctx.synapse as any).store).toHaveBeenCalledWith({ path: file }, expect.anything(), expect.any(Function))
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
@@ -280,7 +281,7 @@ describe('synapse_pin through the executor (the harness natively pins)', () => {
 
 describe('exactly-once: content ledger + pin read-back (real runtime path)', () => {
   interface FakeBackend {
-    stores: Uint8Array[]
+    stores: Array<Uint8Array | { path: string }>
     checks: string[]
     checkImpl: (cid: string) => Promise<{ cid: string; provider: string; expiresAt: number; redundancy: number }>
   }
@@ -313,7 +314,7 @@ describe('exactly-once: content ledger + pin read-back (real runtime path)', () 
     }
     const rt: any = ctx.synapse
     rt.filecoin = {
-      store: async (data: Uint8Array) => {
+      store: async (data: Uint8Array | { path: string }) => {
         backend.stores.push(data)
         return { cid: `bafy-stored-${backend.stores.length}` }
       },
@@ -337,6 +338,24 @@ describe('exactly-once: content ledger + pin read-back (real runtime path)', () 
     const third = await rt.store(new TextEncoder().encode('other-bytes'))
     expect(third.cid).not.toBe(first.cid)
     expect(backend.stores).toHaveLength(2)
+  })
+
+  it('SynapseRuntime.store({ path }) deduplicates by streaming sha256 against both path and buffer stores', async () => {
+    const { rt, backend } = await ledgerHarness()
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-synapse-dedup-'))
+    try {
+      const file = join(dir, 'release.bin')
+      await writeFile(file, 'same-file-bytes')
+      const first = await rt.store({ path: file })
+      const second = await rt.store({ path: file })
+      const third = await rt.store(new TextEncoder().encode('same-file-bytes'))
+      expect(second).toEqual(first)
+      expect(third).toEqual(first)
+      expect(backend.stores).toHaveLength(1)
+      expect(backend.stores[0]).toEqual({ path: file })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 
   it('checkPinTool replays pinned CIDs and proceeds on absent ones', async () => {
@@ -460,6 +479,92 @@ describe('single-block CAR packing (reader-playable pieces)', () => {
     expect(Array.from(encodeVarint(128))).toEqual([0x80, 0x01])
     expect(Array.from(encodeVarint(300))).toEqual([0xac, 0x02])
     expect(() => encodeVarint(-1)).toThrow()
+  })
+
+  async function collectStream(stream: ReadableStream<Uint8Array>): Promise<{ bytes: Uint8Array; maxChunkBytes: number; chunkCount: number }> {
+    const reader = stream.getReader()
+    const chunks: Uint8Array[] = []
+    let total = 0
+    let maxChunkBytes = 0
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      chunks.push(value)
+      total += value.byteLength
+      if (value.byteLength > maxChunkBytes) maxChunkBytes = value.byteLength
+    }
+    const out = new Uint8Array(total)
+    let offset = 0
+    for (const c of chunks) {
+      out.set(c, offset)
+      offset += c.byteLength
+    }
+    return { bytes: out, maxChunkBytes, chunkCount: chunks.length }
+  }
+
+  it('streaming file CAR matches packSingleBlockCar byte-for-byte with bounded chunks', async () => {
+    const {
+      buildSingleBlockCarPrefix,
+      createSingleBlockCarFileStream,
+      hashFileSha256,
+      packSingleBlockCar,
+    } = await import('../src/singleBlockCar.ts')
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-synapse-car-stream-'))
+    try {
+      // Multi-chunk file (600 KiB with 64 KiB highWaterMark -> ~10 chunks + prefix).
+      const payload = new Uint8Array(600 * 1024)
+      for (let i = 0; i < payload.length; i += 1) payload[i] = (i * 31) & 0xff
+      const file = join(dir, 'large.bin')
+      await writeFile(file, payload)
+
+      const hashed = await hashFileSha256(file, { highWaterMark: 64 * 1024 })
+      expect(hashed.size).toBe(payload.length)
+      const { prefix, rootCid, carByteLength } = buildSingleBlockCarPrefix(hashed.digest, hashed.size)
+      const packed = packSingleBlockCar(payload)
+      expect(rootCid).toBe(packed.rootCid)
+      expect(carByteLength).toBe(packed.carBytes.length)
+
+      const streamed = await collectStream(
+        createSingleBlockCarFileStream(file, prefix, { highWaterMark: 64 * 1024, expectedDataLength: hashed.size }),
+      )
+      expect(streamed.bytes.length).toBe(carByteLength)
+      expect(Buffer.from(streamed.bytes).equals(Buffer.from(packed.carBytes))).toBe(true)
+      expect(streamed.maxChunkBytes).toBeLessThanOrEqual(64 * 1024)
+      expect(streamed.chunkCount).toBeGreaterThan(2)
+
+      // Empty file edge case.
+      const emptyFile = join(dir, 'empty.bin')
+      await writeFile(emptyFile, new Uint8Array(0))
+      const emptyHashed = await hashFileSha256(emptyFile)
+      const emptyPrefix = buildSingleBlockCarPrefix(emptyHashed.digest, 0)
+      const emptyPacked = packSingleBlockCar(new Uint8Array(0))
+      const emptyStreamed = await collectStream(
+        createSingleBlockCarFileStream(emptyFile, emptyPrefix.prefix, { expectedDataLength: 0 }),
+      )
+      expect(emptyPrefix.rootCid).toBe(emptyPacked.rootCid)
+      expect(Buffer.from(emptyStreamed.bytes).equals(Buffer.from(emptyPacked.carBytes))).toBe(true)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('zero-copy bytes CAR stream matches packSingleBlockCar byte-for-byte', async () => {
+    const {
+      buildSingleBlockCarPrefix,
+      createSingleBlockCarBytesStream,
+      packSingleBlockCar,
+    } = await import('../src/singleBlockCar.ts')
+    const { createHash } = await import('node:crypto')
+    const data = new Uint8Array(150 * 1024)
+    for (let i = 0; i < data.length; i += 1) data[i] = i & 0xff
+    const digest = new Uint8Array(createHash('sha256').update(data).digest())
+    const { prefix, rootCid, carByteLength } = buildSingleBlockCarPrefix(digest, data.length)
+    const packed = packSingleBlockCar(data)
+    const streamed = await collectStream(createSingleBlockCarBytesStream(data, prefix, 32 * 1024))
+    expect(rootCid).toBe(packed.rootCid)
+    expect(streamed.bytes.length).toBe(carByteLength)
+    expect(Buffer.from(streamed.bytes).equals(Buffer.from(packed.carBytes))).toBe(true)
+    expect(streamed.maxChunkBytes).toBeLessThanOrEqual(32 * 1024)
   })
 })
 
@@ -646,10 +751,61 @@ describe('provider selection: no default exclusions, one loud fallback', () => {
       pinMocks.executeUpload.mockResolvedValueOnce({ pieceCid: PIECE })
       await backend.store(new TextEncoder().encode('payload'))
       expect(pinMocks.executeUpload).toHaveBeenCalledTimes(1)
-      const call = pinMocks.executeUpload.mock.calls[0] as [unknown, Uint8Array, { toString(): string }, unknown]
+      const call = pinMocks.executeUpload.mock.calls[0] as [unknown, Uint8Array, { toString(): string }, { size?: number }]
       expect(String(call[2])).toBe(PAYLOAD_CID) // real CID.parse round-trip
       expect(call[1].length).toBe(103) // 1 + 58 header + 1 + 36 CID + 7 data
       expect(call[1][0]).toBe(58)
+      expect(call[3]?.size).toBe(103)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('store({ path }) streams a ReadableStream + exact size and opens a fresh stream on fallback retry', async () => {
+    const { packSingleBlockCar } = await import('../src/singleBlockCar.ts')
+    const { backend, dir } = await backendHarness({ excludeProviderIds: [4n, 9n] })
+    try {
+      const payload = new TextEncoder().encode('payload')
+      const expected = packSingleBlockCar(payload)
+      const file = join(dir, 'release.mp3.enc')
+      await writeFile(file, payload)
+
+      const seenStreams: ReadableStream<Uint8Array>[] = []
+      let uploadedBytes = new Uint8Array(0)
+      pinMocks.executeUpload
+        .mockImplementationOnce(async (_synapse: unknown, carData: unknown, _rootCid: unknown, opts: { size?: number }) => {
+          expect(carData).toBeInstanceOf(ReadableStream)
+          expect(opts.size).toBe(expected.carBytes.length)
+          seenStreams.push(carData as ReadableStream<Uint8Array>)
+          throw new Error('StorageContext smartSelect failed: No endorsed provider available')
+        })
+        .mockImplementationOnce(async (_synapse: unknown, carData: unknown, _rootCid: unknown, opts: { size?: number }) => {
+          expect(carData).toBeInstanceOf(ReadableStream)
+          expect(opts.size).toBe(expected.carBytes.length)
+          seenStreams.push(carData as ReadableStream<Uint8Array>)
+          const reader = (carData as ReadableStream<Uint8Array>).getReader()
+          const chunks: Uint8Array[] = []
+          let total = 0
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            chunks.push(value)
+            total += value.byteLength
+          }
+          uploadedBytes = new Uint8Array(total)
+          let o = 0
+          for (const c of chunks) {
+            uploadedBytes.set(c, o)
+            o += c.byteLength
+          }
+          return { pieceCid: PIECE }
+        })
+
+      const stored = await backend.store({ path: file })
+      expect(stored).toEqual({ cid: PAYLOAD_CID, pieceCid: PIECE })
+      expect(seenStreams).toHaveLength(2)
+      expect(seenStreams[0]).not.toBe(seenStreams[1])
+      expect(Buffer.from(uploadedBytes).equals(Buffer.from(expected.carBytes))).toBe(true)
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
